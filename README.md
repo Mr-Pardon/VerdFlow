@@ -10,9 +10,9 @@
 <p align="center">
   <a href="https://mr-pardon.github.io/verdflow-site/">文档</a> ·
   <a href="https://mr-pardon.github.io/verdflow-site/guide/install.html">安装</a> ·
-  <a href="CHANGELOG.md">更新日志</a> ·
-  <a href="#workflow">核心链路</a> ·
-  <a href="#extend">拓展创作</a>
+  <a href="https://mr-pardon.github.io/verdflow-resources/">资源中心</a> ·
+  <a href="https://mr-pardon.github.io/verdflow-site/authoring/overview.html">拓展创作</a> ·
+  <a href="CHANGELOG.md">更新日志</a>
 </p>
 
 <br>
@@ -142,7 +142,7 @@ DTS 入口使用实时面板；FBX 与地理数据入口使用 Studio 项目工�
 
 | 你需要 | 用途 | 获取 |
 | :--- | :--- | :--- |
-| **VerdFlow Studio** | Windows x64 桌面客户端，进入工作台或连接 DTS 实时种植 | 下载地址待发布 |
+| **VerdFlow Studio** | Windows x64 桌面客户端，进入工作台或连接 DTS 实时种植 | [下载最新版本](https://github.com/Mr-Pardon/VerdFlow/releases/latest) |
 | **用户手册** | 安装准备、操作流程与常见问题 | [在线阅读](https://mr-pardon.github.io/verdflow-site/) |
 | **策略包** | 空间算法、植被角色与可调参数 | [资源中心](https://mr-pardon.github.io/verdflow-resources/?type=strategies) |
 | **资产库** | 植被资源索引、参考尺寸与搭配素材 | [资源中心](https://mr-pardon.github.io/verdflow-resources/?type=assets) |

@@ -47,7 +47,11 @@ jobs:
       - name: Python tests
         run: python -m unittest discover -s tests/unit
       - name: Install Corepack
-        run: npm install --global corepack@0.34.6
+        run: |
+          $prefix = Join-Path $env:RUNNER_TEMP 'verdflow-corepack'
+          npm install --global --prefix $prefix corepack@0.34.6
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $prefix >> $env:GITHUB_PATH
       - name: Install JavaScript dependencies
         run: corepack pnpm install --frozen-lockfile
       - name: Ensure Electron runtime

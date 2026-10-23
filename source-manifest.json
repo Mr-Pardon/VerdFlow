@@ -8,7 +8,7 @@
     ".github/ISSUE_TEMPLATE/config.yml": "e85e691abdb4fd7a735c457939172dd27848f0b640cb2d8ecb1d85c3b14ea3c7",
     ".github/ISSUE_TEMPLATE/feature_request.yml": "0aa7c9b015ba470bbf28cd03fc4d1446470dac621b362e62e97206325b18587a",
     ".github/pull_request_template.md": "3c659ae8f1a09f05e41532fe99be074eb110d387884fecb7f17e60d9bc3309a5",
-    ".github/workflows/ci.yml": "621e8e7a62eac50d77edfbb8c4759171f2b374a4c68201db7686c71e6bc43cb1",
+    ".github/workflows/ci.yml": "9288beea87127a462b804a686a34cf6510951acdce9e6cdcd2f158df3c0999ff",
     ".gitignore": "5ed04b7e5f5fb4c1f99612dc7d42ff2158bf1d528760447750cb6360c99c903b",
     "adapters/blender-worker/pyproject.toml": "87dd2e5437870eea34977ead9142c03a998fefaab90cd6deb83ba4aac2d80e26",
     "adapters/blender-worker/README.md": "01305693c8dd55b505d9c3ede5ec05b52cbf7d081eb9d3d9554a7b46f97364fa",

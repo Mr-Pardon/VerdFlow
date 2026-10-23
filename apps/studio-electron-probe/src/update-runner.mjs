@@ -1,4 +1,4 @@
-import { copyFile, readFile, rm } from "node:fs/promises";
+import { copyFile, open, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
@@ -26,21 +26,44 @@ export async function launchPortableUpdate({ script, planPath }) {
   const copiedScript = path.join(directory, "apply-update.ps1");
   await copyFile(script, copiedScript);
   await rm(path.join(directory, "helper-ready"), { force: true });
+  const acceptedPath = path.join(directory, "helper-accepted.json");
+  await rm(acceptedPath, { force: true });
+  await rm(path.join(directory, "helper-launch.json"), { force: true });
   const powershell = path.join(process.env.SystemRoot || "C:\\Windows", "System32/WindowsPowerShell/v1.0/powershell.exe");
-  const child = spawn(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", copiedScript, "-PlanPath", planPath], {
-    detached: true, windowsHide: true, cwd: directory, stdio: "ignore",
-  });
+  const output = await open(path.join(directory, "helper-launch.log"), "w");
+  let child;
+  let completed = Promise.resolve();
   let failed = null;
-  child.once("error", error => { failed = error; });
   try {
-    const deadline = Date.now() + 10_000;
+    // Windows PowerShell needs a hidden Start-Process bootstrap, not Node's
+    // detached console flags, to survive the application closing reliably.
+    child = spawn(powershell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", copiedScript, "-PlanPath", planPath, "-Launch"], {
+      detached: false, windowsHide: true, cwd: directory, stdio: ["ignore", output.fd, output.fd],
+    });
+    child.once("error", error => { failed = error; });
+    completed = new Promise(resolve => child.once("close", resolve));
+    const deadline = Date.now() + 30_000;
     while (Date.now() < deadline) {
       if (failed) throw failed;
-      if (child.exitCode !== null || child.signalCode !== null) throw new Error("更新器启动失败，程序保持运行");
-      try { if ((await readFile(path.join(directory, "helper-ready"), "utf8")).trim() === String(process.pid)) { child.unref(); return; } }
-      catch (error) { if (error.code !== "ENOENT") throw error; }
+      if (child.signalCode !== null || (child.exitCode !== null && child.exitCode !== 0)) throw new Error("更新器启动失败，程序保持运行");
+      if (child.exitCode === 0) {
+        const handshake = await readFile(path.join(directory, "helper-ready"), "utf8").catch(error => { if (error.code === "ENOENT") return ""; throw error; });
+        if (handshake.trim() !== String(process.pid)) throw new Error("更新器启动失败，程序保持运行");
+        const plan = JSON.parse(await readFile(planPath, "utf8"));
+        await writeFile(acceptedPath, JSON.stringify({ id: plan.id, parentPid: process.pid }), "utf8");
+        return;
+      }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     throw new Error("更新器未能接管，程序保持运行");
-  } catch (error) { child.kill(); throw error; }
+  } catch (error) {
+    await rm(acceptedPath, { force: true }).catch(() => undefined);
+    child?.kill();
+    await completed;
+    await writeFile(path.join(directory, "helper-launch.json"), JSON.stringify({
+      status: "failed", exitCode: child?.exitCode ?? null, signal: child?.signalCode ?? null,
+      message: error instanceof Error ? error.message : "Update helper failed",
+    }), "utf8").catch(() => undefined);
+    throw error;
+  } finally { await output.close(); }
 }

@@ -35,6 +35,8 @@ corepack pnpm dev:desktop
 ```
 
 开发启动与 Python 配置见 [开发与测试](../../docs/development/TESTING.md)。
+Windows 更新回归经过实际启动器，验证隐藏助手接管、父进程退出后的文件替换与启动、
+无接管确认时拒绝替换，以及失败诊断和旧程序恢复。接管确认不改变用户数据。
 Windows x64 便携构建输出在 `dist/portable/`。更新源默认来自桌面壳的 `updates.json`，
 指向 `Mr-Pardon/VerdFlow`：
 
@@ -51,6 +53,7 @@ python tools/build_portable_release.py --smoke-test
 ## 当前限制
 
 当前提供免安装 ZIP，支持检查/下载更新和确认重启，不含安装器或代码签名。
+0.4.0/1.0.0 的更新器启动故障需要手动下载 1.0.1 过渡一次。
 发布仓库无正式附件时不能完成线上升级验收。窗口及本机对话框需要在交互式
 桌面验证。产品用户数据使用稳定的 `%LOCALAPPDATA%/VerdFlow`，API Key 由系统凭据库保存；
 开发启动默认隔离在 `_work/studio-dev/`，不从安装目录下的 UserData 读取正式数据。

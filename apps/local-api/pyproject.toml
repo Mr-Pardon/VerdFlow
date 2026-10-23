@@ -1,0 +1,21 @@
+[project]
+name = "verdflow-local-api"
+version = "0.1.0"
+description = "Loopback HTTP transport for the VerdFlow System Host."
+requires-python = ">=3.11"
+dependencies = [
+  "verdflow-contracts",
+  "verdflow-dts-live-connector",
+  "verdflow-studio-service",
+  "verdflow-system-host",
+]
+
+[project.scripts]
+verdflow-local-api = "verdflow.local_api.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/verdflow"]

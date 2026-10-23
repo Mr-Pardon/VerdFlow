@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 用户手册
+    url: https://mr-pardon.github.io/verdflow-site/
+    about: 安装、工作流、资源准备和常见问题。
+  - name: 资源中心
+    url: https://mr-pardon.github.io/verdflow-resources/
+    about: 资产库、策略包与种植方案单独维护和更新。
+  - name: 私密安全报告
+    url: https://github.com/Mr-Pardon/VerdFlow/security/advisories/new
+    about: 仅用于漏洞和敏感安全问题，请勿在公开 Issue 中披露。

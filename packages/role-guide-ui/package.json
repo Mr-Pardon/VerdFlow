@@ -1,0 +1,8 @@
+{
+  "name": "@verdflow/role-guide-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "peerDependencies": { "@lucide/vue": "^1.31.0", "vue": "^3.5.18" }
+}

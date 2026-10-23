@@ -1,0 +1,644 @@
+.plan-editor-backdrop {
+  padding: 20px;
+}
+.plan-editor-dialog {
+  width: min(1400px, 100%);
+  height: min(900px, calc(100dvh - 40px));
+  max-height: calc(100dvh - 40px);
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.plan-editor-dialog > header,
+.plan-editor-dialog > footer {
+  flex-shrink: 0;
+}
+.plan-editor-dialog > header h3 {
+  font-size: 21px;
+}
+.plan-editor-steps {
+  display: flex;
+  gap: 4px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+  background: #f7f9f8;
+}
+.plan-editor-steps button {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  flex: 1;
+  min-height: 40px;
+  border: 0;
+  padding: 8px 12px;
+  background: transparent;
+  color: var(--color-text-muted);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.plan-editor-steps button.active {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.plan-editor-steps button > span {
+  display: grid;
+  place-items: center;
+  width: 25px;
+  height: 25px;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.plan-editor-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+}
+.plan-editor-body.is-mapping {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.plan-editor-strategies,
+.plan-editor-parameters {
+  padding: 24px;
+}
+.plan-editor-strategies {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  gap: 36px;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+.plan-strategy-library {
+  min-width: 0;
+}
+.plan-strategy-library > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0 0 16px;
+}
+.plan-strategy-library h4 {
+  margin: 0;
+  font-size: 14px;
+}
+.plan-strategy-library > header > span {
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+.plan-editor-strategy-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+}
+.plan-strategy-choice {
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  overflow: hidden;
+}
+.plan-strategy-choice:hover {
+  border-color: var(--color-accent);
+}
+.plan-strategy-choice.selected {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+.plan-strategy-choice > button {
+  display: flex;
+  gap: 12px;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  border: 0;
+  padding: 18px 14px;
+  background: transparent;
+  color: var(--color-text);
+  text-align: left;
+  min-height: 90px;
+  cursor: pointer;
+}
+.plan-strategy-choice > button > svg {
+  color: var(--color-accent);
+  flex-shrink: 0;
+}
+.plan-strategy-symbol {
+  display: grid;
+  place-items: center;
+  flex: 0 0 38px;
+  height: 38px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  color: var(--color-accent);
+  background: #f3f8f6;
+}
+.plan-strategy-choice-copy {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+  gap: 7px;
+}
+.plan-strategy-choice-copy strong {
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.plan-strategy-choice-copy small {
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+.plan-strategy-radio {
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.plan-strategy-preview {
+  min-width: 0;
+  border-left: 1px solid var(--color-border);
+  padding-left: 36px;
+}
+.plan-strategy-preview-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+.plan-strategy-preview-heading > div > span {
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+.plan-strategy-preview-heading h4 {
+  margin: 8px 0 0;
+  font-size: 22px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.plan-strategy-preview-heading label {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+.plan-strategy-preview-heading select {
+  min-width: 0;
+  flex: 1;
+}
+.plan-editor-strategy-description {
+  color: var(--color-text-muted);
+  font-size: 13px;
+  line-height: 1.9;
+  margin: 24px 0;
+  overflow-wrap: anywhere;
+}
+.plan-strategy-facts {
+  display: flex;
+  gap: 32px;
+  margin: 0 0 26px;
+  padding-bottom: 22px;
+  border-bottom: 1px solid var(--color-border);
+}
+.plan-strategy-facts dt {
+  color: var(--color-text-faint);
+  font-size: 11px;
+}
+.plan-strategy-facts dd {
+  margin: 8px 0 0;
+  font-size: 22px;
+}
+.plan-strategy-role-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.plan-strategy-role-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 11px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: #fff;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+.plan-strategy-role-tabs button.active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+.plan-strategy-role-tabs i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+.plan-strategy-purpose {
+  padding-top: 24px;
+}
+.plan-strategy-purpose > strong {
+  font-size: 14px;
+}
+.plan-strategy-purpose > p {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  line-height: 1.8;
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+}
+.plan-strategy-purpose .role-purpose-panel {
+  grid-template-columns: minmax(140px, 240px) minmax(0, 1fr);
+  border: 0;
+  padding: 12px 0 0;
+}
+.plan-strategy-placeholder {
+  display: flex;
+  min-height: 350px;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  color: var(--color-text-faint);
+}
+.plan-strategy-placeholder strong {
+  font-size: 15px;
+  font-weight: 500;
+}
+.plan-editor-catalog {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.plan-editor-catalog select {
+  max-width: 480px;
+  flex: 1;
+  min-width: 0;
+}
+.plan-editor-name {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 520px;
+  margin-bottom: 24px;
+  font-size: 13px;
+}
+.plan-editor-dialog input:not([type="checkbox"]),
+.plan-editor-dialog select {
+  min-height: 36px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  padding: 7px 9px;
+  background: #fff;
+  color: var(--color-text);
+}
+.plan-mapping-workspace {
+  display: grid;
+  grid-template-columns: 205px minmax(0, 1fr) 290px;
+  flex: 1;
+  min-height: 0;
+}
+.plan-role-sidebar {
+  padding: 16px 12px;
+  background: #f0f5f3;
+  border-right: 1px solid var(--color-border);
+  overflow: auto;
+  min-width: 0;
+}
+.plan-mapping-workspace.role-disabled .plan-plant-browser {
+  grid-column: 2 / -1;
+}
+.plan-plant-browser {
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+  min-width: 0;
+  min-height: 0;
+}
+.plan-active-role {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 12px;
+  font-size: 13px;
+}
+.plan-active-role label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.plan-active-role input {
+  accent-color: var(--color-accent);
+}
+.plan-role-guide {
+  border-bottom: 1px solid var(--color-border);
+  margin-bottom: 12px;
+}
+.plan-role-guide > summary {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 4px 0 10px;
+}
+.plan-role-guide[open] {
+  max-height: 260px;
+  overflow: auto;
+}
+.plan-browser-content {
+  display: flex !important;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.plan-asset-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.plan-asset-search input {
+  width: 100%;
+  min-width: 0;
+}
+.plan-collection-filter {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding: 12px 0;
+  flex-shrink: 0;
+}
+.plan-collection-filter button {
+  white-space: nowrap;
+  padding: 7px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  background: #fff;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.plan-collection-filter button.active {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+.plan-asset-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(115px, 1fr));
+  gap: 10px;
+  overflow: auto;
+  flex: 1;
+  min-height: 0;
+  align-content: start;
+  padding-right: 4px;
+}
+.plan-asset-tile {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 7px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: #fff;
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+.plan-asset-tile.selected {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+.plan-asset-tile strong,
+.plan-asset-tile small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+  font-size: 11px;
+}
+.plan-asset-tile small {
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+.plan-tile-image {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  aspect-ratio: 1;
+  background: #f2f5f4;
+  border-radius: 3px;
+  overflow: hidden;
+  color: var(--color-accent);
+}
+.plan-tile-image img,
+.plan-candidate-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.plan-gallery-paging {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding-top: 12px;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.plan-gallery-paging > span:first-child {
+  margin-right: auto;
+}
+.plan-selected-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  border-left: 1px solid var(--color-border);
+  background: #f6f9f8;
+}
+.plan-selected-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 18px 14px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.plan-selected-panel > header span {
+  font-size: 10px;
+  color: var(--color-text-muted);
+}
+.plan-selected-list {
+  overflow: auto;
+  min-height: 0;
+  padding: 12px;
+}
+.plan-candidate {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.plan-candidate-heading {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 28px;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+.plan-candidate-heading strong {
+  overflow-wrap: anywhere;
+}
+.plan-candidate-image {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  background: #edf2f0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.plan-candidate-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.plan-candidate-source {
+  display: block;
+  margin: 6px 0 10px;
+  color: var(--text-muted, #687b77);
+  overflow-wrap: anywhere;
+}
+
+.mapping-duplicate-note {
+  margin: 8px 12px;
+  color: var(--color-warning, #88621f);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.plan-candidate-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+.plan-candidate-fields input,
+.plan-candidate-fields select {
+  width: 100%;
+  min-width: 0;
+}
+.plan-mobile-panes {
+  display: none;
+}
+@media (max-width: 1000px) {
+  .plan-mapping-workspace {
+    grid-template-columns: 175px minmax(0, 1fr) 245px;
+  }
+}
+@media (max-width: 760px) {
+  .plan-editor-strategies {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 18px;
+    gap: 24px;
+  }
+  .plan-editor-strategy-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .plan-strategy-choice > button {
+    padding: 12px;
+    gap: 8px;
+  }
+  .plan-strategy-symbol {
+    display: none;
+  }
+  .plan-strategy-preview {
+    border-left: 0;
+    border-top: 1px solid var(--color-border);
+    padding: 24px 0 0;
+  }
+  .plan-strategy-preview-heading h4 {
+    font-size: 19px;
+  }
+  .plan-strategy-purpose .role-purpose-panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .plan-editor-backdrop {
+    padding: 8px;
+  }
+  .plan-editor-dialog {
+    width: 100%;
+    height: calc(100dvh - 16px);
+    max-height: calc(100dvh - 16px);
+  }
+  .plan-editor-steps {
+    padding: 8px;
+  }
+  .plan-editor-steps button {
+    padding: 6px;
+    gap: 6px;
+    font-size: 12px;
+  }
+  .plan-mapping-workspace {
+    display: flex;
+    flex-direction: column;
+    overflow: auto;
+  }
+  .plan-role-sidebar {
+    max-height: 170px;
+    min-height: 100px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border);
+    flex-shrink: 0;
+  }
+  .plan-plant-browser {
+    min-height: 350px;
+    flex: 1;
+  }
+  .plan-mapping-workspace[data-pane="selected"] .plan-plant-browser {
+    min-height: 0;
+    flex: 0;
+  }
+  .plan-selected-panel {
+    display: none;
+    min-height: 180px;
+  }
+  .plan-selected-panel.mobile-visible {
+    display: flex;
+  }
+  .plan-mobile-panes {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .plan-mobile-panes button {
+    border: 0;
+    background: transparent;
+    padding: 8px 0;
+    color: var(--color-text-muted);
+  }
+  .plan-mobile-panes button.active {
+    color: var(--color-accent);
+    border-bottom: 2px solid var(--color-accent);
+  }
+  .plan-browser-content[style*="display: none"] {
+    display: none !important;
+  }
+}

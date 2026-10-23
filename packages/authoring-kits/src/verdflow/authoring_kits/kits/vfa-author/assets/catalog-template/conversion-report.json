@@ -1,0 +1,15 @@
+{
+  "schema": "verdflow.asset-authoring-report",
+  "version": "1",
+  "source": {
+    "name": "replace-with-source-name",
+    "sha256": null
+  },
+  "summary": {
+    "source_rows": 0,
+    "catalog_assets": 0,
+    "skipped_rows": 0
+  },
+  "warnings": [],
+  "unresolved_items": []
+}

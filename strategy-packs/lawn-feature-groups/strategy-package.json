@@ -1,0 +1,17 @@
+{
+  "schema": "verdflow.strategy-package",
+  "version": "1",
+  "package_id": "lawn_feature_groups",
+  "package_version": "1.0.2",
+  "runtime": "python",
+  "api_version": "1",
+  "strategy_file": "strategy.yaml",
+  "entry": "generator.py:generate",
+  "files": [
+    "DESIGN.md",
+    "README.md",
+    "algorithm.py",
+    "generator.py",
+    "strategy.yaml"
+  ]
+}

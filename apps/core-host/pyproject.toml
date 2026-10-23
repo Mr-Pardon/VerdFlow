@@ -1,0 +1,22 @@
+[project]
+name = "verdflow-core-host"
+version = "0.1.0"
+description = "VerdFlow Core composition root for one active project."
+requires-python = ">=3.11"
+dependencies = [
+  "verdflow-blender-worker",
+  "verdflow-contracts",
+  "verdflow-core",
+  "verdflow-dts-adapter",
+  "verdflow-geospatial-worker",
+  "verdflow-model-api",
+  "verdflow-project-store",
+  "verdflow-strategy-worker",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/verdflow"]

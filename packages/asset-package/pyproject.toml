@@ -1,0 +1,15 @@
+[project]
+name = "verdflow-asset-package"
+version = "0.1.0"
+description = "Deterministic and validated VerdFlow asset Catalog package exchange."
+requires-python = ">=3.11"
+dependencies = [
+  "verdflow-contracts",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/verdflow"]

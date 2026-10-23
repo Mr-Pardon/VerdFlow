@@ -1,0 +1,7 @@
+{
+  "@vue/devtools-api@6.6.4": {
+    "path": "third-party/vue-devtools-api-6.6.4-LICENSE.txt",
+    "sha256": "050bbca6960784db52ff387271bf2ecc5cbed7cf8581b415d528a6ecb6585015",
+    "source": "https://github.com/vuejs/vue-devtools/blob/5b3bd4b362556fc58ef948b459ca7b52a207d3b3/LICENSE"
+  }
+}

@@ -1,0 +1,134 @@
+schema: verdflow.strategy
+version: '2'
+strategy_id: layered_ecological_community
+strategy_version: 2.2.2
+display_name: 层次生态群落
+description: >-
+  使用一张连续宏观密度场组织铺底与主景；启用铺底时主景嵌套于其高值核心区，
+  关闭铺底时主景覆盖比例直接作用于整个区域，并通过微观扰动形成自然疏密。
+generator:
+  id: layered_ecological_community
+  version: '2'
+  entry: generator.py:generate
+roles:
+  - role_key: groundcover_matrix
+    display_name: 铺底植被
+    description: >-
+      形成较广的低矮植被层，承接上方的主景植被。
+    required: true
+    assignment_policy: weighted_pool
+  - role_key: focal_structure
+    display_name: 主景植被
+    description: >-
+      成片形成群落的主要体量与疏密变化；启用铺底时位于其范围内，关闭铺底时可独立覆盖区域。
+    required: true
+    assignment_policy: weighted_pool
+intent:
+  summary: 由连续地表基质承接主景核心的两角色生态群落。
+  design_keywords:
+    - 共享连续密度场
+    - 地表基质
+    - 主景核心
+    - 微观扰动
+    - 自然疏密过渡
+  avoid:
+    - 启用铺底时主景脱离铺底支撑区
+    - 人工圆形聚落
+    - 互斥切面感
+    - 全域机械均匀铺满
+terrain_suitability:
+  feature_scope: single_region
+  selection_hint: >-
+    用于普通面状绿地、生态种植区和需要地表连续承接的自然群落；不用于道路中心线或规则阵列。
+extensions:
+  parameter_preview:
+    version: '1'
+    display_name: 生态绿地
+    fixed_seed: 17
+    boundary_xy: [[0, 12], [30, 0], [132, 4], [166, 30], [154, 104], [78, 118], [8, 90]]
+  role_presentation:
+    version: '1'
+    roles:
+      groundcover_matrix:
+        suggested_assets:
+        - 花草
+        - 地被
+        - 矮灌木
+        note: 同一用途可搭配多种植被；尽量选择尺度相近的素材。
+      focal_structure:
+        suggested_assets:
+        - 乔木
+        - 较高灌木
+        note: 植被间距与缩放共同影响视觉密度，不保证实际冠幅互不重叠。
+    groups:
+    - id: community
+      name: 自然群落
+      description: 低矮植被铺底，主景植被在其中形成疏密变化。
+      role_keys:
+      - groundcover_matrix
+      - focal_structure
+      diagram:
+      - {role_key: groundcover_matrix, kind: area, points: [[7, 20], [20, 7], [42, 10], [60, 4], [87, 14], [95, 32], [85, 54], [61, 57], [41, 49], [17, 56],
+          [5, 39]]}
+      - {role_key: groundcover_matrix, kind: groundcover, x: 16, y: 25, size: 6}
+      - {role_key: groundcover_matrix, kind: groundcover, x: 23, y: 43, size: 6}
+      - {role_key: groundcover_matrix, kind: groundcover, x: 49, y: 38, size: 6}
+      - {role_key: groundcover_matrix, kind: groundcover, x: 70, y: 48, size: 6}
+      - {role_key: groundcover_matrix, kind: groundcover, x: 83, y: 30, size: 6}
+      - {role_key: focal_structure, kind: tree, x: 30, y: 23, size: 13}
+      - {role_key: focal_structure, kind: tree, x: 43, y: 24, size: 12}
+      - {role_key: focal_structure, kind: tree, x: 34, y: 35, size: 11}
+      - {role_key: focal_structure, kind: tree, x: 64, y: 20, size: 13}
+      - {role_key: focal_structure, kind: tree, x: 73, y: 34, size: 11}
+parameters:
+  default_seed: 17
+generation_parameters:
+  - key: groundcover_coverage_percent
+    visible_for_roles: [groundcover_matrix]
+    value_type: number
+    default: 85
+    min: 5
+    max: 98
+    step: 1
+    group: quick
+    display_name: 地表支撑覆盖率（%）
+    effect: 控制铺底覆盖的区域比例；关闭铺底后此值保留但不参与本次主景覆盖计算。
+  - key: focal_core_ratio_percent
+    visible_for_roles: [focal_structure]
+    value_type: number
+    default: 55
+    min: 1
+    max: 100
+    step: 1
+    group: quick
+    display_name: 主景覆盖比例（%）
+    effect: 启用铺底时以铺底范围为基准；关闭铺底时以整个区域为基准。
+  - key: groundcover_spacing_m
+    visible_for_roles: [groundcover_matrix]
+    value_type: number
+    default: 3.4
+    min: 0.5
+    max: 12
+    step: 0.1
+    group: quick
+    display_name: 地表植被间距（m）
+    effect: 控制地表基质点位的基础间距，调低后点位更密集。
+  - key: focal_spacing_m
+    visible_for_roles: [focal_structure]
+    value_type: number
+    default: 11
+    min: 2
+    max: 40
+    step: 0.5
+    group: quick
+    display_name: 主景植被间距（m）
+    effect: 控制主景结构点位的基础间距，建议结合所映射资产的实际尺度调整。
+  - key: patch_scale_m
+    value_type: number
+    default: 48
+    min: 10
+    max: 200
+    step: 2
+    group: advanced
+    display_name: 宏观斑块尺度（m）
+    effect: 控制连续密度起伏的空间尺度，调高后形成更大、更连贯的疏密斑块。

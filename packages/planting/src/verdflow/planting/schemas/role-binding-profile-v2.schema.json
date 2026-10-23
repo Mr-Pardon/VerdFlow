@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdflow.dev/schemas/role-binding-profile-v2.schema.json",
+  "title": "VerdFlow Role Binding Profile v2",
+  "type": "object",
+  "required": ["schema", "version", "profile_id", "display_name", "strategy", "target", "assignments"],
+  "properties": {
+    "schema": {"const": "verdflow.role-binding-profile"},
+    "version": {"const": "2"},
+    "profile_id": {"type": "string", "pattern": "^[a-z][a-z0-9._-]*$"},
+    "display_name": {"type": "string", "minLength": 1},
+    "strategy": {
+      "type": "object",
+      "required": ["strategy_id", "strategy_version"],
+      "properties": {
+        "strategy_id": {"type": "string", "minLength": 1},
+        "strategy_version": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "target": {
+      "type": "object",
+      "required": ["target_type", "provider_id"],
+      "properties": {
+        "target_type": {"type": "string", "minLength": 1},
+        "provider_id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "catalog_hint": {
+      "type": "object",
+      "required": ["catalog_id"],
+      "properties": {
+        "catalog_id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "assignments": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"pattern": "^[a-z][a-z0-9._-]*$"},
+      "additionalProperties": {"$ref": "#/$defs/roleAssignment"}
+    },
+    "strategy_parameters": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z][a-z0-9._-]*$"},
+      "additionalProperties": {"type": "number"}
+    },
+    "extensions": {"type": "object"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "roleAssignment": {
+      "type": "object",
+      "required": ["candidates"],
+      "properties": {
+        "enabled": {"type": "boolean", "default": true},
+        "candidates": {
+          "type": "array",
+          "minItems": 0,
+          "items": {"$ref": "#/$defs/candidate"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "candidate": {
+      "type": "object",
+      "required": ["asset_id", "display_name_snapshot", "target_asset_ref", "weight", "scale"],
+      "properties": {
+        "asset_id": {"type": "string", "minLength": 1},
+        "display_name_snapshot": {"type": "string", "minLength": 1},
+        "target_asset_ref": {"$ref": "#/$defs/targetAssetRef"},
+        "catalog_link": {"$ref": "#/$defs/catalogLink"},
+        "weight": {"type": "number", "exclusiveMinimum": 0},
+        "scale": {"$ref": "#/$defs/scalePolicy"},
+        "reference_radius_m": {"type": "number", "exclusiveMinimum": 0},
+        "reference_height_m": {"type": "number", "exclusiveMinimum": 0}
+      },
+      "additionalProperties": false
+    },
+    "targetAssetRef": {
+      "type": "object",
+      "required": ["target_type", "provider_id", "locator"],
+      "properties": {
+        "target_type": {"type": "string", "minLength": 1},
+        "provider_id": {"type": "string", "minLength": 1},
+        "locator": {"type": "object", "minProperties": 1}
+      },
+      "additionalProperties": false
+    },
+    "catalogLink": {
+      "type": "object",
+      "required": ["catalog_id", "asset_id", "observed_target_hash", "observed_metadata_hash"],
+      "properties": {
+        "catalog_id": {"type": "string", "minLength": 1},
+        "asset_id": {"type": "string", "minLength": 1},
+        "observed_target_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "observed_metadata_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "additionalProperties": false
+    },
+    "scalePolicy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["mode", "value"],
+          "properties": {
+            "mode": {"const": "fixed"},
+            "value": {"type": "number", "exclusiveMinimum": 0}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["mode", "min", "max"],
+          "properties": {
+            "mode": {"const": "uniform_random"},
+            "min": {"type": "number", "exclusiveMinimum": 0},
+            "max": {"type": "number", "exclusiveMinimum": 0}
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

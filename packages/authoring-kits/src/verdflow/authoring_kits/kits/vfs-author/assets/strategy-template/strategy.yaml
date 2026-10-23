@@ -1,0 +1,59 @@
+schema: verdflow.strategy
+version: '2'
+strategy_id: example_strategy
+strategy_version: 1.0.0
+display_name: Example Strategy
+description: Replace this with a concise statement of the spatial result.
+generator:
+  id: example_strategy
+  version: '1'
+  entry: generator.py:generate
+roles:
+  - role_key: primary_structure
+    display_name: Primary Structure
+    description: The main compositional vegetation role.
+    required: true
+    assignment_policy: weighted_pool
+intent:
+  summary: Replace this with the intended planting composition.
+  design_keywords:
+    - example
+  avoid:
+    - points outside the Region
+terrain_suitability:
+  feature_scope: single_region
+  selection_hint: Describe suitable Region geometry without making it a hard gate.
+extensions:
+  parameter_preview:
+    version: '1'
+    display_name: Example plot
+    fixed_seed: 17
+    boundary_xy: [[0, 0], [30, 0], [30, 20], [0, 20]]
+  role_presentation:
+    version: '1'
+    roles:
+      primary_structure:
+        suggested_assets: [Shrubs, Small trees]
+        note: Choose assets that serve the same spatial purpose; this is not a species restriction.
+    groups:
+      - id: structure
+        name: Main structure
+        description: The main vegetation layer within the planting area.
+        role_keys: [primary_structure]
+        diagram:
+          - {role_key: primary_structure, kind: area, points: [[5, 5], [95, 5], [95, 57], [5, 57]]}
+          - {role_key: primary_structure, kind: shrub, x: 25, y: 30, size: 12}
+          - {role_key: primary_structure, kind: shrub, x: 50, y: 25, size: 12}
+          - {role_key: primary_structure, kind: shrub, x: 75, y: 35, size: 12}
+parameters: {}
+generation_parameters:
+  - key: spacing_m
+    visible_for_roles: [primary_structure]
+    value_type: number
+    default: 2.0
+    min: 0.5
+    max: 10.0
+    step: 0.1
+    group: quick
+    display_name: Spacing
+    effect: Controls the approximate distance between generated points.

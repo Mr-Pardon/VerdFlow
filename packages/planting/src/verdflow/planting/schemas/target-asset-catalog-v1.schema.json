@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdflow.dev/schemas/target-asset-catalog-v1.schema.json",
+  "title": "VerdFlow Target Asset Catalog v1",
+  "type": "object",
+  "required": ["schema", "version", "catalog_id", "target_type", "provider_id", "assets"],
+  "properties": {
+    "schema": {"const": "verdflow.target-asset-catalog"},
+    "version": {"const": "1"},
+    "catalog_id": {"type": "string", "pattern": "^[a-z][a-z0-9._-]*$"},
+    "target_type": {"type": "string", "minLength": 1},
+    "provider_id": {"type": "string", "minLength": 1},
+    "display_name": {"type": "string"},
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["asset_id", "display_name", "provider_metadata"],
+        "properties": {
+          "asset_id": {"type": "string", "minLength": 1},
+          "display_name": {"type": "string", "minLength": 1},
+          "thumbnail": {"type": "string"},
+          "lod": {"type": "object"},
+          "provider_metadata": {"type": "object"},
+          "suggested_scale": {"$ref": "#/$defs/scalePolicy"},
+          "reference_radius_m": {"type": "number", "exclusiveMinimum": 0},
+          "reference_height_m": {"type": "number", "exclusiveMinimum": 0},
+          "tags": {"type": "array", "items": {"type": "string"}},
+          "extensions": {"type": "object"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "collections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["collection_id", "display_name", "asset_ids"],
+        "properties": {
+          "collection_id": {"type": "string", "minLength": 1},
+          "display_name": {"type": "string", "minLength": 1},
+          "asset_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "extensions": {"type": "object"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "scalePolicy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["mode", "value"],
+          "properties": {
+            "mode": {"const": "fixed"},
+            "value": {"type": "number", "exclusiveMinimum": 0}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["mode", "min", "max"],
+          "properties": {
+            "mode": {"const": "uniform_random"},
+            "min": {"type": "number", "exclusiveMinimum": 0},
+            "max": {"type": "number", "exclusiveMinimum": 0}
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

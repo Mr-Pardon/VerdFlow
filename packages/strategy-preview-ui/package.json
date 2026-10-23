@@ -1,0 +1,16 @@
+{
+  "name": "@verdflow/strategy-preview-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@verdflow/role-guide-ui": "workspace:*"
+  },
+  "peerDependencies": {
+    "@lucide/vue": "^1.31.0",
+    "vue": "^3.5.18"
+  }
+}

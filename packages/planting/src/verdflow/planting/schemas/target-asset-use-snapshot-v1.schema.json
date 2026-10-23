@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdflow.dev/schemas/target-asset-use-snapshot-v1.schema.json",
+  "title": "VerdFlow Target Asset Use Snapshot v1",
+  "type": "object",
+  "required": ["schema", "version", "target", "source", "assets", "semantic_hash"],
+  "properties": {
+    "schema": {"const": "verdflow.target-asset-use-snapshot"},
+    "version": {"const": "1"},
+    "target": {
+      "type": "object",
+      "required": ["target_type", "provider_id"],
+      "properties": {
+        "target_type": {"type": "string", "minLength": 1},
+        "provider_id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "source": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "semantic_hash"],
+          "properties": {
+            "kind": {"const": "draft"},
+            "semantic_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "catalog_id", "generation", "semantic_hash"],
+          "properties": {
+            "kind": {"const": "catalog"},
+            "catalog_id": {"type": "string", "minLength": 1},
+            "generation": {"type": "integer", "minimum": 1},
+            "semantic_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "profile_id", "semantic_hash"],
+          "properties": {
+            "kind": {"const": "profile"},
+            "profile_id": {"type": "string", "minLength": 1},
+            "semantic_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "assets": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["asset_id"],
+        "properties": {
+          "asset_id": {"type": "string", "minLength": 1},
+          "reference_radius_m": {"type": "number", "exclusiveMinimum": 0},
+          "reference_height_m": {"type": "number", "exclusiveMinimum": 0}
+        },
+        "additionalProperties": true
+      }
+    },
+    "semantic_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

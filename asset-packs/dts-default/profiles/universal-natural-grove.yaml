@@ -1,0 +1,52 @@
+schema: verdflow.role-binding-profile
+version: '2'
+profile_id: universal_natural_grove.dts_default
+display_name: 通用自然聚落 DTS
+strategy:
+  strategy_id: universal_natural_grove
+  strategy_version: 2.0.0
+target:
+  target_type: dts
+  provider_id: dts.static-mesh
+catalog_hint:
+  catalog_id: dts_default
+assignments:
+  low_canopy_filler:
+    candidates:
+      - asset_id: SM_tree01_01
+        display_name_snapshot: Tree 01 01
+        target_asset_ref:
+          target_type: dts
+          provider_id: dts.static-mesh
+          locator: {model_name: SM_tree01_01}
+        weight: 1
+        scale:
+          mode: uniform_random
+          min: 0.4
+          max: 0.6
+  medium_canopy_accent:
+    candidates:
+      - asset_id: SM_Tree0301
+        display_name_snapshot: Tree 0301
+        target_asset_ref:
+          target_type: dts
+          provider_id: dts.static-mesh
+          locator: {model_name: SM_Tree0301}
+        weight: 1
+        scale:
+          mode: uniform_random
+          min: 0.7
+          max: 1.1
+  evergreen_contrast:
+    candidates:
+      - asset_id: SM_A_PinusMugo
+        display_name_snapshot: Pinus Mugo
+        target_asset_ref:
+          target_type: dts
+          provider_id: dts.static-mesh
+          locator: {model_name: SM_A_PinusMugo}
+        weight: 1
+        scale:
+          mode: uniform_random
+          min: 0.8
+          max: 1.2

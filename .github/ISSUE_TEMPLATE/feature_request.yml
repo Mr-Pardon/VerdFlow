@@ -1,0 +1,22 @@
+name: 改进建议
+description: 提出工作流、交互或扩展能力的建议。
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 希望解决的实际问题
+      description: 说明使用场景、当前做法和遇到的限制。
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议的方案
+      description: 可附其他可行方式，不必预先确定实现细节。
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 涉及的平台或资源
+      description: 可选。请注明是现有能力改进，还是新的平台适配或策略需求。

@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1376" height="330" viewBox="0 0 1376 330" role="img" aria-labelledby="title desc">
+  <title id="title">VerdFlow 标准种植链路</title>
+  <desc id="desc">空间输入通过 RegionSet 区域契约进入策略生成，产出 PointSet 点位契约，再经植被映射、高程采样和平台输出。输入、高程采样、输出是三个独立适配点。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10" fill="none" stroke="#8fa79b" stroke-width="1.6"/></marker>
+  </defs>
+  <rect width="1376" height="330" rx="6" fill="#f6f9f7"/>
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif" text-anchor="middle">
+    <path d="M192 139H224M384 139H416M576 139H608M768 139H800M960 139H992M1152 139H1184" stroke="#8fa79b" stroke-width="2" marker-end="url(#arrow)"/>
+    <g fill="white" stroke="#d3e0d8">
+      <rect x="32" y="96" width="160" height="86" rx="5"/>
+      <rect x="416" y="96" width="160" height="86" rx="5"/>
+      <rect x="800" y="96" width="160" height="86" rx="5"/>
+      <rect x="992" y="96" width="160" height="86" rx="5"/>
+      <rect x="1184" y="96" width="160" height="86" rx="5"/>
+    </g>
+    <g fill="#164c42">
+      <rect x="224" y="96" width="160" height="86" rx="5"/>
+      <rect x="608" y="96" width="160" height="86" rx="5"/>
+    </g>
+    <text x="112" y="133" font-size="23" font-weight="600" fill="#243d32">空间输入</text>
+    <text x="112" y="161" font-size="15" fill="#647b6f">模型 / 面域 / 绘制</text>
+    <text x="304" y="133" font-size="23" font-weight="600" fill="#e9f5ed">RegionSet</text>
+    <text x="304" y="161" font-size="15" fill="#b4d4c2">标准区域契约</text>
+    <text x="496" y="133" font-size="23" font-weight="600" fill="#243d32">策略生成</text>
+    <text x="496" y="161" font-size="15" fill="#647b6f">可替换的空间算法</text>
+    <text x="688" y="133" font-size="23" font-weight="600" fill="#e9f5ed">PointSet</text>
+    <text x="688" y="161" font-size="15" fill="#b4d4c2">目标无关的点位</text>
+    <text x="880" y="133" font-size="23" font-weight="600" fill="#243d32">植被映射</text>
+    <text x="880" y="161" font-size="15" fill="#647b6f">角色 / 资产 / 缩放</text>
+    <text x="1072" y="133" font-size="23" font-weight="600" fill="#243d32">高程采样</text>
+    <text x="1072" y="161" font-size="15" fill="#647b6f">点位贴合目标地形</text>
+    <text x="1264" y="133" font-size="23" font-weight="600" fill="#243d32">平台输出</text>
+    <text x="1264" y="161" font-size="15" fill="#647b6f">适配器负责交付</text>
+    <path d="M224 77V62H768V77" fill="none" stroke="#9abaac" stroke-width="1.4"/>
+    <text x="496" y="43" font-size="16" fill="#3e7560">稳定契约，开放算法</text>
+    <path d="M112 182V215M496 182V215M880 182V215M1072 182V215M1264 182V215" stroke="#bccfc3" stroke-dasharray="3 4"/>
+    <text x="112" y="241" font-size="17" font-weight="600" fill="#3e7560">输入适配器</text>
+    <text x="496" y="241" font-size="17" fill="#4e7061">策略包</text>
+    <text x="880" y="241" font-size="17" fill="#4e7061">资产库与种植方案</text>
+    <text x="1072" y="241" font-size="17" font-weight="600" fill="#3e7560">高程采样适配器</text>
+    <text x="1264" y="241" font-size="17" font-weight="600" fill="#3e7560">输出适配器</text>
+    <text x="688" y="301" font-size="16" fill="#758a7e">输入、高程采样、输出：三个适配点，一条标准链路。</text>
+  </g>
+</svg>

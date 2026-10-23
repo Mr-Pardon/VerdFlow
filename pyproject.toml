@@ -1,0 +1,52 @@
+[project]
+name = "verdflow-workspace"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.uv.workspace]
+members = [
+  "apps/cli",
+  "apps/core-host",
+  "apps/dts-live-connector",
+  "apps/local-api",
+  "apps/studio-service",
+  "apps/system-host",
+  "adapters/blender-worker",
+  "adapters/dts",
+  "adapters/geospatial-worker",
+  "adapters/model-api",
+  "adapters/strategy-worker",
+  "packages/contracts",
+  "packages/asset-package",
+  "packages/authoring-kits",
+  "packages/core",
+  "packages/library-store",
+  "packages/planting",
+  "packages/profile-package",
+  "packages/project-store",
+  "packages/worker-runtime",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+verdflow-asset-package = { workspace = true }
+verdflow-authoring-kits = { workspace = true }
+verdflow-contracts = { workspace = true }
+verdflow-dts-adapter = { workspace = true }
+verdflow-geospatial-worker = { workspace = true }
+verdflow-model-api = { workspace = true }
+verdflow-library-store = { workspace = true }
+verdflow-project-store = { workspace = true }
+verdflow-worker-runtime = { workspace = true }
+verdflow-core = { workspace = true }
+verdflow-planting = { workspace = true }
+verdflow-profile-package = { workspace = true }
+verdflow-strategy-worker = { workspace = true }
+verdflow-core-host = { workspace = true }
+verdflow-dts-live-connector = { workspace = true }
+verdflow-local-api = { workspace = true }
+verdflow-studio-service = { workspace = true }
+verdflow-system-host = { workspace = true }
+verdflow-cli = { workspace = true }

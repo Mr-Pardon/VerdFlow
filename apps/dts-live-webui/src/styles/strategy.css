@@ -1,0 +1,85 @@
+.strategy-list {
+  display: grid;
+  height: 222px;
+  align-content: start;
+  gap: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #385550 transparent;
+}
+.strategy-list::-webkit-scrollbar { width: 3px; }
+.strategy-list::-webkit-scrollbar-thumb { background: #385550; border-radius: 3px; }
+.strategy-list:focus-visible { outline: 1px solid #57977a; outline-offset: 2px; }
+.strategy-row {
+  display: grid;
+  height: 102px;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  grid-template-rows: auto 1fr;
+  column-gap: 10px;
+  row-gap: 3px;
+  align-items: center;
+  width: 100%;
+  padding: 12px;
+  text-align: left;
+  color: #bdcfca;
+  border: 1px solid #2b4140;
+  border-radius: 8px;
+  background: #132325;
+}
+.strategy-row:hover { border-color: #54746b; background: #1c302e; }
+.strategy-row.selected { color: #dcebe5; border-color: #4bb69e; background: #1c3530; }
+.strategy-row .radio-mark { grid-column: 3; grid-row: 1; width: 16px; height: 16px; }
+.radio-mark { display: grid; width: 18px; height: 18px; place-items: center; color: #dce5ea; border: 1px solid #70777d; border-radius: 50%; }
+.strategy-row.selected .radio-mark { color: #0e2924; border-color: #72d8c4; background: #72d8c4; }
+.strategy-icon {
+  display: grid;
+  grid-column: 1;
+  grid-row: 1 / 3;
+  width: 28px;
+  height: 32px;
+  place-items: center;
+  color: #7f898e;
+}
+.strategy-row.selected .strategy-icon { color: #7cc49e; }
+.strategy-copy { display: grid; grid-column: 2; grid-row: 1 / 3; min-width: 0; gap: 6px; }
+.strategy-copy strong { font-size: 13px; line-height: 1.45; }
+.strategy-copy small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: #91a6a1;
+  font-size: 11px;
+  line-height: 1.55;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.version { grid-column: 3; grid-row: 2; align-self: end; color: #7f9b91; font: 10px Consolas, monospace; }
+.strategy-version-field { grid-template-columns: 1fr 132px; align-items: center; margin-top: 10px; }
+
+.quick-fields { display: grid; gap: 9px; }
+.quick-field { display: grid; gap: 5px; }
+.quick-field > span { color: var(--live-muted); font-size: 12px; }
+select, .search-box, .candidate-row input, .profile-name-input { border: 1px solid #4a5056; border-radius: 3px; }
+.quick-field select {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 30px 0 10px;
+  color: var(--live-text);
+  border-color: #38524b;
+  border-radius: 6px;
+  background: #192c29;
+  font-size: 13px;
+}
+.quick-field select:hover, .quick-field select:focus { border-color: #559a7b; outline: 0; }
+.advanced-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
+  padding: 3px 0;
+  color: #72c8b4;
+  border: 0;
+  background: transparent;
+  font-size: 12px;
+}
+.advanced-action:hover { color: #a6d4bc; }

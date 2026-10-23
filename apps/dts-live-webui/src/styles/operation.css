@@ -1,0 +1,28 @@
+.operation-section { flex: 0 0 auto; padding: 12px 18px 18px; border-top: 1px solid var(--live-line); background: #102120; }
+.operation-status { display: flex; min-height: 28px; align-items: center; gap: 8px; margin-bottom: 8px; color: #9ab6ac; font-size: 12px; }
+.operation-status svg { flex: 0 0 auto; color: #72c8b4; }
+.operation-status span { overflow-wrap: anywhere; }
+.primary-button, .secondary-button { display: inline-flex; min-height: 39px; align-items: center; justify-content: center; gap: 7px; padding: 0 14px; border-radius: 4px; }
+.primary-button { color: #fff; border: 1px solid #178bdd; background: #147fce; font-weight: 700; }
+.primary-button:hover { background: #1c91e2; }
+.secondary-button { color: #d4d9dd; border: 1px solid #50565c; background: #23262a; }
+.secondary-button.danger { color: #ffc8c0; border-color: #754a45; background: #402925; }
+.operation-section > button { width: 100%; }
+.operation-actions { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr); gap: 7px; }
+.operation-actions.single { grid-template-columns: minmax(0, 1fr); }
+.operation-actions > button { width: 100%; min-width: 0; padding-inline: 8px; white-space: nowrap; }
+.operation-section .primary-button {
+  min-height: 42px;
+  color: #082b26;
+  border-color: #35b79f;
+  border-radius: 7px;
+  background: #35b79f;
+  font-weight: 600;
+  font-size: 14px;
+}
+.operation-section .primary-button:hover:not(:disabled) {
+  color: #082b26;
+  border-color: #77dfcc;
+  background: #66cfb8;
+}
+.spin { animation: spin 1s linear infinite; }

@@ -1,0 +1,11 @@
+packages:
+  - "apps/studio"
+  - "apps/studio-electron-probe"
+  - "apps/dts-live-webui"
+  - "packages/role-guide-ui"
+  - "packages/asset-browser-ui"
+  - "packages/strategy-preview-ui"
+
+allowBuilds:
+  electron: true
+  esbuild: true

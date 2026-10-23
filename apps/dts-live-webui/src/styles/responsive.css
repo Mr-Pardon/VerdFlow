@@ -1,0 +1,78 @@
+@media (max-width: 1100px) {
+  .mapping-workspace { grid-template-columns: 194px minmax(0, 1fr); }
+  .mapping-columns { grid-template-columns: minmax(0, 1fr) 274px; }
+  .modal-header { gap: 16px; padding: 14px 18px; }
+  .modal-footer { padding: 14px 18px; }
+  .asset-list { grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); }
+}
+
+@media (max-width: 980px) {
+  .live-shell { top: 58px; right: 70px; width: 344px; max-height: calc(100vh - 76px); }
+}
+
+@media (max-width: 850px) {
+  .mapping-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .role-list { max-height: 136px; padding: 12px 16px; border-right: 0; border-bottom: 1px solid #d7e0dd; }
+  .role-list-heading { display: none; }
+  .mapping-modal .role-list .role-choice-nav { display: flex; gap: 12px; }
+  .mapping-modal .role-list .role-choice-group { flex: 1 0 auto; }
+  .mapping-modal .role-list .role-choice-nav .role-choice-group > header { display: none; }
+  .mapping-modal .role-list .role-choice-grid { display: flex; gap: 8px; }
+  .mapping-modal .role-list .role-choice-grid > button { min-width: 160px; max-width: 200px; min-height: 64px; padding: 10px; }
+  .mapping-modal .role-list .role-choice-description { display: none; }
+  .mapping-columns { grid-template-columns: minmax(0, 1fr) 274px; }
+  .mapping-completion { font-size: 11px; }
+  .mapping-apply-actions { gap: 6px; }
+  .catalog-row { width: 45%; }
+}
+
+@media (max-width: 640px) {
+  .modal-backdrop { padding: 10px; }
+  .mapping-modal { width: calc(100vw - 20px); height: calc(100vh - 20px); height: calc(100dvh - 20px); }
+  .modal-header { display: grid; grid-template-columns: minmax(0, 1fr) 32px; gap: 10px 12px; padding: 12px 14px; }
+  .mapping-title h2 { font-size: 18px; }
+  .catalog-row { grid-row: 2; grid-column: 1 / -1; width: 100%; }
+  .modal-header > .mapping-dialog-close { grid-row: 1; grid-column: 2; }
+  .role-list { max-height: 96px; padding: 9px 12px; overflow-x: auto; }
+  .role-context { padding: 10px 14px; }
+  .active-role-heading > div { display: grid; gap: 3px; }
+  .active-role-heading strong { font-size: 14px; }
+  .mapping-modal .mapping-role-guide .role-purpose-panel { grid-template-columns: 108px minmax(0, 1fr); gap: 12px; }
+  .mapping-modal .mapping-role-guide .role-purpose-panel figure { width: 108px; }
+  .mapping-modal .mapping-role-guide .role-purpose-copy > p { display: none; }
+  .mapping-modal .mapping-role-guide .role-purpose-copy > strong { font-size: 12px; }
+  .mapping-modal .mapping-role-guide .role-purpose-legend { gap: 4px; }
+  .mapping-pane-tabs { display: grid; flex: 0 0 auto; grid-template-columns: repeat(2, minmax(0, 1fr)); padding: 8px 12px 0; background: #edf3ef; }
+  .mapping-pane-tabs button { min-height: 34px; color: #748e7c; border: 0; border-bottom: 2px solid transparent; background: transparent; font-size: 12px; }
+  .mapping-pane-tabs button[aria-selected="true"] { color: #16745c; border-bottom-color: #168e7d; font-weight: 700; }
+  .mapping-columns { grid-template-columns: minmax(0, 1fr); }
+  .mapping-columns[data-active-pane="assets"] .mapping-candidates-pane, .mapping-columns[data-active-pane="candidates"] .mapping-assets-pane { display: none; }
+  .mapping-candidates-pane { border-left: 0; }
+  .asset-browser-toolbar { gap: 7px; padding: 10px 12px 0; }
+  .asset-browser-heading { display: none; }
+  .asset-list { grid-template-columns: repeat(auto-fill, minmax(126px, 1fr)); padding: 8px 12px 12px; }
+  .modal-footer { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; padding: 10px 12px; }
+  .mapping-completion { padding-right: 42px; }
+  .mapping-apply-actions { position: relative; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .mapping-cancel { position: absolute; right: 0; bottom: calc(100% + 4px); padding: 0; }
+  .mapping-apply-actions > .primary-button, .mapping-apply-actions > .secondary-button { min-width: 0; padding: 5px 8px; font-size: 12px; line-height: 1.4; }
+  .mapping-apply-actions > button > svg { flex: 0 0 auto; }
+  .mapping-save-header { padding: 16px 18px; }
+  .mapping-save-body { padding: 16px 18px; }
+  .mapping-save-footer { padding: 12px 18px; }
+}
+
+@media (max-height: 720px) and (min-width: 641px) {
+  .modal-backdrop { padding: 10px; }
+  .mapping-modal { height: calc(100vh - 20px); }
+  .modal-header { padding-block: 10px; }
+  .modal-footer { padding-block: 10px; }
+  .role-context { padding-block: 10px; }
+  .asset-browser-heading { display: none; }
+  .asset-browser-toolbar { gap: 7px; padding-top: 10px; }
+  .mapping-modal .role-list .role-choice-grid > button { min-height: 52px; gap: 4px; }
+}
+
+@media (max-width: 560px) {
+  .live-shell { top: 16px; right: 16px; width: 360px; max-height: calc(100vh - 32px); max-height: calc(100dvh - 32px); }
+}

@@ -1,0 +1,41 @@
+.region-section .section-heading-actions { font-size: 11px; }
+.region-draw-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.region-draw-actions button { min-width: 0; min-height: 36px; padding: 6px; gap: 5px; white-space: nowrap; color: #9dd4c4; border-color: #38524b; background: #192c29; font-size: 12px; }
+.region-draw-actions button svg { flex-shrink: 0; }
+.region-bulk-actions { display: flex; align-items: center; gap: 14px; margin-top: 12px; }
+.region-bulk-actions button { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 2px 0; border: 0; background: transparent; color: #a8c5bc; font-size: 12px; }
+.region-bulk-actions button:hover:not(:disabled) { color: #72d8c4; }
+.region-bulk-actions .region-visibility-toggle { justify-content: center; width: 28px; height: 28px; padding: 0; flex: 0 0 28px; }
+.region-bulk-actions .region-clear { margin-left: auto; color: #d7a69e; }
+.region-bulk-actions .region-clear:hover:not(:disabled) { color: #f0b3a8; }
+.region-clear-dialog { width: 360px; max-width: calc(100vw - 32px); padding: 22px; color: #d6e3e0; background: #122524; border: 1px solid #385550; border-radius: 8px; color-scheme: dark; box-shadow: 0 18px 60px #0006; }
+.region-clear-dialog::backdrop { background: #030a0bb3; }
+.region-clear-dialog h2 { margin: 0 0 12px; font-size: 18px; }
+.region-clear-dialog p { margin: 0; color: #a8beb7; font-size: 13px; line-height: 1.7; }
+.region-clear-dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.region-clear-dialog .secondary-button { color: #c5d9d3; background: #1b3330; border-color: #3e5b54; }
+.region-clear-dialog .danger-button { color: #f1c2b9; background: #482e2c; border-color: #79504a; }
+.region-clear-dialog button:focus-visible { outline: 2px solid #72d8c4; outline-offset: 3px; }
+.region-list { display: grid; gap: 7px; max-height: 186px; overflow-y: auto; margin-top: 10px; scrollbar-width: thin; scrollbar-color: #385550 transparent; }
+.region-export-notice { margin: 8px 0 0; color: #a8c5bc; font-size: 12px; overflow-wrap: anywhere; }
+.region-row { display: flex; align-items: center; gap: 4px; padding: 9px 7px; border: 1px solid var(--live-line); border-radius: 6px; background: #132325; }
+.region-row label { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; }
+.region-row input { width: 15px; height: 15px; flex: 0 0 auto; accent-color: #35b79f; }
+.region-row label span { display: grid; min-width: 0; gap: 4px; }
+.region-row strong { font-size: 12px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.region-row small { color: var(--live-muted); font-size: 10px; }
+.region-row.excluded label { opacity: 0.5; }
+.region-row .icon-button { width: 26px; height: 28px; flex: 0 0 auto; border-color: transparent; background: transparent; }
+.region-remove:hover { color: #efa9a0; }
+.region-search { width: 100%; min-width: 0; margin-top: 10px; padding: 8px; font-size: 12px; color: var(--live-text); background: #132325; border: 1px solid var(--live-line); border-radius: 4px; }
+.region-row.focused { border-color: #70ceba; box-shadow: inset 3px 0 #35b79f; background: #1d3631; }
+.region-row.sampling-failed small { color: #e7b092; }
+.region-pagination { display: flex; align-items: center; justify-content: space-between; margin-top: 7px; font-size: 11px; color: var(--live-muted); }
+.region-pagination .icon-button { width: 28px; height: 28px; }
+.region-failures { margin-top: 10px; color: #e7b092; font-size: 12px; }
+.region-failures summary { cursor: pointer; padding: 6px 0; }
+.region-failures ul { list-style: none; margin: 8px 0 0; padding: 0; max-height: 180px; overflow-y: auto; }
+.region-failures li { padding: 6px 0; display: grid; gap: 4px; border-bottom: 1px solid var(--live-line); }
+.region-failures li button { background: transparent; border: 0; text-align: left; padding: 0; color: #b2dbd0; cursor: pointer; }
+.region-failures li span { overflow-wrap: anywhere; color: var(--live-muted); }
+@keyframes spin { to { transform: rotate(360deg); } }

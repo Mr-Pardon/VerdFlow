@@ -1,0 +1,17 @@
+{
+  "schema": "verdflow.strategy-package",
+  "version": "1",
+  "package_id": "layered_ecological_community",
+  "package_version": "1.0.0",
+  "runtime": "python",
+  "api_version": "1",
+  "strategy_file": "strategy.yaml",
+  "entry": "generator.py:generate",
+  "files": [
+    "DESIGN.md",
+    "README.md",
+    "algorithm.py",
+    "generator.py",
+    "strategy.yaml"
+  ]
+}

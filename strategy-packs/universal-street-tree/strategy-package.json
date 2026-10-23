@@ -1,0 +1,15 @@
+{
+  "schema": "verdflow.strategy-package",
+  "version": "1",
+  "package_id": "universal_street_tree",
+  "package_version": "2.0.2",
+  "runtime": "python",
+  "api_version": "1",
+  "strategy_file": "strategy.yaml",
+  "entry": "generator.py:generate",
+  "files": [
+    "README.md",
+    "generator.py",
+    "strategy.yaml"
+  ]
+}

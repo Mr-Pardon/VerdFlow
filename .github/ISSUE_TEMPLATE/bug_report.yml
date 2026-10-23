@@ -1,0 +1,53 @@
+name: 缺陷反馈
+description: 报告可复现的错误或交互问题。
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先搜索已有问题。安全漏洞请通过 Security > Report a vulnerability 私密反馈，勿在此公开。
+        日志、截图和附件请去除密钥、用户名、绝对路径和客户数据；无需上传完整模型或项目。
+  - type: input
+    id: version
+    attributes:
+      label: VerdFlow 版本
+      placeholder: 例如 1.0.0，可在设置页查看
+    validations:
+      required: true
+  - type: dropdown
+    id: workflow
+    attributes:
+      label: 使用入口
+      options:
+        - DTS 实时种植 / WebUI
+        - FBX 模型工作台
+        - 地理区域数据工作台
+        - 资产库 / 策略库 / 种植方案
+        - 更新 / 安装 / 引导
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: Windows 版本、免安装包或源码运行；按需注明 DTS Explorer、Blender、策略包版本。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 复现步骤
+      description: 描述最小复现过程以及发生频率。
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 脱敏日志或截图
+      description: 可选。只提供与问题相关的片段，不上传凭据、商业模型或无权分发的素材。

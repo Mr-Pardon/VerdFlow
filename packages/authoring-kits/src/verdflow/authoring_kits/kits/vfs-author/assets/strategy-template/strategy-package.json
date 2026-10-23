@@ -1,0 +1,16 @@
+{
+  "schema": "verdflow.strategy-package",
+  "version": "1",
+  "package_id": "example_strategy",
+  "package_version": "1.0.0",
+  "runtime": "python",
+  "api_version": "1",
+  "strategy_file": "strategy.yaml",
+  "entry": "generator.py:generate",
+  "files": [
+    "README.md",
+    "generator.py",
+    "strategy.yaml"
+  ]
+}
+

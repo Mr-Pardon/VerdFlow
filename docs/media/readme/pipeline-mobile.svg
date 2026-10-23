@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="772" viewBox="0 0 600 772" role="img" aria-labelledby="title desc">
+  <title id="title">VerdFlow 标准种植链路</title>
+  <desc id="desc">空间输入、RegionSet、策略生成、PointSet、植被映射、高程采样、平台输出。输入、高程采样、输出是三个独立适配点。</desc>
+  <rect width="600" height="772" rx="6" fill="#f6f9f7"/>
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif">
+    <text x="40" y="47" font-size="20" fill="#3e7560">稳定契约，开放算法</text>
+    <path d="M177 154V176M177 246V268M177 338V360M177 430V452M177 522V544M177 614V636" stroke="#8fa79b" stroke-width="2"/>
+    <path d="M172 170L177 176L182 170M172 262L177 268L182 262M172 354L177 360L182 354M172 446L177 452L182 446M172 538L177 544L182 538M172 630L177 636L182 630" fill="none" stroke="#8fa79b" stroke-width="2"/>
+    <g fill="white" stroke="#d3e0d8">
+      <rect x="40" y="84" width="274" height="70" rx="5"/>
+      <rect x="40" y="268" width="274" height="70" rx="5"/>
+      <rect x="40" y="452" width="274" height="70" rx="5"/>
+      <rect x="40" y="544" width="274" height="70" rx="5"/>
+      <rect x="40" y="636" width="274" height="70" rx="5"/>
+    </g>
+    <g fill="#164c42">
+      <rect x="40" y="176" width="274" height="70" rx="5"/>
+      <rect x="40" y="360" width="274" height="70" rx="5"/>
+    </g>
+    <g text-anchor="middle" font-size="27" font-weight="600">
+      <text x="177" y="129" fill="#243d32">空间输入</text>
+      <text x="177" y="221" fill="#e9f5ed">RegionSet</text>
+      <text x="177" y="313" fill="#243d32">策略生成</text>
+      <text x="177" y="405" fill="#e9f5ed">PointSet</text>
+      <text x="177" y="497" fill="#243d32">植被映射</text>
+      <text x="177" y="589" fill="#243d32">高程采样</text>
+      <text x="177" y="681" fill="#243d32">平台输出</text>
+    </g>
+    <g font-size="22" fill="#60796b">
+      <text x="344" y="127" font-weight="600" fill="#3e7560">输入适配器</text>
+      <text x="344" y="219">标准区域契约</text>
+      <text x="344" y="311">策略包</text>
+      <text x="344" y="403">目标无关的点位</text>
+      <text x="344" y="495">资产库与方案</text>
+      <text x="344" y="587" font-weight="600" fill="#3e7560">高程采样适配器</text>
+      <text x="344" y="679" font-weight="600" fill="#3e7560">输出适配器</text>
+    </g>
+    <text x="300" y="747" text-anchor="middle" font-size="18" fill="#758a7e">三个适配点，一条标准链路。</text>
+  </g>
+</svg>

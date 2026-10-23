@@ -1,0 +1,576 @@
+.asset-detail-drawer {
+  position: absolute;
+  z-index: 30;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: min(360px, 42vw);
+  background: var(--color-surface);
+  border-left: 1px solid var(--color-border-strong);
+  box-shadow: -12px 0 32px rgb(23 40 36 / 10%);
+}
+
+.asset-detail-drawer > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 18px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.asset-detail-drawer > header span {
+  color: var(--color-text-faint);
+  font-size: var(--font-size-meta);
+}
+
+.asset-detail-drawer > header h2 {
+  margin: 4px 0 0;
+  font-size: 16px;
+}
+
+.asset-detail-drawer > header button {
+  padding: 0;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  background: transparent;
+  border: 0;
+  font-size: var(--font-size-meta);
+}
+
+.asset-detail-drawer__body {
+  height: calc(100% - 67px);
+  padding: 18px;
+  overflow-y: auto;
+}
+
+.asset-detail-preview {
+  display: grid;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  overflow: hidden;
+  color: var(--color-accent);
+  background: var(--color-surface-soft);
+  border-radius: 4px;
+  place-items: center;
+}
+
+.asset-detail-preview > img,
+.asset-detail-preview > span {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  place-items: center;
+}
+
+.asset-detail-drawer__body > section {
+  padding: 13px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.asset-detail-drawer__body > section > small,
+.asset-detail-drawer__body > section > strong {
+  display: block;
+}
+
+.asset-detail-drawer__body > section > small {
+  color: var(--color-text-faint);
+  font-size: var(--font-size-meta);
+}
+
+.asset-detail-drawer__body > section > strong {
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.asset-detail-drawer dl {
+  margin: 7px 0 0;
+}
+
+.asset-detail-drawer dl > div {
+  display: grid;
+  grid-template-columns: minmax(80px, 0.7fr) minmax(0, 1.3fr);
+  gap: 8px;
+  padding: 6px 0;
+}
+
+.asset-detail-drawer dt,
+.asset-detail-drawer dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: var(--font-size-meta);
+}
+
+.asset-detail-drawer dt {
+  color: var(--color-text-muted);
+}
+
+.asset-catalog-backdrop {
+  z-index: 80;
+  padding: 24px;
+}
+
+.asset-catalog-editor {
+  display: flex;
+  flex-direction: column;
+  width: min(1180px, calc(100vw - 48px));
+  height: min(760px, calc(100vh - 48px));
+  overflow: hidden;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  box-shadow: 0 24px 70px rgb(23 40 36 / 22%);
+}
+
+.asset-catalog-editor > header,
+.asset-catalog-editor > footer {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.asset-catalog-editor > header > div {
+  min-width: 0;
+}
+
+.asset-catalog-editor > header span,
+.asset-catalog-editor > header p {
+  color: var(--color-text-faint);
+  font-size: var(--font-size-meta);
+}
+
+.asset-catalog-editor > header h2 {
+  margin: 3px 0 0;
+  font-size: 17px;
+}
+
+.asset-catalog-editor > header p {
+  margin: 4px 0 0;
+}
+
+.asset-catalog-editor__identity {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.4fr) minmax(150px, 0.8fr) minmax(150px, 0.8fr) auto;
+  gap: 16px;
+  align-items: end;
+  padding: 11px 18px;
+  background: var(--color-surface-soft);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.asset-catalog-editor__identity label span,
+.asset-catalog-editor__identity small,
+.asset-catalog-editor__identity strong {
+  display: block;
+}
+
+.asset-catalog-editor__identity label span,
+.asset-catalog-editor__identity small {
+  margin-bottom: 4px;
+  color: var(--color-text-faint);
+  font-size: var(--font-size-meta);
+}
+
+.asset-catalog-editor__identity input,
+.catalog-editor-asset-form input,
+.catalog-editor-asset-form select,
+.catalog-editor-primary-actions input {
+  width: 100%;
+  height: 34px;
+  padding: 0 9px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+  font: inherit;
+}
+
+.asset-catalog-editor__body {
+  display: grid;
+  grid-template-columns: 210px 260px minmax(360px, 1fr);
+  flex: 1;
+  min-height: 0;
+}
+
+.catalog-editor-collections,
+.catalog-editor-assets,
+.catalog-editor-asset-form {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--color-border);
+}
+
+.catalog-editor-asset-form {
+  border-right: 0;
+}
+
+.catalog-editor-collections > header,
+.catalog-editor-assets > header,
+.catalog-editor-asset-form > header {
+  position: sticky;
+  z-index: 2;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 46px;
+  padding: 9px 12px;
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.catalog-editor-collections header button,
+.catalog-editor-assets header button,
+.catalog-editor-asset-form header button,
+.catalog-editor-collections label button {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+  justify-content: center;
+  min-height: 30px;
+  padding: 0 8px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+}
+
+.catalog-editor-collections > div,
+.catalog-editor-assets__list {
+  padding: 8px;
+}
+
+.catalog-editor-collections > p {
+  padding: 10px 12px;
+  color: var(--color-text-faint);
+  font-size: var(--font-size-meta);
+}
+
+.catalog-editor-collections label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto 30px;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 5px;
+}
+
+.catalog-editor-collections label input {
+  min-width: 0;
+  height: 34px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+}
+
+.catalog-editor-collections label small {
+  color: var(--color-text-faint);
+  font-size: var(--font-size-meta);
+}
+
+.catalog-editor-collections label small.invalid,
+.catalog-editor-validation-hint {
+  color: var(--color-danger);
+}
+
+.catalog-editor-validation-hint {
+  max-width: 260px;
+  font-size: var(--font-size-meta);
+  line-height: 1.35;
+}
+
+.catalog-editor-assets__filters {
+  position: sticky;
+  z-index: 1;
+  top: 46px;
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  background: var(--color-surface-soft);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.catalog-editor-assets__search,
+.catalog-editor-assets__collection {
+  display: grid;
+  grid-template-columns: 16px minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+  height: 32px;
+  padding: 0 8px;
+  color: var(--color-text-faint);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+}
+
+.catalog-editor-assets__search:focus-within,
+.catalog-editor-assets__collection:focus-within {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.catalog-editor-assets__search input,
+.catalog-editor-assets__collection select {
+  min-width: 0;
+  height: 30px;
+  padding: 0;
+  color: var(--color-text);
+  outline: 0;
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-size: var(--font-size-meta);
+}
+
+.catalog-editor-assets__filter-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 24px;
+  color: var(--color-text-faint);
+  font-size: var(--font-size-meta);
+}
+
+.catalog-editor-assets__filter-status button {
+  min-height: 24px;
+  padding: 0;
+  color: var(--color-accent);
+  background: transparent;
+  border: 0;
+  font-size: var(--font-size-meta);
+}
+
+.catalog-editor-assets__empty {
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  padding: 28px 10px;
+  color: var(--color-text-faint);
+  font-size: var(--font-size-meta);
+}
+
+.catalog-editor-assets__list > button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  min-height: 48px;
+  padding: 7px 9px;
+  margin-bottom: 4px;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  text-align: left;
+}
+
+.catalog-editor-assets__list > button.active {
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+}
+
+.catalog-editor-assets__list > button span,
+.catalog-editor-assets__list > button strong,
+.catalog-editor-assets__list > button small {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.catalog-editor-assets__list > button strong {
+  color: var(--color-text);
+  font-size: 12px;
+}
+
+.catalog-editor-assets__list > button small {
+  margin-top: 2px;
+  color: var(--color-text-faint);
+  font-size: var(--font-size-meta);
+}
+
+.catalog-editor-assets .catalog-editor-asset-list-thumbnail,
+.catalog-editor-assets .catalog-editor-asset-list-thumbnail > img,
+.catalog-editor-assets .catalog-editor-asset-list-thumbnail > span {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  overflow: hidden;
+  color: var(--color-accent);
+  object-fit: cover;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  place-items: center;
+}
+
+.catalog-editor-asset-form > header span,
+.catalog-editor-asset-form > header strong {
+  display: block;
+}
+
+.catalog-editor-asset-form > header span {
+  color: var(--color-text-faint);
+  font-size: var(--font-size-meta);
+}
+
+.catalog-editor-asset-form > header strong {
+  margin-top: 2px;
+  font-size: 12px;
+}
+
+.catalog-editor-asset-form__content {
+  padding: 14px;
+}
+
+.catalog-editor-thumbnail {
+  display: grid;
+  grid-template-columns: 104px auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.catalog-editor-thumbnail img,
+.catalog-editor-thumbnail > span {
+  display: grid;
+  width: 104px;
+  aspect-ratio: 1 / 1;
+  color: var(--color-accent);
+  object-fit: cover;
+  background: var(--color-surface-soft);
+  border-radius: 4px;
+  place-items: center;
+}
+
+.catalog-editor-thumbnail button,
+.asset-catalog-editor > footer button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 11px;
+  cursor: pointer;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+}
+
+.catalog-editor-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 11px;
+  margin-top: 15px;
+}
+
+.catalog-editor-form-grid label > span {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-meta);
+}
+
+.catalog-editor-form-grid label > span small {
+  color: var(--color-text-faint);
+}
+
+.catalog-editor-form-grid__wide {
+  grid-column: 1 / -1;
+}
+
+.catalog-editor-memberships {
+  padding: 12px 0 0;
+  margin: 15px 0 0;
+  border: 0;
+  border-top: 1px solid var(--color-border);
+}
+
+.catalog-editor-memberships legend {
+  width: 100%;
+  margin-bottom: 6px;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-meta);
+}
+
+.catalog-editor-memberships__options {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 7px;
+}
+
+.catalog-editor-memberships__options label {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 9px;
+  cursor: pointer;
+  background: var(--color-surface-soft);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: var(--font-size-meta);
+}
+
+.catalog-editor-memberships__options label.active {
+  color: var(--color-accent);
+  background: var(--color-accent-soft);
+  border-color: var(--color-accent);
+}
+
+.catalog-editor-asset-form .catalog-editor-memberships__options input[type="checkbox"] {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--color-accent);
+}
+
+.catalog-editor-memberships__options span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-catalog-editor > footer {
+  min-height: 62px;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 0;
+}
+
+.catalog-editor-destructive-action > button:first-child,
+.catalog-editor-destructive-action .danger-button {
+  color: var(--color-danger);
+}
+
+.catalog-editor-destructive-action span {
+  color: var(--color-danger);
+  font-size: var(--font-size-meta);
+}
+
+.catalog-editor-primary-actions input {
+  width: 170px;
+}
+
+.asset-catalog-editor > footer .primary-button {
+  color: white;
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.asset-catalog-editor button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}

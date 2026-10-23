@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows x64 checks
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.13.3'
+          architecture: x64
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          package-manager-cache: false
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r tools/portable-requirements.txt
+      - name: Prepare workspace Python paths
+        run: |
+          $paths = Get-ChildItem -Path packages,apps,adapters -Directory |
+            ForEach-Object { Join-Path $_.FullName 'src' } |
+            Where-Object { Test-Path -LiteralPath $_ }
+          "PYTHONPATH=$($paths -join [IO.Path]::PathSeparator)" >> $env:GITHUB_ENV
+          $python = python -c "import sys; print(sys.executable)"
+          "VERDFLOW_GEOSPATIAL_TEST_PYTHON=$python" >> $env:GITHUB_ENV
+      - name: Python tests
+        run: python -m unittest discover -s tests/unit
+      - name: Install Corepack
+        run: npm install --global corepack@0.34.6
+      - name: Install JavaScript dependencies
+        run: corepack pnpm install --frozen-lockfile
+      - name: Ensure Electron runtime
+        run: node apps/studio-electron-probe/node_modules/electron/install.js
+      - name: Studio tests
+        run: corepack pnpm --filter @verdflow/studio test
+      - name: WebUI tests
+        run: corepack pnpm --filter @verdflow/dts-live-webui test
+      - name: Desktop tests
+        run: corepack pnpm --filter @verdflow/studio-electron-probe check
+      - name: Branding tests
+        run: corepack pnpm test:branding
+      - name: Type checks
+        run: corepack pnpm typecheck
+      - name: Build Studio
+        run: corepack pnpm build
+      - name: Build WebUI
+        run: corepack pnpm build:dts-live-webui

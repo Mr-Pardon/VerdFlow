@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdflow.dev/schemas/asset-assignment-set-v1.schema.json",
+  "title": "VerdFlow Asset Assignment Set v1",
+  "type": "object",
+  "required": ["schema", "version", "target_type", "resolver", "random_seed", "point_set_hash", "effective_binding_snapshot_hash", "point_count", "assignments", "semantic_hash"],
+  "properties": {
+    "schema": {"const": "verdflow.asset-assignment-set"},
+    "version": {"const": "1"},
+    "target_type": {"type": "string", "minLength": 1},
+    "resolver": {
+      "type": "object",
+      "required": ["id", "version"],
+      "properties": {
+        "id": {"type": "string"},
+        "version": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "random_seed": {"type": "integer", "minimum": 0, "maximum": 9223372036854775807},
+    "point_set_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "effective_binding_snapshot_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "point_count": {"type": "integer", "minimum": 0},
+    "assignments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["point_id", "role_key", "asset_id", "target_scale_xyz"],
+        "properties": {
+          "point_id": {"type": "string"},
+          "role_key": {"type": "string"},
+          "asset_id": {"type": "string"},
+          "target_scale_xyz": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {"type": "number", "exclusiveMinimum": 0}
+          },
+          "assignment_group_id": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
+    "semantic_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false
+}

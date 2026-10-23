@@ -1,0 +1,257 @@
+.plan-library-page {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  overflow: hidden;
+}
+.plan-library-page > :is(header, .plan-library-controls, .inline-alert) {
+  flex-shrink: 0;
+}
+.plan-library-results {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.plan-library-results::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+.plan-library-results:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+.plan-library-page .page-header {
+  margin: 0;
+}
+.library-workspace.plan-detail-workspace {
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+}
+.plan-detail-workspace .binding-profile-detail {
+  width: 100%;
+}
+.plan-library-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.plan-library-controls .search-control {
+  flex: 1;
+  max-width: 440px;
+}
+.plan-library-controls > select {
+  max-width: 240px;
+  min-height: 38px;
+  padding: 6px 30px 6px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 5px;
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+.plan-library-controls > span {
+  margin-left: auto;
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+.plan-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  gap: 18px;
+  align-items: stretch;
+}
+.plan-library-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  min-height: 320px;
+  color: var(--color-text-muted);
+}
+.plan-library-empty h2 {
+  font-size: 18px;
+}
+.planting-method-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 20px;
+  padding: 32px;
+}
+.planting-header-tools {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  min-width: 0;
+}
+.planting-guide .planting-header {
+  flex-wrap: wrap;
+}
+.planting-mode-switch {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 4px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #eaf0ed;
+}
+.planting-mode-switch button {
+  display: inline-flex;
+  min-width: 120px;
+  min-height: 34px;
+  justify-content: center;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 13px;
+  cursor: pointer;
+}
+.planting-mode-switch button.active {
+  color: var(--color-accent);
+  border-color: #b7d5cb;
+  background: #fff;
+  box-shadow: 0 1px 3px #143e2310;
+  font-weight: 650;
+}
+.planting-mode-switch button:hover:not(:disabled) {
+  color: var(--color-accent);
+}
+.planting-mode-switch button:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+.planting-header .planting-mode-switch button > span {
+  color: inherit;
+  font-size: 13px;
+}
+.planting-method-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 15px;
+  min-height: 200px;
+  padding: 26px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-text);
+  text-align: left;
+  cursor: pointer;
+}
+.planting-method-card:hover:not(:disabled) {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+}
+.planting-method-card > svg:first-child {
+  color: var(--color-accent);
+  width: 32px;
+  height: 32px;
+}
+.planting-method-card strong {
+  font-size: 21px;
+}
+.planting-method-card > span {
+  color: var(--color-text-muted);
+  font-size: 13px;
+}
+.planting-method-card > svg:last-child {
+  position: absolute;
+  right: 24px;
+  bottom: 24px;
+  width: 19px;
+}
+.preset-planting-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 26px 32px;
+  overflow: auto;
+  min-height: 0;
+  flex: 1 1 0;
+  scrollbar-width: none;
+}
+.preset-planting-panel::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+.preset-planting-panel > * {
+  flex-shrink: 0;
+}
+.preset-planting-heading {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.preset-planting-heading h3 {
+  margin: 0;
+  font-size: 18px;
+}
+.preset-planting-heading .search-control {
+  margin-left: auto;
+}
+.preset-planting-selection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 14px;
+  padding: 18px 0;
+  border-top: 1px solid var(--color-border);
+}
+.preset-planting-selection > div {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.preset-planting-selection span {
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+@media (max-width: 650px) {
+  .planting-guide .planting-header {
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .planting-header-tools {
+    width: 100%;
+    gap: 10px 16px;
+    justify-content: flex-start;
+  }
+  .planting-mode-switch {
+    max-width: 100%;
+  }
+  .planting-mode-switch button {
+    min-width: 0;
+    padding: 8px 10px;
+  }
+  .planting-method-grid {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 18px;
+    gap: 12px;
+  }
+  .planting-method-card {
+    min-height: 150px;
+  }
+  .preset-planting-panel {
+    padding: 18px;
+  }
+  .plan-library-controls .search-control {
+    max-width: none;
+    min-width: 0;
+    width: 100%;
+    flex-basis: 100%;
+  }
+}

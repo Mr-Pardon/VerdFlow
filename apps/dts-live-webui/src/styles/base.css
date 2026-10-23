@@ -1,0 +1,20 @@
+:root {
+  --live-text: #d6e3e0;
+  --live-muted: #91a6a1;
+  --live-line: #2b4140;
+  --live-surface: #172927;
+  --live-accent: #72d8c4;
+  --live-panel-bg: rgba(12, 24, 25, 0.96);
+  --live-header-bg: rgba(14, 29, 29, 0.8);
+  --live-panel-border: rgba(126, 231, 211, 0.24);
+  color: #eef2f4;
+  font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+  font-synthesis: none;
+  letter-spacing: 0;
+}
+
+* { box-sizing: border-box; }
+html, body, #app { min-height: 100%; margin: 0; background: transparent; }
+button, input, select { font: inherit; letter-spacing: 0; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: 0.48; }

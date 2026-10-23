@@ -1,0 +1,92 @@
+schema: verdflow.strategy
+version: '2'
+strategy_id: universal_natural_grove
+strategy_version: 2.0.0
+display_name: 通用自然聚落
+description: >-
+  在非特殊范围类绿地中生成大小斑块自适应的自然混种聚落；大面拆分成团，
+  相邻小面组团覆盖，并在每个聚落内保持稳定的构图角色比例。
+generator:
+  id: universal_natural_grove
+  version: '2'
+  entry: generator.py:generate
+roles:
+  - role_key: low_canopy_filler
+    display_name: 低矮冠幅填充
+    description: 构成聚落主体和连续底层体量的高占比植被角色。
+    required: true
+    assignment_policy: single
+  - role_key: medium_canopy_accent
+    display_name: 中等冠幅点缀
+    description: 在主体填充之间形成中等尺度节奏和层次变化的植被角色。
+    required: true
+    assignment_policy: single
+  - role_key: evergreen_contrast
+    display_name: 常绿对比点景
+    description: 以较低比例形成较大体量和常绿质感对比的植被角色。
+    required: true
+    assignment_policy: single
+intent:
+  summary: 大面不均匀、小面不漏种、局部成团且整体连续的自然聚落。
+  design_keywords:
+    - 自然聚落
+    - 大小斑块自适应
+    - 相邻小块组团
+    - 局部角色比例稳定
+    - 非网格化
+  avoid:
+    - 规则网格感
+    - 大面稀疏空洞
+    - 小面过密堆点
+    - 仅全局比例正确但局部聚落失衡
+    - 点位贴边或越界
+terrain_suitability:
+  feature_scope: single_region
+  selection_hint: >-
+    优先选择面积较大或相邻成片、非细长、边界不必过于规整的范围类地形面。
+    不用于道路中心行道树、规则阵列或强造型景观。
+  recommended_numeric_features:
+    area_m2:
+      min: 18
+      preferred_min: 3000
+    elongation:
+      max: 7.5
+      preferred_max: 4.5
+    compactness:
+      preferred_min: 0.12
+parameters:
+  default_seed: 202607072130
+  role_mix:
+    distribution_scope: per_grove_group
+    roles:
+      - role_key: low_canopy_filler
+        ratio: 0.5
+      - role_key: medium_canopy_accent
+        ratio: 0.35
+      - role_key: evergreen_contrast
+        ratio: 0.15
+  distribution_model:
+    area_classes:
+      large_patch_area_threshold: 20000.0
+      small_patch_min_viable_area: 18.0
+    density_defaults:
+      target_density_per_area: 0.00735
+      large_patch_min_point_distance: 1.55
+      small_patch_min_point_distance: 1.35
+      edge_buffer: 1.5
+    large_patch_strategy:
+      subgrove_area_factor: 24000.0
+      subgrove_count_min: 3
+      subgrove_count_max: 10
+      count_multiple: 20
+      center_count_per_subgrove: 1
+    small_patch_strategy:
+      patch_group_min_size: 4
+      patch_group_max_size: 10
+      patch_group_target_area: 10500.0
+      patch_group_max_radius: 190.0
+      patch_group_min_viable_area: 3000.0
+      center_area_factor: 18000.0
+      center_count_min: 1
+      center_count_max: 5
+      count_multiple: 20

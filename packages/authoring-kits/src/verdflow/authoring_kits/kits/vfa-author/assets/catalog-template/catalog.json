@@ -1,0 +1,36 @@
+{
+  "schema": "verdflow.target-asset-catalog",
+  "version": "1",
+  "catalog_id": "example_dts_catalog",
+  "target_type": "dts",
+  "provider_id": "dts.static-mesh",
+  "display_name": "Example DTS Catalog",
+  "assets": [
+    {
+      "asset_id": "example_tree",
+      "display_name": "Example Tree",
+      "provider_metadata": {
+        "model_name": "SM_ExampleTree"
+      },
+      "suggested_scale": {
+        "mode": "uniform_random",
+        "min": 0.9,
+        "max": 1.1
+      },
+      "reference_radius_m": 1.5,
+      "reference_height_m": 3.0,
+      "tags": [
+        "tree"
+      ]
+    }
+  ],
+  "collections": [
+    {
+      "collection_id": "example_collection",
+      "display_name": "Example Collection",
+      "asset_ids": [
+        "example_tree"
+      ]
+    }
+  ]
+}

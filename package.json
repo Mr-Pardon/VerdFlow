@@ -1,0 +1,23 @@
+{
+  "name": "verdflow-workspace",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@11.21.0",
+  "scripts": {
+    "build:branding": "node tools/build_branding.mjs",
+    "test:branding": "node --test tools/tests/branding.test.mjs",
+    "build": "corepack pnpm build:branding && corepack pnpm --filter @verdflow/studio build",
+    "build:dts-live-webui": "corepack pnpm build:branding && corepack pnpm --filter @verdflow/dts-live-webui build",
+    "build:portable": "python tools/build_portable_release.py",
+    "build:portable:smoke": "python tools/build_portable_release.py --smoke-test",
+    "dev": "corepack pnpm --filter @verdflow/studio dev",
+    "dev:dts-live-webui": "corepack pnpm --filter @verdflow/dts-live-webui dev",
+    "dev:desktop": "node tools/dev_studio.mjs",
+    "dev:desktop:shell": "corepack pnpm --filter @verdflow/studio-electron-probe dev",
+    "typecheck": "corepack pnpm --filter @verdflow/studio typecheck && corepack pnpm --filter @verdflow/dts-live-webui typecheck"
+  },
+  "devDependencies": {
+    "resedit": "3.1.0",
+    "sharp": "0.35.5"
+  }
+}

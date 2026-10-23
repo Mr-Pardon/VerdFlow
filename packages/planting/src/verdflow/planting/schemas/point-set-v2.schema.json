@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdflow.dev/schemas/point-set-v2.schema.json",
+  "title": "VerdFlow PointSet v2",
+  "type": "object",
+  "required": ["schema", "version", "strategy", "coordinate_space", "offset_applied", "kind", "resolution_policy", "point_count", "points"],
+  "properties": {
+    "schema": {"const": "verdflow.points"},
+    "version": {"const": "2"},
+    "strategy": {
+      "type": "object",
+      "required": ["strategy_id", "strategy_version"],
+      "properties": {
+        "strategy_id": {"type": "string", "minLength": 1},
+        "strategy_version": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "coordinate_space": {"const": "source_scene_world"},
+    "offset_applied": {"const": false},
+    "kind": {"enum": ["generated", "elevation_resolved"]},
+    "resolution_policy": {"enum": ["generated_position", "sample_hit_else_generated"]},
+    "point_count": {"type": "integer", "minimum": 0},
+    "points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "region_id", "role_key", "generated_position", "terrain_sample", "resolved_position", "rotation_quaternion_xyzw"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "region_id": {"type": "string", "minLength": 1},
+          "role_key": {"type": "string", "pattern": "^[a-z][a-z0-9._-]*$"},
+          "generated_position": {"$ref": "#/$defs/vector3"},
+          "terrain_sample": {
+            "oneOf": [
+              {"type": "null"},
+              {"$ref": "#/$defs/terrainSample"}
+            ]
+          },
+          "resolved_position": {"$ref": "#/$defs/vector3"},
+          "rotation_quaternion_xyzw": {"$ref": "#/$defs/quaternion"},
+          "size_intent": {"type": "object"},
+          "group_id": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "vector3": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {"type": "number"}
+    },
+    "quaternion": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"type": "number"}
+    },
+    "terrainSample": {
+      "type": "object",
+      "required": ["hit"],
+      "properties": {
+        "hit": {"type": "boolean"},
+        "position": {"$ref": "#/$defs/vector3"},
+        "normal": {"$ref": "#/$defs/vector3"},
+        "target": {"type": "string"},
+        "face_index": {"type": "integer"},
+        "source_member_id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,0 +1,214 @@
+schema: verdflow.strategy
+version: '2'
+strategy_id: lawn_feature_groups
+strategy_version: 1.0.2
+display_name: 草坪点景组团
+description: >-
+  使用细粒度边缘草坪和带扰动的主体草坪连续覆盖区域，并在安全内部空间布置少量由
+  可选主景植物、环绕灌木和外缘点缀植物组成的完整复合组团。
+generator:
+  id: lawn_feature_groups
+  version: '1'
+  entry: generator.py:generate
+roles:
+  - role_key: lawn_groundcover
+    display_name: 主体草坪
+    description: 连续覆盖区域内部，形成点景组团下方的草坪底面。
+    required: true
+    assignment_policy: weighted_pool
+  - role_key: edge_groundcover
+    display_name: 收边草坪
+    description: 以更密的小尺度草坪补齐边缘，衔接主体草坪与区域边界。
+    required: true
+    assignment_policy: weighted_pool
+  - role_key: feature_anchor
+    display_name: 中心主景
+    description: 位于点景组团中央，形成高于周边植被的视觉重点。
+    required: true
+    assignment_policy: weighted_pool
+  - role_key: surrounding_shrub
+    display_name: 组团灌木
+    description: 围绕中心主景形成体量；算法生成无主景组团时，会向中心收拢。
+    required: true
+    assignment_policy: weighted_pool
+  - role_key: outer_accent
+    display_name: 外围点缀
+    description: 落在组团外围的空隙中，以较小植被柔化边缘。
+    required: true
+    assignment_policy: weighted_pool
+intent:
+  summary: 连续草坪上稀疏分布、主次清晰且略有变化的复合点景组团。
+  design_keywords:
+    - 双层连续草坪
+    - 受限自然扰动
+    - 内部点景
+    - 可选单株主景
+    - 环绕灌木
+    - 稳定模板微变
+  avoid:
+    - 点景组团贴近边界
+    - 全随机环形散点
+    - 草坪覆盖节奏破碎
+    - 每个组团完全相同
+terrain_suitability:
+  feature_scope: single_region
+  selection_hint: >-
+    用于以草坪为主体、需要少量复合植物组团点景的面状绿地；过窄区域会自动退化为纯草坪。
+extensions:
+  parameter_preview:
+    version: '1'
+    display_name: 弧形花坛
+    fixed_seed: 17
+    boundary_xy:
+      - [70, 22]
+      - [69.468, 25.819]
+      - [67.889, 29.517]
+      - [65.311, 32.947]
+      - [61.812, 35.862]
+      - [57.498, 37.772]
+      - [52.5, 37.954]
+      - [46.971, 36.099]
+      - [41.078, 33.342]
+      - [35, 32]
+      - [28.922, 33.342]
+      - [23.029, 36.099]
+      - [17.5, 37.954]
+      - [12.502, 37.772]
+      - [8.188, 35.862]
+      - [4.689, 32.947]
+      - [2.111, 29.517]
+      - [0.532, 25.819]
+      - [0, 22]
+      - [0.532, 18.18]
+      - [2.111, 14.476]
+      - [4.689, 11]
+      - [8.188, 7.859]
+      - [12.502, 5.147]
+      - [17.5, 2.947]
+      - [23.029, 1.327]
+      - [28.922, 0.334]
+      - [35, 0]
+      - [41.078, 0.334]
+      - [46.971, 1.327]
+      - [52.5, 2.947]
+      - [57.498, 5.147]
+      - [61.812, 7.859]
+      - [65.311, 11]
+      - [67.889, 14.476]
+      - [69.468, 18.18]
+  role_presentation:
+    version: '1'
+    roles:
+      lawn_groundcover:
+        suggested_assets:
+        - 草坪块
+        - 低矮地被
+        note: 草坪间距与素材缩放需要配合，实际覆盖效果由素材大小决定。
+      edge_groundcover:
+        suggested_assets:
+        - 小型草坪块
+        - 小型地被
+        note: 可沿用主体草坪的素材，再单独调小缩放；此处点位间距为 0.5 米。
+      feature_anchor:
+        suggested_assets:
+        - 乔木
+        - 棕榈
+        - 高大观赏植物
+        note: 主景出现概率控制无主景组团的构图；关闭此用途仅移除主景点位，不重排周边植被。
+      surrounding_shrub:
+        suggested_assets:
+        - 球形灌木
+        - 矮灌木
+        note: 每个完整组团通常包含 2 至 4 株，适合紧凑、小尺度的素材。
+      outer_accent:
+        suggested_assets:
+        - 草花
+        - 小型观赏草
+        - 小型灌木
+        note: 建议选择比组团灌木更小的素材，避免遮住主景层次。
+    groups:
+    - id: lawn
+      name: 草坪覆盖
+      description: 主体铺面，较小草坪收边。
+      role_keys:
+      - lawn_groundcover
+      - edge_groundcover
+      diagram:
+      - {role_key: edge_groundcover, kind: area, points: [[5, 13], [16, 5], [85, 9], [95, 20], [89, 55], [57, 58], [14, 52], [4, 34]]}
+      - {role_key: lawn_groundcover, kind: area, points: [[13, 19], [22, 13], [78, 17], [85, 25], [79, 47], [55, 50], [23, 44], [13, 32]]}
+      - {role_key: lawn_groundcover, kind: groundcover, x: 30, y: 28, size: 10}
+      - {role_key: lawn_groundcover, kind: groundcover, x: 54, y: 31, size: 10}
+      - {role_key: lawn_groundcover, kind: groundcover, x: 70, y: 39, size: 10}
+      - {role_key: edge_groundcover, kind: groundcover, x: 11, y: 25, size: 5}
+      - {role_key: edge_groundcover, kind: groundcover, x: 39, y: 9, size: 5}
+      - {role_key: edge_groundcover, kind: groundcover, x: 90, y: 34, size: 5}
+      - {role_key: edge_groundcover, kind: groundcover, x: 42, y: 53, size: 5}
+    - id: feature
+      name: 点景组团
+      description: 中心主景、周边灌木与外围小型点缀。
+      role_keys:
+      - feature_anchor
+      - surrounding_shrub
+      - outer_accent
+      diagram:
+      - {role_key: lawn_groundcover, kind: area, points: [[4, 7], [96, 7], [96, 57], [4, 57]]}
+      - {role_key: feature_anchor, kind: tree, x: 49, y: 26, size: 18}
+      - {role_key: surrounding_shrub, kind: shrub, x: 35, y: 36, size: 13}
+      - {role_key: surrounding_shrub, kind: shrub, x: 60, y: 39, size: 13}
+      - {role_key: surrounding_shrub, kind: shrub, x: 63, y: 21, size: 12}
+      - {role_key: outer_accent, kind: groundcover, x: 23, y: 27, size: 8}
+      - {role_key: outer_accent, kind: groundcover, x: 73, y: 43, size: 8}
+      - {role_key: outer_accent, kind: groundcover, x: 41, y: 49, size: 8}
+parameters:
+  default_seed: 17
+generation_parameters:
+  - key: groundcover_spacing_m
+    visible_for_roles: [lawn_groundcover]
+    value_type: number
+    default: 1.2
+    min: 0.5
+    max: 4.0
+    step: 0.1
+    group: quick
+    display_name: 主体草坪间距
+    effect: 调小会增加主体草坪点位并形成更连续的覆盖，调大可降低点位数量并增强单株辨识度；边缘草坪始终使用固定的小间距。
+  - key: feature_group_density
+    visible_for_roles: [feature_anchor, surrounding_shrub, outer_accent]
+    value_type: number
+    default: 3.0
+    min: 0.0
+    max: 4.0
+    step: 0.1
+    group: quick
+    display_name: 点景组团密度
+    effect: 调高会在区域内部增加点景组团，调低会保留更完整的草坪主体；设为零时仅铺设草坪。
+  - key: feature_anchor_probability
+    visible_for_roles: [feature_anchor, surrounding_shrub, outer_accent]
+    value_type: number
+    default: 0.75
+    min: 0.0
+    max: 1.0
+    step: 0.05
+    group: quick
+    display_name: 主景植物出现概率
+    effect: 调高会让更多组团包含中央高大植物，调低会增加低矮点景；同时影响周边灌木与点缀的环绕尺度。
+  - key: feature_group_min_count
+    visible_for_roles: [feature_anchor, surrounding_shrub, outer_accent]
+    value_type: number
+    default: 0
+    min: 0
+    max: 50
+    step: 1
+    group: advanced
+    display_name: 最少点景组数
+    effect: 按每个独立区域设置点景组团的数量下限；设为零时不约束，过窄区域仍会优先保证可容纳性。
+  - key: feature_group_max_count
+    visible_for_roles: [feature_anchor, surrounding_shrub, outer_accent]
+    value_type: number
+    default: 0
+    min: 0
+    max: 50
+    step: 1
+    group: advanced
+    display_name: 最多点景组数
+    effect: 按每个独立区域限制点景组团的数量上限；设为零时不约束。

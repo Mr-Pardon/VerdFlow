@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://verdflow.dev/schemas/effective-binding-snapshot-v1.schema.json",
+  "title": "VerdFlow Effective Binding Snapshot v1",
+  "type": "object",
+  "required": ["schema", "version", "strategy", "target", "source_profile", "override_applied", "asset_use", "assignments", "semantic_hash"],
+  "properties": {
+    "schema": {"const": "verdflow.effective-binding-snapshot"},
+    "version": {"const": "1"},
+    "strategy": {"$ref": "#/$defs/strategyRef"},
+    "target": {"$ref": "#/$defs/targetRef"},
+    "source_profile": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["profile_id", "semantic_hash"],
+          "properties": {
+            "profile_id": {"type": "string", "minLength": 1},
+            "semantic_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "override_applied": {"type": "boolean"},
+    "asset_use": {
+      "type": "object",
+      "required": ["source", "assets"],
+      "properties": {
+        "source": {"$ref": "#/$defs/assetSource"},
+        "assets": {
+          "type": "array",
+          "minItems": 1,
+          "items": {"type": "object"}
+        }
+      },
+      "additionalProperties": false
+    },
+    "assignments": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["candidates"],
+        "properties": {
+          "candidates": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"$ref": "#/$defs/effectiveCandidate"}
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "semantic_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "strategyRef": {
+      "type": "object",
+      "required": ["strategy_id", "strategy_version"],
+      "properties": {
+        "strategy_id": {"type": "string", "minLength": 1},
+        "strategy_version": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "targetRef": {
+      "type": "object",
+      "required": ["target_type", "provider_id"],
+      "properties": {
+        "target_type": {"type": "string", "minLength": 1},
+        "provider_id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "assetSource": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "semantic_hash"],
+          "properties": {
+            "kind": {"const": "draft"},
+            "semantic_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "catalog_id", "generation", "semantic_hash"],
+          "properties": {
+            "kind": {"const": "catalog"},
+            "catalog_id": {"type": "string", "minLength": 1},
+            "generation": {"type": "integer", "minimum": 1},
+            "semantic_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["kind", "profile_id", "semantic_hash"],
+          "properties": {
+            "kind": {"const": "profile"},
+            "profile_id": {"type": "string", "minLength": 1},
+            "semantic_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "effectiveCandidate": {
+      "type": "object",
+      "required": ["asset_id", "weight", "scale"],
+      "properties": {
+        "asset_id": {"type": "string", "minLength": 1},
+        "weight": {"type": "number", "exclusiveMinimum": 0},
+        "scale": {"$ref": "#/$defs/scalePolicy"}
+      },
+      "additionalProperties": false
+    },
+    "scalePolicy": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["mode", "value"],
+          "properties": {
+            "mode": {"const": "fixed"},
+            "value": {"type": "number", "exclusiveMinimum": 0}
+          },
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "required": ["mode", "min", "max"],
+          "properties": {
+            "mode": {"const": "uniform_random"},
+            "min": {"type": "number", "exclusiveMinimum": 0},
+            "max": {"type": "number", "exclusiveMinimum": 0}
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,50 @@
+schema: verdflow.target-asset-catalog
+version: '1'
+catalog_id: dts_default
+target_type: dts
+provider_id: dts.static-mesh
+display_name: DTS 植被资产库
+assets:
+  - asset_id: SM_tree01_01
+    display_name: Tree 01 01
+    tags: [自然聚落]
+    provider_metadata:
+      model_name: SM_tree01_01
+  - asset_id: SM_Tree0301
+    display_name: Tree 0301
+    tags: [自然聚落]
+    provider_metadata:
+      model_name: SM_Tree0301
+  - asset_id: SM_A_PinusMugo
+    display_name: Pinus Mugo
+    tags: [自然聚落]
+    provider_metadata:
+      model_name: SM_A_PinusMugo
+  - asset_id: SM_CornusAlba_02
+    display_name: Cornus Alba 02
+    tags: [行道树]
+    provider_metadata:
+      model_name: SM_CornusAlba_02
+  - asset_id: SM_UlmusMacrocarpaHance_2
+    display_name: Ulmus Macrocarpa Hance 2
+    tags: [行道树]
+    provider_metadata:
+      model_name: SM_UlmusMacrocarpaHance_2
+  - asset_id: SM_Oak_1D
+    display_name: Oak 1D
+    tags: [行道树]
+    provider_metadata:
+      model_name: SM_Oak_1D
+collections:
+  - collection_id: natural_grove
+    display_name: 自然聚落
+    asset_ids:
+      - SM_tree01_01
+      - SM_Tree0301
+      - SM_A_PinusMugo
+  - collection_id: street_tree
+    display_name: 行道树
+    asset_ids:
+      - SM_CornusAlba_02
+      - SM_UlmusMacrocarpaHance_2
+      - SM_Oak_1D

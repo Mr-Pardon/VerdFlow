@@ -1,0 +1,8 @@
+{
+  "name": "@verdflow/asset-browser-ui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "peerDependencies": { "vue": "^3.5.18", "@lucide/vue": "^1.31.0" }
+}

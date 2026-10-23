@@ -1,0 +1,107 @@
+schema: verdflow.strategy
+version: '2'
+strategy_id: layered_ecological_community
+strategy_version: 1.0.0
+display_name: 层次生态群落
+description: >-
+  在同一绿地中叠加连续但非互斥的上层主导、中层结构、下层伴生和地表覆盖植物，
+  以多尺度密度场形成自然的疏密过渡与冠幅肌理。
+generator:
+  id: layered_ecological_community
+  version: '1'
+  entry: generator.py:generate
+roles:
+  - role_key: canopy_anchor
+    display_name: 上层主导植物
+    description: 形成群落的主要高度、轮廓和冠幅肌理，可选乔木、棕榈或其他高大植物。
+    required: true
+    assignment_policy: weighted_pool
+  - role_key: medium_shrub_structure
+    display_name: 中层结构植物
+    description: 衔接上层与地表层并形成体量变化，可选灌木、小乔木或其他中等高度植物。
+    required: true
+    assignment_policy: weighted_pool
+  - role_key: herbaceous_companion
+    display_name: 下层伴生植物
+    description: 围绕上层主导植物补充近地细节，可选矮灌木、草本或其他低矮植物。
+    required: true
+    assignment_policy: weighted_pool
+  - role_key: low_shrub_matrix
+    display_name: 地表覆盖植物
+    description: 连续覆盖地表并承接上层稀疏区，可选地被、草本或铺展型低矮植物。
+    required: true
+    assignment_policy: weighted_pool
+intent:
+  summary: 上层冠幅肌理向地表覆盖自然过渡的多层生态群落。
+  design_keywords:
+    - 连续密度场
+    - 上层植物主导
+    - 多层叠加
+    - 自然疏密过渡
+    - 非分区拼接
+  avoid:
+    - 圆形聚落边界
+    - 互斥切面感
+    - 全域均匀铺满
+    - 随机删点形成的破碎留白
+terrain_suitability:
+  feature_scope: single_region
+  selection_hint: >-
+    用于普通面状绿地和较大的生态种植区；不用于道路中心线、规则阵列或强造型景观。
+parameters:
+  default_seed: 17
+generation_parameters:
+  - key: overall_density
+    value_type: number
+    default: 0.26
+    min: 0.1
+    max: 1.5
+    step: 0.05
+    group: quick
+    display_name: 整体密度
+    effect: 同时提高或降低全部植被层次的点位数量。
+  - key: canopy_density
+    value_type: number
+    default: 3.6
+    min: 0.5
+    max: 6.0
+    step: 0.1
+    group: quick
+    display_name: 上层植被密度
+    effect: 调高后上层冠幅更饱满，调低后中下层植物更突出。
+  - key: canopy_field_contrast
+    value_type: number
+    default: 2.7
+    min: 1.0
+    max: 5.0
+    step: 0.1
+    group: quick
+    display_name: 上层疏密对比
+    effect: 调高会拉开上层植物密集区与稀疏区，形成更明显的密度起伏。
+  - key: canopy_spacing_scale
+    value_type: number
+    default: 0.68
+    min: 0.4
+    max: 1.5
+    step: 0.02
+    group: advanced
+    display_name: 上层植被间距
+    effect: 调高会扩大上层植物之间的距离，调低会形成更连续的冠幅肌理。
+  - key: shrub_density
+    value_type: number
+    default: 0.45
+    min: 0.1
+    max: 2.0
+    step: 0.05
+    group: advanced
+    display_name: 中层植被密度
+    effect: 调高会增强中层体量和节奏，调低会让上层主导与地表覆盖更突出。
+  - key: layer_blend
+    value_type: number
+    default: 0.58
+    min: 0.0
+    max: 1.0
+    step: 0.05
+    group: advanced
+    display_name: 层次关联度
+    effect: 调高会让不同高度层共享更多疏密趋势，调低会增加各层独立变化。

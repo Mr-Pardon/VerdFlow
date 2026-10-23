@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="420" viewBox="0 0 1200 420" role="img" aria-labelledby="title desc">
+  <title id="title">VerdFlow 真实操作演示，待补充</title>
+  <desc id="desc">这是录屏的占位图片，不是可播放的视频或软件运行成果。</desc>
+  <rect width="1200" height="420" rx="6" fill="#f2f7f5"/>
+  <g fill="none" stroke="#d7e4de" stroke-width="1.5">
+    <path d="M0 285L114 232L204 268L178 363L60 392L0 350M114 232L143 123L258 111L307 210L204 268M178 363L303 391L365 319L307 210"/>
+    <path d="M970 49L1084 25L1200 91M970 49L935 157L1042 202L1144 162L1200 186M1042 202L1021 302L1124 337L1200 292M1124 337L1141 420"/>
+  </g>
+  <g fill="#8baa9d" opacity=".32">
+    <circle cx="1061" cy="76" r="3"/><circle cx="1099" cy="68" r="3"/><circle cx="1142" cy="89" r="3"/>
+    <circle cx="1019" cy="111" r="3"/><circle cx="1060" cy="126" r="3"/><circle cx="1105" cy="114" r="3"/>
+    <circle cx="1080" cy="164" r="3"/><circle cx="1146" cy="130" r="3"/><circle cx="1180" cy="123" r="3"/>
+  </g>
+  <g font-family="Segoe UI, Microsoft YaHei, sans-serif" text-anchor="middle">
+    <text x="600" y="60" font-size="14" fill="#688176">VERDFLOW / IN ACTION</text>
+    <circle cx="600" cy="157" r="38" fill="#e0ede6" stroke="#bfd5c8"/>
+    <path d="M590 141L615 157L590 173Z" fill="#357a64"/>
+    <text x="600" y="243" font-size="32" font-weight="600" fill="#194d40">真实操作演示</text>
+    <text x="600" y="280" font-size="17" fill="#657e73">待补充</text>
+    <path d="M354 332H846" stroke="#d7e4de"/>
+    <text x="600" y="369" font-size="16" fill="#5b7368">选择区域　 /　 调整方案　 /　 生成植被</text>
+  </g>
+</svg>

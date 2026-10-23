@@ -1,0 +1,176 @@
+schema: verdflow.strategy
+version: '2'
+strategy_id: universal_street_tree
+strategy_version: 2.0.2
+display_name: 通用行道树
+description: >-
+  沿道路型绿地的局部中心路径生成宽度自适应灌木带，并在所有宽度模式中等距放置乔木。
+generator:
+  id: universal_street_tree
+  version: '2'
+  entry: generator.py:generate
+roles:
+  - role_key: narrow_center_shrub
+    display_name: 单排灌木
+    description: 绿带较窄时，沿中心路径种植一排灌木。
+    required: true
+    assignment_policy: single
+  - role_key: double_left_shrub
+    display_name: 左排灌木
+    description: 中等宽度绿带中，位于中心路径一侧的连续灌木排。
+    required: true
+    assignment_policy: single
+  - role_key: double_right_shrub
+    display_name: 右排灌木
+    description: 中等宽度绿带中，与左排灌木共同形成双排绿化。
+    required: true
+    assignment_policy: single
+  - role_key: outer_shrub
+    display_name: 两侧灌木
+    description: 宽绿带中，位于中心排两侧的连续灌木带。
+    required: true
+    assignment_policy: single
+  - role_key: middle_shrub
+    display_name: 中排灌木
+    description: 宽绿带中，位于两侧灌木之间的中央灌木排。
+    required: true
+    assignment_policy: single
+  - role_key: tree_accent
+    display_name: 沿线乔木
+    description: 在各种宽度绿带中，沿中心路径等距布置乔木。
+    required: true
+    assignment_policy: single
+intent:
+  summary: 道路型线性绿地的宽度自适应灌木带与等距乔木组合。
+  design_keywords:
+    - 道路绿化
+    - 线性绿带
+    - 宽度自适应
+    - 局部中心路径
+terrain_suitability:
+  feature_scope: single_region
+  selection_hint: 优先用于主轴明确的狭长带状区域，不将几何形态推断为真实道路语义。
+  recommended_numeric_features:
+    elongation:
+      preferred_min: 2.5
+    min_width_m:
+      preferred_min: 1.0
+extensions:
+  parameter_preview:
+    version: '1'
+    display_name: 道路绿带
+    fixed_seed: 17
+    boundary_xy: [[0, -3], [160, -3], [160, 3], [0, 3]]
+  role_presentation:
+    version: '1'
+    roles:
+      narrow_center_shrub:
+        suggested_assets:
+        - 矮灌木
+        - 绿篱植物
+        note: 按局部宽度自动使用，不需要手动选择宽度模式。
+      double_left_shrub:
+        suggested_assets:
+        - 矮灌木
+        - 绿篱植物
+        note: 左右相对算法中心路径而言，不代表真实道路或建筑方位。
+      double_right_shrub:
+        suggested_assets:
+        - 矮灌木
+        - 绿篱植物
+        note: 可与左排选用相同素材，也可以形成植物对比。
+      outer_shrub:
+        suggested_assets:
+        - 绿篱植物
+        - 矮灌木
+        note: 一份搭配同时用于两侧，保留中央植被的层次。
+      middle_shrub:
+        suggested_assets:
+        - 观赏灌木
+        - 较高灌木
+        note: 可选与两侧不同的高度或色彩，但不限制具体物种。
+      tree_accent:
+        suggested_assets:
+        - 行道乔木
+        - 棕榈
+        note: 同一绿带宽度变化时，下方可能自动使用多组灌木搭配。
+    groups:
+    - id: narrow
+      order: 1
+      name: 窄绿带
+      description: 默认宽度不超过 1 米，单排灌木。
+      role_keys:
+      - narrow_center_shrub
+      diagram:
+      - {role_key: narrow_center_shrub, kind: area, points: [[5, 20], [95, 20], [95, 42], [5, 42]]}
+      - {role_key: narrow_center_shrub, kind: shrub, x: 17, y: 31, size: 8}
+      - {role_key: narrow_center_shrub, kind: shrub, x: 38, y: 31, size: 8}
+      - {role_key: narrow_center_shrub, kind: shrub, x: 60, y: 31, size: 8}
+      - {role_key: narrow_center_shrub, kind: shrub, x: 82, y: 31, size: 8}
+    - id: double
+      order: 2
+      name: 中等宽度绿带
+      description: 默认大于 1 米、小于 4 米，左右双排。
+      role_keys:
+      - double_left_shrub
+      - double_right_shrub
+      diagram:
+      - {role_key: double_left_shrub, kind: area, points: [[5, 10], [95, 10], [95, 52], [5, 52]]}
+      - {role_key: double_left_shrub, kind: shrub, x: 18, y: 21, size: 10}
+      - {role_key: double_left_shrub, kind: shrub, x: 40, y: 21, size: 10}
+      - {role_key: double_left_shrub, kind: shrub, x: 62, y: 21, size: 10}
+      - {role_key: double_left_shrub, kind: shrub, x: 84, y: 21, size: 10}
+      - {role_key: double_right_shrub, kind: shrub, x: 18, y: 42, size: 10}
+      - {role_key: double_right_shrub, kind: shrub, x: 40, y: 42, size: 10}
+      - {role_key: double_right_shrub, kind: shrub, x: 62, y: 42, size: 10}
+      - {role_key: double_right_shrub, kind: shrub, x: 84, y: 42, size: 10}
+    - id: wide
+      order: 3
+      name: 宽绿带
+      description: 默认不小于 4 米，两侧与中排构成三带。
+      role_keys:
+      - outer_shrub
+      - middle_shrub
+      diagram:
+      - {role_key: outer_shrub, kind: area, points: [[4, 3], [96, 3], [96, 59], [4, 59]]}
+      - {role_key: outer_shrub, kind: shrub, x: 18, y: 13, size: 9}
+      - {role_key: outer_shrub, kind: shrub, x: 40, y: 13, size: 9}
+      - {role_key: outer_shrub, kind: shrub, x: 62, y: 13, size: 9}
+      - {role_key: outer_shrub, kind: shrub, x: 84, y: 13, size: 9}
+      - {role_key: middle_shrub, kind: shrub, x: 18, y: 31, size: 10}
+      - {role_key: middle_shrub, kind: shrub, x: 40, y: 31, size: 10}
+      - {role_key: middle_shrub, kind: shrub, x: 62, y: 31, size: 10}
+      - {role_key: middle_shrub, kind: shrub, x: 84, y: 31, size: 10}
+      - {role_key: outer_shrub, kind: shrub, x: 18, y: 49, size: 9}
+      - {role_key: outer_shrub, kind: shrub, x: 40, y: 49, size: 9}
+      - {role_key: outer_shrub, kind: shrub, x: 62, y: 49, size: 9}
+      - {role_key: outer_shrub, kind: shrub, x: 84, y: 49, size: 9}
+    - id: trees
+      order: 0
+      name: 所有宽度
+      description: 沿线乔木始终沿中心路径布置。
+      role_keys:
+      - tree_accent
+      diagram:
+      - {role_key: tree_accent, kind: area, points: [[5, 8], [95, 8], [95, 54], [5, 54]]}
+      - {role_key: tree_accent, kind: tree, x: 20, y: 31, size: 18}
+      - {role_key: tree_accent, kind: tree, x: 50, y: 31, size: 18}
+      - {role_key: tree_accent, kind: tree, x: 80, y: 31, size: 18}
+parameters:
+  default_seed: 2026071301
+  shrub_spacing_m: 2.0
+  tree_spacing_m: 20.0
+  tree_edge_margin_m: 9.0
+  tree_clear_radius_m: 0.5
+  single_row_max_width_m: 1.0
+  triple_row_min_width_m: 4.0
+  double_row_offset_m: 0.7
+  double_edge_clearance_m: 0.18
+  single_edge_clearance_m: 0.0
+  width_smoothing_window_m: 8.0
+  triple_row_offsets_m:
+    - -1.55
+    - 0.0
+    - 1.55
+  edge_clearance_m: 0.45
+  centerline_jitter_m: 0.0

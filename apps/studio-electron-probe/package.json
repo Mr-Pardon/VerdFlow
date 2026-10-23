@@ -1,0 +1,14 @@
+{
+  "name": "@verdflow/studio-electron-probe",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/main.mjs",
+  "scripts": {
+    "dev": "electron .",
+    "check": "node --check src/main.mjs && node --check src/preload.cjs && node --test tests/*.test.mjs"
+  },
+  "devDependencies": {
+    "electron": "^43.4.0"
+  }
+}

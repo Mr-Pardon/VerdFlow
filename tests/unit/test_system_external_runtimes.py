@@ -78,16 +78,16 @@ class ExternalRuntimeConfigStoreTests(unittest.TestCase):
             reopened = ExternalRuntimeConfigStore(root / "system")
             reopened.prepare()
             loaded = {item.runtime_id: item for item in reopened.list()}
-            self.assertEqual(loaded[BLENDER_RUNTIME_ID].resolved_path, str(blender))
+            self.assertEqual(loaded[BLENDER_RUNTIME_ID].resolved_path, str(blender.resolve()))
             self.assertEqual(
                 loaded[DTS_EXPLORER_RUNTIME_ID].resolved_path,
-                str(explorer),
+                str(explorer.resolve()),
             )
             installation = resolve_dts_explorer_installation(explorer)
-            self.assertEqual(installation.sdk_root, explorer / "SDK")
+            self.assertEqual(installation.sdk_root, explorer.resolve() / "SDK")
             self.assertEqual(
                 installation.executable_path,
-                explorer
+                explorer.resolve()
                 / "AirCityExplorer"
                 / "Binaries"
                 / "Win64"
@@ -123,7 +123,7 @@ class ExternalRuntimeConfigStoreTests(unittest.TestCase):
                 discovered = store.get(DTS_EXPLORER_RUNTIME_ID)
             self.assertTrue(discovered.available)
             self.assertEqual(discovered.resolution_source, "auto")
-            self.assertEqual(discovered.resolved_path, str(explorer))
+            self.assertEqual(discovered.resolved_path, str(explorer.resolve()))
 
 
 class ExternalRuntimeLocalApiTests(unittest.TestCase):

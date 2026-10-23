@@ -108,7 +108,7 @@ class LibraryStoreTests(unittest.TestCase):
                 managed = inspect_strategy_package(managed_root)
 
                 self.assertNotEqual(managed_root, package.root)
-                self.assertTrue(managed_root.is_relative_to(root))
+                self.assertTrue(managed_root.is_relative_to(root.resolve()))
                 self.assertEqual(managed.package_hash, package.package_hash)
                 self.assertEqual(info.package_hash, package.package_hash)
 

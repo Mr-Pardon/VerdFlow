@@ -61,6 +61,8 @@ corepack pnpm build:dts-live-webui
 
 ## 本地开发
 
+仓库镜像维护见 [Gitee Mirror](GITEE_MIRROR.md)。它有独立的 `.github/tests` 回归，不进入应用运行链路。
+
 ```powershell
 corepack pnpm dev:desktop
 ```

@@ -1,0 +1,32 @@
+name: Sync Gitee
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gitee-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'Mr-Pardon/VerdFlow' && github.event.deleted != true && (github.event_name != 'workflow_dispatch' || github.ref == 'refs/heads/main')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test synchronization boundaries
+        run: python3 -m unittest discover -s .github/tests -v
+      - name: Sync main and version tags without force or deletion
+        env:
+          GITEE_SYNC_TOKEN: ${{ secrets.GITEE_SYNC_TOKEN }}
+        run: python3 .github/scripts/sync_gitee.py

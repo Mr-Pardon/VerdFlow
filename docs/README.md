@@ -14,6 +14,7 @@
 - [策略参数展示](architecture/STRATEGY_PARAMETER_PRESENTATION.md)
 - [参数示例预览](architecture/STRATEGY_PARAMETER_PREVIEWS.md)
 - [搭配与参数预设](architecture/PROFILE_PARAMETER_PRESETS.md)
+- [资源导入与发现协议](architecture/RESOURCE_IMPORTS.md)
 - [创作工具包](../packages/authoring-kits/README.md)
 
 ## 开发

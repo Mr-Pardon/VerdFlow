@@ -24,6 +24,7 @@
 | [0017](0017-first-use-guide.md) | 首次使用引导与本机进度 |
 | [0018](0018-curated-starter-resources.md) | 推荐资源清单与快捷导入 |
 | [0019](0019-multi-catalog-browsing.md) | 多资产库检索与独立配置快照 |
+| [0020](0020-plan-import-dependencies.md) | 方案导入依赖补齐与可选来源资产库 |
 
 ## 阅读原则
 

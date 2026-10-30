@@ -1,5 +1,9 @@
 # VerdFlow Authoring Kits
 
+ADR-0020 的方案依赖补齐属于 SystemHost 与资源中心。VFS/VFA 作者无需添加下载代码、
+资源中心 URL、兼容版本表或新的包内字段；资源中心从现有交换包静态检查结果派生发现信息。
+方案来源资产库只是可选推荐，导入它不会自动更新方案的植被快照，也不代表安装外部 PAK。
+
 ADR-0016：VFS Author 使用策略 SemVer，不要求维护兼容版本清单。导出工具包携带
 Contracts 的同源版本解析模块；`build_vfs.py --previous <source-directory>` 可离线检查
 破坏性变更（需要 PyYAML），不执行生成器。依赖方向为 Authoring Kits -> Contracts。

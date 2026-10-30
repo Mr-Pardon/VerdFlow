@@ -1,5 +1,10 @@
 # verdflow-local-api
 
+ADR-0020 增加管理鉴权的 `POST /api/v1/resource-imports/prepare` 与
+`POST /api/v1/resource-imports/confirm`，查询/取消复用 `starter-resources/import`。
+Local API 只校验有界请求并转发 SystemHost，不下载或解析交换包。详见
+[资源导入契约](../../docs/architecture/RESOURCE_IMPORTS.md)。
+
 状态：Experimental  
 架构分类：App / Local Transport  
 维护责任：Local API maintainers

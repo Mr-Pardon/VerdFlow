@@ -92,6 +92,14 @@ export class LocalApiClient {
     return this.request("/api/v1/starter-resources");
   }
 
+  prepareResourceImport(paths: readonly string[], recommended: boolean, strategyPaths: readonly string[] = []): Promise<StarterImportOperation> {
+    return this.request("/api/v1/resource-imports/prepare", { method: "POST", body: JSON.stringify({ paths, recommended, strategy_paths: strategyPaths }) });
+  }
+
+  confirmResourceImport(operationId: string, optionalIds: readonly string[], overwriteIds: readonly string[]): Promise<StarterImportOperation> {
+    return this.request("/api/v1/resource-imports/confirm", { method: "POST", body: JSON.stringify({ operation_id: operationId, optional_ids: optionalIds, overwrite_ids: overwriteIds }) });
+  }
+
   importStarterResources(revision: string): Promise<StarterImportOperation> {
     return this.request("/api/v1/starter-resources/import", { method: "POST", body: JSON.stringify({ revision }) });
   }

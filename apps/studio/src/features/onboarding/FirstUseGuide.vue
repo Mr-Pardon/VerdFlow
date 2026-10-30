@@ -98,7 +98,7 @@ const finish = async () => { guide.pause(); await router.push("/dts"); };
         </label>
       </fieldset>
       <p class="guide-note">{{ guide.step.value.hint }}</p>
-      <button v-if="guide.step.value.id === 'assets' || guide.step.value.id === 'strategies'" class="primary-button" type="button" :disabled="guide.busy.value" @click="starterOpen = true"><Download :size="16" />导入推荐资源</button>
+      <button v-if="['assets', 'strategies', 'plans'].includes(guide.step.value.id)" class="primary-button" type="button" :disabled="guide.busy.value" @click="starterOpen = true"><Download :size="16" />导入推荐资源</button>
       <div v-if="author" class="guide-author">
         <strong><PackageOpen :size="16" />{{ author.name }} <small>进阶创作 · 可选</small></strong>
         <p>{{ author.description }}</p>

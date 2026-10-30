@@ -1,9 +1,22 @@
 """Stateless Local API request values; no Host or HTTP lifecycle."""
 
 from __future__ import annotations
+
 import math
 from typing import Any
+
 from verdflow.contracts import JobStatus
+
+
+def bounded_text_list(document: dict, name: str, *, limit: int = 128) -> tuple[str, ...]:
+    value = document.get(name, [])
+    if not isinstance(value, list) or len(value) > limit or any(
+        not isinstance(item, str) or not item.strip() or len(item) > 4096 for item in value
+    ):
+        raise ValueError(f"{name} must be a bounded list of non-empty strings")
+    if len(set(value)) != len(value):
+        raise ValueError(f"{name} must not contain duplicates")
+    return tuple(value)
 
 
 def required_text(document: dict[str, Any], field: str) -> str:

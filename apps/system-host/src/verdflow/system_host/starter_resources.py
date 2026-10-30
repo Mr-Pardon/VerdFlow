@@ -25,10 +25,27 @@ class StarterImportItem:
 
 
 @dataclass(frozen=True)
+class ImportChoice:
+    id: str
+    name: str
+    kind: str
+    version: str = ""
+    bytes: int = 0
+    optional: bool = False
+    conflict: bool = False
+    blocked: bool = False
+    message: str = ""
+    page_url: str = ""
+
+
+@dataclass(frozen=True)
 class StarterImportOperation:
     operation_id: str
     status: str
     items: tuple[StarterImportItem, ...]
+    choices: tuple[ImportChoice, ...] = ()
+    warnings: tuple[str, ...] = ()
+    error: str = ""
 
 
 class StarterResourceService:
@@ -51,7 +68,7 @@ class StarterResourceService:
         with self._lock:
             if self._closed:
                 raise ValueError("资源导入服务已关闭。")
-            if self._operation and self._operation.status in {"running", "cancelling"}:
+            if self._operation and self._operation.status in {"preparing", "awaiting_confirmation", "running", "cancelling"}:
                 raise ValueError("已有资源正在导入，请等待完成。")
             if not self._manifest or self._manifest.revision != revision:
                 raise ValueError("推荐清单已更新，请重新读取后导入。")
@@ -107,7 +124,8 @@ class StarterResourceService:
         finally:
             with self._lock:
                 items = tuple(replace(item, status="cancelled") if item.status in {"pending", "downloading", "importing"} else item for item in self._operation.items)
-                status = "cancelled" if self._cancel.is_set() else "completed"
+                failed = sum(item.status == "failed" for item in items)
+                status = "cancelled" if self._cancel.is_set() else "failed" if failed == len(items) else "partial" if failed else "completed"
                 self._operation = replace(self._operation, status=status, items=items)
 
     def close(self) -> None:

@@ -15,6 +15,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 MANIFEST_URL = "https://mr-pardon.github.io/verdflow-resources/starter-resources.json"
+MANIFEST_V2_URL = "https://mr-pardon.github.io/verdflow-resources/starter-resources-v2.json"
+RESOURCE_INDEX_URL = "https://mr-pardon.github.io/verdflow-resources/import-index.json"
 PACKAGE_PREFIX = "/Mr-Pardon/verdflow-resources/releases/download/"
 MAX_PACKAGE_BYTES = 256 * 1024 * 1024
 
@@ -48,7 +50,7 @@ def require_url(url: str, *, manifest: bool = False, redirect: bool = False) -> 
     if parsed.scheme != "https" or parsed.username or parsed.password or parsed.port not in (None, 443) or parsed.fragment:
         raise ValueError("Resource URL must be an approved HTTPS address")
     if manifest:
-        if url != MANIFEST_URL:
+        if url not in {MANIFEST_URL, MANIFEST_V2_URL, RESOURCE_INDEX_URL}:
             raise ValueError("Unexpected resource manifest address")
     elif parsed.hostname == "github.com":
         parts = parsed.path.removeprefix(PACKAGE_PREFIX).split("/")
@@ -80,30 +82,41 @@ def parse_manifest(payload: bytes) -> StarterManifest:
     resources = []
     seen = set()
     for item in records:
-        if not isinstance(item, dict):
-            raise ValueError("Invalid starter resource")
-        texts = ("id", "name", "kind", "version", "identity", "filename", "sha256", "url", "page_url")
-        if any(not isinstance(item.get(key), str) or not 0 < len(item[key]) <= 1024 for key in texts):
-            raise ValueError("Invalid starter resource fields")
-        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,99}", item["id"]) or item["id"] in seen:
+        resource = parse_resource(item)
+        if resource.id in seen:
             raise ValueError("Invalid or duplicate resource id")
-        seen.add(item["id"])
-        suffix = {"assets": ".vfa", "strategies": ".vfs"}.get(item["kind"])
-        filename = item["filename"]
-        if not suffix or not filename.endswith(suffix) or re.search(r'[\\/:\x00-\x1f]', filename) or filename in {".", ".."}:
-            raise ValueError("Only VFA and VFS packages can be imported")
-        if type(item.get("bytes")) is not int or not 0 < item["bytes"] <= MAX_PACKAGE_BYTES:
-            raise ValueError("Resource package size exceeds the limit")
-        if not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]):
-            raise ValueError("Missing package SHA-256")
-        require_url(item["url"])
-        if unquote(urlsplit(item["url"]).path.rsplit("/", 1)[-1]) != filename:
-            raise ValueError("Resource filename does not match its URL")
-        page = urlsplit(item["page_url"])
-        if page.scheme != "https" or page.netloc != "mr-pardon.github.io" or page.path != "/verdflow-resources/":
-            raise ValueError("Unexpected resource detail page")
-        resources.append(StarterResource(**{key: item[key] for key in (*texts, "bytes")}))
+        seen.add(resource.id)
+        resources.append(resource)
     return StarterManifest(revision, tuple(resources))
+
+
+def parse_resource(item: object, *, allow_plans: bool = False) -> StarterResource:
+    if not isinstance(item, dict):
+        raise ValueError("Invalid resource")
+    texts = ("id", "name", "kind", "version", "identity", "filename", "sha256", "url", "page_url")
+    if any(not isinstance(item.get(key), str) or not 0 < len(item[key]) <= 1024 for key in texts):
+        raise ValueError("Invalid resource fields")
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,99}", item["id"]):
+        raise ValueError("Invalid resource id")
+    suffixes = {"assets": ".vfa", "strategies": ".vfs"}
+    if allow_plans:
+        suffixes["plans"] = ".vfp"
+    suffix = suffixes.get(item["kind"])
+    filename = item["filename"]
+    if not suffix or not filename.endswith(suffix) or re.search(r'[\\/:\x00-\x1f]', filename) or filename in {".", ".."}:
+        raise ValueError("Unsupported resource filename or kind")
+    limit = 8 * 1024 * 1024 if item["kind"] == "plans" else MAX_PACKAGE_BYTES
+    if type(item.get("bytes")) is not int or not 0 < item["bytes"] <= limit:
+        raise ValueError("Resource package size exceeds the limit")
+    if not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]):
+        raise ValueError("Missing package SHA-256")
+    require_url(item["url"])
+    if unquote(urlsplit(item["url"]).path.rsplit("/", 1)[-1]) != filename:
+        raise ValueError("Resource filename does not match its URL")
+    page = urlsplit(item["page_url"])
+    if page.scheme != "https" or page.netloc != "mr-pardon.github.io" or page.path != "/verdflow-resources/" or page.fragment:
+        raise ValueError("Unexpected resource detail page")
+    return StarterResource(**{key: item[key] for key in (*texts, "bytes")})
 
 
 def load_manifest() -> StarterManifest:
@@ -116,6 +129,16 @@ def load_manifest() -> StarterManifest:
         return parse_manifest(payload)
     except Exception as error:
         raise ValueError("暂时无法读取推荐清单，请稍后重试，或从资源中心下载后手动导入。") from error
+
+
+def load_resource_document(url: str) -> bytes:
+    require_url(url, manifest=True)
+    request = Request(url, headers={"User-Agent": "VerdFlow", "Cache-Control": "no-cache"})
+    with build_opener(_Redirects(True)).open(request, timeout=10) as response:
+        payload = response.read(2 * 1024 * 1024 + 1)
+    if len(payload) > 2 * 1024 * 1024:
+        raise ValueError("资源索引超出大小限制。")
+    return payload
 
 
 def download_package(item: StarterResource, path: Path, cancel: Event, progress: Callable[[int], None]) -> None:

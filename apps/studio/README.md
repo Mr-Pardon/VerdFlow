@@ -1,5 +1,11 @@
 # @verdflow/studio
 
+方案文件导入与新手推荐资源共用 `StarterResourcesDialog` / `useResourceImport`：先由
+SystemHost 预检查，展示策略补齐、独立的可选来源资产库和显式覆盖选项，再提交确认。
+可选库及覆盖默认不选；选择本地 VFS 会重新预检查。关闭弹窗停止轮询并取消未完成操作，
+迟到的受理结果也会被取消。导入完成只提供前往策略库的入口，不自动信任或生成预览。
+来源缺失不影响自包含方案执行；同 major 兼容判断与发现索引均不在 Renderer 重复实现。
+
 ADR-0016：种植方案消费 SystemHost 的 `resolved_strategy_hash/version`，默认使用
 已信任的兼容新版；详情同时展示保存基线与当前版本，不在 Renderer 推断兼容规则。
 

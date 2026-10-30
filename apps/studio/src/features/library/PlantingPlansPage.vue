@@ -9,15 +9,14 @@ import {
 } from "@lucide/vue";
 import { onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
-import { LocalApiClient } from "../../api";
 import { platformBridge } from "../../platform";
 import BindingProfileEditor from "./BindingProfileEditor.vue";
 import PlantingPlanCard from "./PlantingPlanCard.vue";
 import { usePlantingPlans } from "./usePlantingPlans";
 import { usePackageDropTarget } from "./usePackageDropTarget";
 import { useGuidePage } from "../onboarding/context";
+import StarterResourcesDialog from "../onboarding/StarterResourcesDialog.vue";
 import {
-  importPackagesSequentially,
   packageImportFailureMessage,
   unsupportedPackageFailures,
 } from "./packageBatchImport";
@@ -25,9 +24,9 @@ import {
 const router = useRouter();
 const library = usePlantingPlans();
 const bridge = platformBridge();
-const client = new LocalApiClient(bridge);
 const creating = ref(false);
 const importing = ref(false);
+const importSources = ref<readonly string[]>([]);
 const managementAvailable = ref(false);
 const notice = ref("");
 useGuidePage("plans", () => ({
@@ -48,39 +47,25 @@ const importPaths = async (
   pathFailures: readonly string[] = [],
 ) => {
   if (importing.value || !managementAvailable.value) return;
-  importing.value = true;
   notice.value = "";
   library.error.value = "";
-  try {
-    const result = await importPackagesSequentially(
-      paths,
-      (path) => client.importRoleBindingProfilePackage(path),
-      (error) => (error instanceof Error ? error.message : String(error)),
-    );
     const failures = [
       ...unsupportedPackageFailures(rejected, "vfp"),
-      ...result.failures,
       ...pathFailures.map((message, index) => ({
         ordinal: index + 1,
         sourceName: "拖入文件",
         message,
       })),
     ];
-    await library.refresh();
-    notice.value = result.imported.length
-      ? `已导入 ${result.imported.length} 个种植方案`
-      : "";
     if (failures.length)
       library.error.value = packageImportFailureMessage(
         "种植方案",
         failures,
-        result.imported.length,
+        0,
       );
-  } catch (error) {
-    library.error.value =
-      error instanceof Error ? error.message : String(error);
-  } finally {
-    importing.value = false;
+  if (paths.length) {
+    importSources.value = paths;
+    importing.value = true;
   }
 };
 const importPlans = async () => {
@@ -241,5 +226,6 @@ const drop = usePackageDropTarget({
         }
       "
     />
+    <StarterResourcesDialog v-if="importing" :paths="importSources" @close="importing = false; library.refresh()" @imported="library.refresh()" />
   </section>
 </template>

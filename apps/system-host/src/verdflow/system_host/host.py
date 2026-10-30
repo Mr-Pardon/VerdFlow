@@ -228,7 +228,9 @@ from .project_views import (
 from .runtime import LibraryRuntime, ProjectRuntime
 from .strategy_previews import StrategyPreviewRuntime
 from .resource_downloads import StarterManifest, StarterResource
-from .starter_resources import StarterImportOperation, StarterResourceService
+from .starter_resources import StarterImportOperation
+from .plan_imports import PlanImportService
+from .plan_import_library import PlanImportLibrary
 from .secret_store import SecretStore, SecretStoreError, platform_secret_store
 
 
@@ -279,7 +281,9 @@ class SystemHost:
         self._state = SystemHostState.STOPPED
         self._library: LibraryRuntime | None = None
         self._strategy_previews = StrategyPreviewRuntime()
-        self._starter_resources = StarterResourceService(self._import_starter_resource)
+        self._starter_resources = PlanImportService(self._import_starter_resource,
+            PlanImportLibrary(self._library_runtime, self.config.project_call_timeout_seconds),
+            lambda package: self._install_inspected_strategy(package)[1])
         self._asset_search = AssetSearchService()
         self._projects: dict[str, ProjectRuntime] = {}
         self._sessions_by_path: dict[str, str] = {}
@@ -350,7 +354,9 @@ class SystemHost:
                 library = LibraryRuntime(self.config.library_path)
                 self._library = library
                 self._strategy_previews = StrategyPreviewRuntime()
-                self._starter_resources = StarterResourceService(self._import_starter_resource)
+                self._starter_resources = PlanImportService(self._import_starter_resource,
+                    PlanImportLibrary(self._library_runtime, self.config.project_call_timeout_seconds),
+                    lambda package: self._install_inspected_strategy(package)[1])
             try:
                 self._provider_store.prepare()
                 self._external_runtime_store.prepare()
@@ -798,6 +804,16 @@ class SystemHost:
     def starter_resource_manifest(self) -> StarterManifest:
         self._require_running()
         return self._starter_resources.manifest()
+
+    def prepare_resource_import(self, paths: tuple[str, ...], *, recommended: bool = False,
+                                strategy_paths: tuple[str, ...] = ()) -> StarterImportOperation:
+        self._require_running()
+        return self._starter_resources.prepare(paths, recommended=recommended, strategy_paths=strategy_paths)
+
+    def confirm_resource_import(self, operation_id: str, *, optional_ids: tuple[str, ...] = (),
+                                overwrite_ids: tuple[str, ...] = ()) -> StarterImportOperation:
+        self._require_running()
+        return self._starter_resources.confirm(operation_id, optional_ids, overwrite_ids)
 
     def start_starter_import(self, revision: str) -> StarterImportOperation:
         self._require_running()

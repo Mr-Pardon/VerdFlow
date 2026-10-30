@@ -2,6 +2,8 @@
 
 状态：Accepted。
 
+1.0.2 起由 [ADR-0020](0020-plan-import-dependencies.md) 扩展方案推荐、导入确认与可选来源资产库；旧版清单保持兼容。
+
 ## 决策
 
 - 资源仓库维护 `collections/starter.json`，只选择资源 ID 与推荐/固定版本。构建从正式记录

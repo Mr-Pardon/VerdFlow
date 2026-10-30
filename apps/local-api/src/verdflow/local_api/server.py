@@ -708,6 +708,26 @@ class LocalApiServer:
             def do_POST(self) -> None:
                 path = urlsplit(self.path).path.rstrip("/") or "/"
                 try:
+                    if path == "/api/v1/resource-imports/prepare":
+                        self._require_management()
+                        document = self._read_json()
+                        result = system_host.prepare_resource_import(
+                            request_values.bounded_text_list(document, "paths", limit=32),
+                            recommended=request_values.optional_boolean(document, "recommended", default=False),
+                            strategy_paths=request_values.bounded_text_list(document, "strategy_paths", limit=8),
+                        )
+                        self._send_json(HTTPStatus.ACCEPTED, asdict(result))
+                        return
+                    if path == "/api/v1/resource-imports/confirm":
+                        self._require_management()
+                        document = self._read_json()
+                        result = system_host.confirm_resource_import(
+                            request_values.required_text(document, "operation_id"),
+                            optional_ids=request_values.bounded_text_list(document, "optional_ids"),
+                            overwrite_ids=request_values.bounded_text_list(document, "overwrite_ids"),
+                        )
+                        self._send_json(HTTPStatus.ACCEPTED, asdict(result))
+                        return
                     if path == "/api/v1/asset-search":
                         self._require_management()
                         result = system_host.search_asset_catalogs(parse_asset_search_request(self._read_json()))

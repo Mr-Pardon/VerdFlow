@@ -1,62 +1,83 @@
 <script setup lang="ts">
 import { computed, onMounted, onScopeDispose, ref, watch } from "vue";
-import { ArrowUpRight, BookOpen, Check, Download, LoaderCircle, PackageOpen, RefreshCw, X } from "@lucide/vue";
-import { useStarterResources } from "./useStarterResources";
+import { ArrowUpRight, BookOpen, Check, Download, FileInput, LoaderCircle, PackageOpen, RefreshCw, Sprout, X } from "@lucide/vue";
+import { useResourceImport } from "./useResourceImport";
 import type { StarterImportItem } from "../../api/starterResources";
+import { platformBridge } from "../../platform";
 
+const props = withDefaults(defineProps<{ paths?: readonly string[] }>(), { paths: () => [] });
 const emit = defineEmits<{ close: []; imported: [] }>();
-const state = useStarterResources();
+const state = useResourceImport(props.paths);
+const bridge = platformBridge();
 const dialog = ref<HTMLDialogElement>();
 const labels: Record<StarterImportItem["status"], string> = {
-  pending: "等待导入", downloading: "正在下载", importing: "正在导入", imported: "已导入", existing: "已存在", failed: "未完成", cancelled: "已取消",
+  pending: "等待导入", downloading: "正在下载", importing: "正在导入", imported: "已导入", existing: "已存在", failed: "未完成", cancelled: "已取消", blocked: "待处理", skipped: "已跳过",
 };
 const results = computed(() => new Map(state.operation.value?.items.map(item => [item.id, item]) ?? []));
-const finished = computed(() => state.operation.value && !state.running.value);
 const successful = computed(() => state.operation.value?.items.filter(item => ["imported", "existing"].includes(item.status)).length ?? 0);
-const totalBytes = computed(() => state.manifest.value?.resources.reduce((sum, item) => sum + item.bytes, 0) ?? 0);
+const choices = computed(() => state.operation.value?.choices ?? []);
+const selected = computed(() => choices.value.filter(item => !item.blocked && (!item.optional || state.optionalIds.value.includes(item.id)) && (!item.conflict || state.overwriteIds.value.includes(item.id))));
+const totalBytes = computed(() => selected.value.reduce((sum, item) => sum + item.bytes, 0));
+const groups = computed(() => [
+  { title: "本次导入", items: choices.value.filter(item => !item.optional) },
+  { title: "来源资产库 · 可选", items: choices.value.filter(item => item.optional) },
+].filter(group => group.items.length));
 const size = (bytes: number) => bytes < 1024 * 1024 ? `${Math.ceil(bytes / 1024)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-const close = () => { if (!state.running.value) emit("close"); };
-watch(finished, value => { if (value) emit("imported"); });
-onMounted(() => { dialog.value?.showModal(); void state.load(); });
+const close = () => emit("close");
+const selectStrategy = async () => {
+  const result = await bridge.selectSourceFiles(["vfs"]);
+  if (result.ok) await state.prepare(result.value);
+  else if (result.reason !== "cancelled") state.error.value = result.message;
+};
+watch(state.finished, value => { if (value) emit("imported"); });
+onMounted(() => { dialog.value?.showModal(); void state.prepare(); });
 onScopeDispose(() => dialog.value?.close());
 </script>
 
 <template>
   <dialog ref="dialog" class="starter-dialog" aria-labelledby="starter-title" @cancel.prevent="close">
     <header class="starter-dialog__header">
-      <div><span class="guide-eyebrow">资源中心</span><h2 id="starter-title">准备推荐资源</h2></div>
-      <button class="icon-button" title="关闭" aria-label="关闭" :disabled="state.running.value" @click="close"><X :size="18" /></button>
+      <div><span class="guide-eyebrow">资源导入</span><h2 id="starter-title">{{ paths.length ? '导入种植方案' : '准备推荐资源' }}</h2></div>
+      <button class="icon-button" title="关闭并取消未完成的导入" aria-label="关闭" @click="close"><X :size="18" /></button>
     </header>
     <div class="starter-dialog__body">
-      <p class="starter-dialog__note">导入资产库与种植策略，开始配置你的第一份种植方案。</p>
-      <p v-if="state.loading.value" class="starter-dialog__loading" role="status"><LoaderCircle class="spinning" :size="18" />正在读取推荐清单</p>
+      <p v-if="state.operation.value?.status === 'preparing' || state.submitting.value" class="starter-dialog__loading" role="status"><LoaderCircle class="spinning" :size="18" />正在检查资源</p>
+      <section v-for="group in groups" :key="group.title" class="starter-group">
+      <h3>{{ group.title }}</h3>
+      <p v-if="group.title.includes('可选')" class="starter-dialog__note">方便后续浏览与编辑，不影响方案使用。</p>
       <ul class="starter-resources">
-        <li v-for="item in state.manifest.value?.resources" :key="item.id">
-          <span class="starter-resource__icon"><PackageOpen v-if="item.kind === 'assets'" :size="22" /><BookOpen v-else :size="22" /></span>
+        <li v-for="item in group.items" :key="item.id">
+          <input v-if="item.optional" v-model="state.optionalIds.value" type="checkbox" :value="item.id" :disabled="!state.waiting.value || state.busy.value" :aria-label="`同时导入 ${item.name}`" />
+          <span class="starter-resource__icon"><PackageOpen v-if="item.kind === 'assets'" :size="22" /><Sprout v-else-if="item.kind === 'plans'" :size="22" /><BookOpen v-else :size="22" /></span>
           <div class="starter-resource__copy">
             <strong>{{ item.name }}</strong>
-            <small>{{ item.kind === 'assets' ? '资产库 · VFA' : '种植策略 · VFS' }} · v{{ item.version }} · {{ size(item.bytes) }}</small>
+            <small>{{ item.kind === 'assets' ? '资产库 · VFA' : item.kind === 'plans' ? '种植方案 · VFP' : '种植策略 · VFS' }}<template v-if="item.version"> · v{{ item.version }}</template><template v-if="item.bytes"> · {{ size(item.bytes) }}</template></small>
+            <p>{{ item.message }}</p>
+            <label v-if="item.conflict && !item.blocked" class="starter-overwrite"><input v-model="state.overwriteIds.value" type="checkbox" :value="item.id" :disabled="!state.waiting.value || state.busy.value" />替换本地已有方案</label>
             <progress v-if="results.get(item.id)?.status === 'downloading'" :value="results.get(item.id)?.downloaded_bytes" :max="item.bytes" :aria-label="`${item.name} 下载进度`" />
-            <p v-if="results.get(item.id)?.message" class="guide-error">{{ results.get(item.id)?.message }}</p>
+            <p v-if="results.get(item.id)?.message" :class="{ 'guide-error': results.get(item.id)?.status === 'failed' }">{{ results.get(item.id)?.message }}</p>
           </div>
-          <span v-if="results.has(item.id)" class="starter-resource__state" :class="{ 'guide-error': results.get(item.id)?.status === 'failed' }">{{ labels[results.get(item.id)!.status] }}</span>
-          <a :href="item.page_url" target="_blank" rel="noopener noreferrer" class="icon-button" :title="`查看 ${item.name} 资源说明`" :aria-label="`查看 ${item.name} 资源说明`"><ArrowUpRight :size="16" /></a>
+          <span v-if="results.has(item.id) && !state.waiting.value" class="starter-resource__state" :class="{ 'guide-error': results.get(item.id)?.status === 'failed' }">{{ labels[results.get(item.id)!.status] }}</span>
+          <a v-if="item.page_url" :href="item.page_url" target="_blank" rel="noopener noreferrer" class="icon-button" :title="`查看 ${item.name} 资源说明`" :aria-label="`查看 ${item.name} 资源说明`"><ArrowUpRight :size="16" /></a>
         </li>
       </ul>
-      <p v-if="state.manifest.value && !state.manifest.value.resources.length" class="starter-dialog__note">当前暂无推荐资源，可从资源中心选择下载。</p>
+      </section>
+      <p v-for="warning in state.operation.value?.warnings" :key="warning" class="starter-dialog__note">{{ warning }}</p>
       <p class="starter-dialog__notice">策略导入后仍需确认信任。DTS 模型本体未包含在资产库中，配套 PAK 请从资产资源说明页获取。</p>
       <a class="text-button" href="https://mr-pardon.github.io/verdflow-resources/" target="_blank" rel="noopener noreferrer">浏览资源中心<ArrowUpRight :size="14" /></a>
       <p v-if="state.error.value" role="alert" class="guide-error">{{ state.error.value }}</p>
-      <p v-if="finished" role="status" class="starter-dialog__result"><Check :size="17" />{{ successful }} / {{ state.operation.value?.items.length }} 项资源已就绪{{ successful < (state.operation.value?.items.length ?? 0) ? '，未完成的项目可重试' : '' }}</p>
+      <p v-if="state.finished.value && successful" role="status" class="starter-dialog__result"><Check :size="17" />{{ successful }} 项资源已导入或已存在</p>
+      <RouterLink v-if="state.finished.value && successful" class="text-button" to="/strategies" @click="close">前往策略库确认信任<ArrowUpRight :size="14" /></RouterLink>
     </div>
     <footer class="starter-dialog__footer">
       <span>{{ size(totalBytes) }}</span>
-      <button v-if="state.error.value && state.running.value" class="secondary-button" @click="state.poll"><RefreshCw :size="16" />刷新状态</button>
-      <button v-if="state.running.value" class="secondary-button" :disabled="state.submitting.value || state.operation.value?.status === 'cancelling'" @click="state.cancel"><X :size="16" />{{ state.operation.value?.status === 'cancelling' ? '正在取消' : '取消导入' }}</button>
+      <button v-if="state.error.value && state.busy.value" class="secondary-button" @click="state.poll"><RefreshCw :size="16" />刷新状态</button>
+      <button v-if="state.busy.value" class="secondary-button" :disabled="state.submitting.value || state.operation.value?.status === 'cancelling'" @click="state.cancel"><X :size="16" />{{ state.operation.value?.status === 'cancelling' ? '正在取消' : '取消导入' }}</button>
       <template v-else>
-        <button class="text-button" @click="close">{{ finished ? '返回引导' : '稍后再说' }}</button>
-        <button v-if="!state.manifest.value" class="secondary-button" :disabled="state.loading.value" @click="state.load"><RefreshCw :size="16" />重新读取</button>
-        <button v-else-if="!finished || successful < state.manifest.value.resources.length" class="primary-button" :disabled="!state.manifest.value.resources.length" @click="state.start"><Download :size="16" />{{ finished ? '重试导入' : '一键导入' }}</button>
+        <button v-if="choices.some(item => item.blocked) || (state.finished.value && ['partial', 'failed'].includes(state.operation.value?.status ?? '') && choices.some(item => item.kind === 'plans'))" class="secondary-button" :disabled="!bridge.capabilities.selectSourceFiles" @click="selectStrategy"><FileInput :size="16" />选择本地策略</button>
+        <button v-if="!state.waiting.value || state.error.value" class="secondary-button" @click="state.prepare()"><RefreshCw :size="16" />重新检查</button>
+        <button v-if="state.waiting.value" class="primary-button" :disabled="!selected.length" @click="state.confirm"><Download :size="16" />确认导入</button>
+        <button v-else class="primary-button" @click="close">完成</button>
       </template>
     </footer>
   </dialog>
@@ -84,5 +105,11 @@ onScopeDispose(() => dialog.value?.close());
 .starter-dialog__footer { border-top: 1px solid var(--color-border); flex-wrap: wrap; justify-content: flex-end; }
 .starter-dialog__footer > span { margin-right: auto; color: var(--color-text-muted); font-size: 12px; }
 .starter-dialog__result, .starter-dialog__loading { display: flex; gap: 8px; align-items: center; color: var(--color-accent); }
+.starter-group { margin: 0 0 20px; }
+.starter-group h3 { font-size: 14px; margin: 0 0 6px; }
+.starter-group .starter-resources { margin-top: 0; }
+.starter-resource__copy p { margin: 6px 0 0; color: var(--color-text-muted); }
+.starter-overwrite { display: flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 13px; }
+.starter-dialog input[type="checkbox"] { width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--color-accent); }
 @media (max-width: 480px) { .starter-dialog__body, .starter-dialog__header, .starter-dialog__footer { padding: 16px; } .starter-resource__icon { display: none; } .starter-resources li { gap: 8px; } }
 </style>

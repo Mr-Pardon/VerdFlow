@@ -12,9 +12,15 @@
 | [windows_branding.mjs](windows_branding.mjs) | 为 Windows 可执行文件写入图标和产品信息，供构建调用 |
 | [build_portable_release.py](build_portable_release.py) | 构建 Windows x64 免安装包、校验信息和更新描述 |
 | [portable_licenses.py](portable_licenses.py) | 收集实际随包依赖的第三方声明，供构建调用 |
+| [inspect_resource_center.py](inspect_resource_center.py) | 静态检查资源中心真实附件，输出 v2 发现协议的审核事实；不执行策略、不导入 Library |
 
 固定 Python wheel 清单见 [portable-requirements.txt](portable-requirements.txt)，品牌回归见
 [branding.test.mjs](tests/branding.test.mjs)。
+
+`inspect_resource_center.py --resources-root <资源仓库目录> --output <检查记录.json>` 使用本工作区
+的包读取器及 Python 依赖，按已审核条目的固定 Release 地址受控下载。`--packages-root`
+可改为读取本地已下载附件。临时下载自动清理，输出仅含公开资源信息和内容指纹；提交资源
+仓库前需审核，运行工具不触发部署。契约见 `docs/architecture/RESOURCE_IMPORTS.md`。
 
 ## 按需集成验证
 

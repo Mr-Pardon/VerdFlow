@@ -1,6 +1,6 @@
 # ADR-0022: Typed Path Input and Paired Placement
 
-Status: Accepted. Introduced in 1.1.0.
+Status: Accepted. Introduced in 1.1.1.
 
 Open polylines are immutable PathSets, never zero-area Regions. A strategy declares
 exactly one input_geometry kind; legacy strategies default to polygon. Existing

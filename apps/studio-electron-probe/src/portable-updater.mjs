@@ -43,8 +43,10 @@ export class PortableUpdater {
 
   async initialize() {
     if (!this.state.supported) return;
-    this.cache = path.join(this.portable.userDataPath, "Updates");
     try {
+      await mkdir(this.portable.userDataPath, { recursive: true });
+      // Canonicalize the configured root, but never follow an Updates junction for cleanup.
+      this.cache = path.join(await realpath(this.portable.userDataPath), "Updates");
       await mkdir(this.cache, { recursive: true });
       const source = JSON.parse(await readFile(path.join(this.portable.resourcesPath, "app/updates.json"), "utf8"));
       if (source.schema !== "verdflow.update-source" || source.version !== "1") throw new Error("更新源配置无效");

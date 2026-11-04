@@ -8,7 +8,7 @@ import { PortableUpdater } from "../src/portable-updater.mjs";
 
 const repository = "example/verdflow-test";
 const archiveName = "VerdFlow-Studio-v0.4.0-win-x64.zip";
-async function fixture({ source = repository, corrupt = false, prepareFailure = false, latestStatus = 200, metadataStatus = 200, latestFailures = 0, interruptedDownloads = 0, shortDownloads = 0, retryDelays = [0, 0], latestHeaders = {} } = {}) {
+async function fixture({ source = repository, corrupt = false, prepareFailure = false, latestStatus = 200, metadataStatus = 200, latestFailures = 0, interruptedDownloads = 0, shortDownloads = 0, retryDelays = [0, 0], latestHeaders = {}, usePathAlias = false } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "verdflow-update-test-"));
   const install = path.join(root, "application"), data = path.join(root, "data");
   await mkdir(path.join(install, "resources/app"), { recursive: true });
@@ -19,7 +19,7 @@ async function fixture({ source = repository, corrupt = false, prepareFailure = 
   const bytes = Buffer.from("an isolated archive fixture");
   let fetches = 0, launches = 0, apiCalls = 0, archiveCalls = 0, preparations = 0;
   const updater = new PortableUpdater({
-    portable: { rootPath: install, resourcesPath: path.join(install, "resources"), userDataPath: data, pythonExecutablePath: "unused" }, version: "0.3.1", scriptRoot: "unused", retryDelays,
+    portable: { rootPath: install, resourcesPath: path.join(install, "resources"), userDataPath: usePathAlias ? path.join(root, "DATA") : data, pythonExecutablePath: "unused" }, version: "0.3.1", scriptRoot: "unused", retryDelays,
     fetcher: async url => {
       fetches++;
       if (String(url).includes("api.github.com")) {
@@ -114,7 +114,7 @@ test("rate limits are not hammered and cancelling backoff stops the next transfe
     assert.equal(limited.apiCalls(), 1);
     assert.match(limited.updater.snapshot().message, /访问次数/);
   } finally { await limited.cleanup(); }
-  const f = await fixture({ interruptedDownloads: 5, retryDelays: [5000, 5000] });
+  const f = await fixture({ interruptedDownloads: 5, retryDelays: [5000, 5000], usePathAlias: true });
   try {
     f.updater.notify = state => { if (state.message?.includes("自动重试")) f.updater.cancel(); };
     await f.updater.check();

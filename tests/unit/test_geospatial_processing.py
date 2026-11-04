@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import subprocess
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -30,7 +31,7 @@ except ImportError:
     shapefile = None
     shapely = None
 
-from verdflow.geospatial_worker import package_shapefile  # noqa: E402
+from verdflow.geospatial_worker import package_shapefile, GeospatialDataError  # noqa: E402
 from verdflow.geospatial_worker.processing import (  # noqa: E402
     prepare_regions,
     sample_elevation,
@@ -148,8 +149,50 @@ class GeospatialProcessingTests(unittest.TestCase):
             outside = root / "outside.json"
             outside.write_text(json.dumps(_point_set([9.0, 9.0, 0.0])), encoding="utf-8")
             command["points_path"] = str(outside)
-            with self.assertRaisesRegex(ValueError, "outside GeoTIFF"):
+            with self.assertRaises(GeospatialDataError) as caught:
                 sample_elevation(command)
+            self.assertEqual(caught.exception.code, "geo_point_outside_raster")
+            self.assertIn("第 1 个", str(caught.exception))
+            self.assertIn("覆盖范围", str(caught.exception))
+
+    def test_worker_result_retains_semantic_geometry_error_without_exposing_local_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            vector = root / "invalid.geojson"
+            vector.write_text('{"type":"Polygon","coordinates":[[[0,0],[4,4],[0,4],[4,0],[0,0]]]}', encoding="utf-8")
+            command = root / "command.json"
+            command.write_text(json.dumps(_command(vector, "geojson", root / "unused.tif")), encoding="utf-8")
+            result = root / "result.json"
+            process = subprocess.run([sys.executable, "-I", str(ROOT / "adapters/geospatial-worker/src/verdflow/geospatial_worker/worker_entry.py"),
+                                      "--command", str(command), "--output-dir", str(root / "out"), "--result", str(result)],
+                                     capture_output=True, timeout=25)
+            document = json.loads(result.read_text(encoding="utf-8"))
+            self.assertEqual(process.returncode, 1)
+            self.assertEqual(document["error_code"], "geo_invalid_geometry")
+            self.assertIn("第 1 条", document["message"])
+            self.assertIn("修复", document["message"])
+            self.assertNotIn(str(root), document["message"])
+
+    def test_raster_bounds_and_nodata_have_distinct_actionable_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            raster = _write_raster(root / "elevation.tif")
+            vector = root / "regions.geojson"
+            vector.write_text('{"type":"Polygon","coordinates":[[[10,10],[12,10],[12,12],[10,12],[10,10]]]}', encoding="utf-8")
+            command = _command(vector, "geojson", raster)
+            with self.assertRaises(GeospatialDataError) as caught:
+                prepare_regions(command, root / "work")
+            self.assertEqual(caught.exception.code, "geo_bounds_mismatch")
+            self.assertIn("坐标", str(caught.exception))
+            with rasterio.open(raster, "r+") as dataset:
+                dataset.write(numpy.full((4,4), -9999, dtype="float32"), 1)
+            points = root / "points.json"
+            points.write_text(json.dumps(_point_set([0.5,3.5,0])), encoding="utf-8")
+            command["points_path"] = str(points)
+            with self.assertRaises(GeospatialDataError) as caught:
+                sample_elevation(command)
+            self.assertEqual(caught.exception.code, "geo_raster_nodata")
+            self.assertIn("NoData", str(caught.exception))
 
 
 def _write_raster(path: Path, *, crs: str | None = None) -> Path:

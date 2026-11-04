@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 import sys
 import uuid
+import traceback
+import zipfile
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -16,6 +18,7 @@ from verdflow.geospatial_worker.processing import (  # noqa: E402
     prepare_regions,
     sample_elevation,
 )
+from verdflow.geospatial_worker.errors import GeospatialDataError  # noqa: E402
 
 
 def main() -> int:
@@ -87,13 +90,27 @@ def main() -> int:
         )
         return 0
     except Exception as error:
+        traceback.print_exc()
+        if isinstance(error, GeospatialDataError):
+            code, message = error.code, str(error)
+        elif isinstance(error, MemoryError):
+            code, message = "geo_memory_exhausted", "处理地理数据时内存不足，任务已停止。请减少面数、简化轮廓或分批建立项目；现有项目数据已保留。"
+        elif isinstance(error, json.JSONDecodeError):
+            code, message = "geo_invalid_json", f"JSON 数据在第 {error.lineno} 行、第 {error.colno} 列存在语法错误，请检查 GeoJSON 文件是否完整。"
+        elif isinstance(error, (UnicodeError, LookupError)):
+            code, message = "geo_encoding_invalid", "区域属性表的字符编码无法解析，请检查或补齐正确的 .cpg 文件后重新导入。"
+        elif isinstance(error, (OSError, zipfile.BadZipFile)):
+            code, message = "geo_file_unreadable", "无法读取地理数据，请检查文件完整性、访问权限及 SHP 配套文件；项目已保留。"
+        else:
+            code, message = "geo_processing_failed", "地理数据处理未能完成，任务已停止且项目已保留。请检查数据格式、有效几何及 SHP＋TIF 的坐标对齐；详细原因可在任务诊断中查看。"
         _write_json(
             args.result,
             {
                 "schema": "verdflow.geospatial-worker.result",
                 "version": "1",
                 "status": "failed",
-                "message": str(error),
+                "error_code": code,
+                "message": message,
             },
         )
         return 1

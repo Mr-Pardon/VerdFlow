@@ -29,6 +29,7 @@ import RegionSelectionPanel from "./components/RegionSelectionPanel.vue";
 import MappingWorkspace from "./components/MappingWorkspace.vue";
 import PlantingPlanSelection from "./components/PlantingPlanSelection.vue";
 import { scrollPanelWheel } from "./shared/panelScroll";
+import { geometryPayload } from "./shared/regionLimits";
 
 const logoUrl = `${import.meta.env.BASE_URL}brand/logo-dark.png`;
 const iconUrl = `${import.meta.env.BASE_URL}brand/icon-256.png`;
@@ -47,7 +48,7 @@ const {
 const session = useLiveSession(errorMessage, {
   initializeConfiguration: () => configuration.initializeOptions(),
   onRestored: (snapshot) =>
-    regionController.restoreRegions(snapshot.selection_regions ?? []),
+    regionController.restoreRegions([...(snapshot.selection_regions ?? []), ...(snapshot.selection_paths ?? [])]),
   onCompleted: () => regionController.completeRegions(),
   onRegionDrawn: (region) => regionController.addDrawnRegion(region),
   onDrawingFinished: () => {
@@ -90,6 +91,7 @@ const {
   refreshConfigurationOptions,
 } = configuration;
 const regionController = useRegionDrafts({
+  inputGeometry: computed(() => selectedStrategy.value?.summary.input_geometry ?? "polygon"),
   sdk,
   sdkReady,
   operationActive,
@@ -129,12 +131,7 @@ const startSelection = async () => {
     configurationInput,
     regions.value
       .filter((region) => region.enabled)
-      .map(({ region_id, name, coordinates, bbox }) => ({
-        region_id,
-        name,
-        coordinates,
-        bbox,
-      })),
+      .map(geometryPayload),
   );
 };
 </script>
@@ -196,10 +193,10 @@ const startSelection = async () => {
     </header>
 
     <div v-show="!panelCollapsed" class="live-content">
-      <div v-if="errorMessage" class="message error-message">
+      <div v-if="errorMessage" class="message error-message" role="alert">
         <AlertCircle :size="16" />
         <span>{{ errorMessage }}</span>
-        <button title="关闭" @click="errorMessage = null">
+        <button type="button" title="关闭提示" aria-label="关闭提示" @click="errorMessage = null">
           <X :size="15" />
         </button>
       </div>
@@ -324,7 +321,7 @@ const startSelection = async () => {
           <Play :size="17" fill="currentColor" />
           {{ submitting ? "正在启动" : "开始种植"
           }}<span v-if="enabledRegionCount">
-            · {{ enabledRegionCount }} 个面</span
+            · {{ enabledRegionCount }} {{ regionController.pathMode.value ? '条路径' : '个面' }}</span
           >
         </button>
       </div>

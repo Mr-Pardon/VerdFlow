@@ -30,3 +30,15 @@ test('invalid requests describe the failed phase rather than blaming every error
     });
   }
 });
+
+test('SHP API errors preserve actionable server detail and a stable machine code', async () => {
+  const api = {};
+  vm.runInNewContext(source, {exports:api, fetch:async()=>({ok:false,status:400,json:async()=>({error:{
+    code:'shp_vertex_limit',message:'当前 210,000 顶点，超过 200,000；请使用工作台 SHP＋TIF。',
+  }})})});
+  await assert.rejects(() => api.importRegionsShapefile(), error => {
+    assert.equal(error.code, 'shp_vertex_limit');
+    assert.match(error.message, /210,000.*200,000.*工作台/);
+    return true;
+  });
+});

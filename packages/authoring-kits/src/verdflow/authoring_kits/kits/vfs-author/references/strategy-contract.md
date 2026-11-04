@@ -20,6 +20,16 @@
 
 ## 生成器输入
 
+策略的 `input_geometry` 只能为 `polygon` 或 `polyline`，不声明时按旧面输入处理。
+本期每个策略只接收一种输入。不得把已发布面策略直接改成线策略并作为兼容升级；
+优先新增策略，输入类型改变属于破坏性变更。
+`polyline` 策略接收 `selected_paths`，每条包含 `id`、`name` 和有序 XYZ `coordinates`。
+仅开放折线，不能自行闭合、缓冲为面或读取 Profile/资产尺寸。线策略返回 PointSet v3，
+逐点使用 `path_id`，不得填入 `region_id`；其余位置、角色、旋转字段与 v2 语义一致。
+面策略继续接收 `selected_regions` 并返回 PointSet v2，不改写历史格式。
+旋转必须显式输出，不存在内核随机兜底。点位可以共位置但必须有独立 ID，
+相关角色通过相同 `group_id` 关联；分组不是资产择一或事务式绑定。
+
 生成器接收一个包含以下字段的对象：
 
 - `strategy`：已通过校验的 Strategy v2 数据；
@@ -103,3 +113,7 @@ Profile 可以可选保存公开参数值，方便用户复用植被搭配与构
 可选 `extensions.parameter_preview` v1 为原生成器提供一个固定样本地块，让用户观察参数
 变化。格式、尺度和预算见 `parameter-preview.md`。它不改变正式生成入口，不允许独立脚本、
 图片或 Studio 专属算法；样本与固定种子不进入 Profile。
+
+线策略改用 `parameter_preview` v2：只包含 `version: '2'`、`display_name`、
+`fixed_seed` 和 `path_xy`，由至少两个、不超过 256 个有序二维顶点组成开放路径。
+顶点为有限局部米制坐标，绝对值不超过 1000。使用同一生成器和参数，不额外提供预览算法。

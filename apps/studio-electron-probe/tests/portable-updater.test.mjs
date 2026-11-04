@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PortableUpdater } from "../src/portable-updater.mjs";
 
 const repository = "example/verdflow-test";
 const archiveName = "VerdFlow-Studio-v0.4.0-win-x64.zip";
-async function fixture({ source = repository, corrupt = false, prepareFailure = false, latestStatus = 200, metadataStatus = 200 } = {}) {
+async function fixture({ source = repository, corrupt = false, prepareFailure = false, latestStatus = 200, metadataStatus = 200, latestFailures = 0, interruptedDownloads = 0, shortDownloads = 0, retryDelays = [0, 0], latestHeaders = {} } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), "verdflow-update-test-"));
   const install = path.join(root, "application"), data = path.join(root, "data");
   await mkdir(path.join(install, "resources/app"), { recursive: true });
@@ -17,21 +17,34 @@ async function fixture({ source = repository, corrupt = false, prepareFailure = 
   await writeFile(path.join(data, "project"), "keep-project-data");
   await writeFile(path.join(install, "resources/app/updates.json"), JSON.stringify({ schema: "verdflow.update-source", version: "1", repository: source }));
   const bytes = Buffer.from("an isolated archive fixture");
-  let fetches = 0, launches = 0;
+  let fetches = 0, launches = 0, apiCalls = 0, archiveCalls = 0, preparations = 0;
   const updater = new PortableUpdater({
-    portable: { rootPath: install, resourcesPath: path.join(install, "resources"), userDataPath: data, pythonExecutablePath: "unused" }, version: "0.3.1", scriptRoot: "unused",
+    portable: { rootPath: install, resourcesPath: path.join(install, "resources"), userDataPath: data, pythonExecutablePath: "unused" }, version: "0.3.1", scriptRoot: "unused", retryDelays,
     fetcher: async url => {
       fetches++;
-      if (String(url).includes("api.github.com") && latestStatus !== 200) return new Response(null, { status: latestStatus });
+      if (String(url).includes("api.github.com")) {
+        apiCalls++;
+        if (apiCalls <= latestFailures) throw new TypeError("fetch failed", { cause: { code: "ECONNRESET" } });
+        if (latestStatus !== 200) return new Response(null, { status: latestStatus, headers: latestHeaders });
+      }
       if (String(url).endsWith(".json") && metadataStatus !== 200) return new Response(null, { status: metadataStatus });
       if (String(url).includes("api.github.com")) return Response.json({ tag_name: "v0.4.0", assets: [
         { name: "VerdFlow-update-win-x64.json", browser_download_url: `https://github.com/${repository}/releases/download/v0.4.0/VerdFlow-update-win-x64.json` },
         { name: archiveName, size: bytes.length, browser_download_url: `https://github.com/${repository}/releases/download/v0.4.0/${archiveName}` },
       ] });
       if (String(url).endsWith(".json")) return Response.json({ schema: "verdflow.portable-update", version: "1", product_version: "0.4.0", platform: "windows-x64", archive_name: archiveName, archive_bytes: bytes.length, archive_sha256: corrupt ? "0".repeat(64) : createHash("sha256").update(bytes).digest("hex") });
-      return new Response(bytes);
+      archiveCalls++;
+      if (archiveCalls <= interruptedDownloads) {
+        let sent = false;
+        return new Response(new ReadableStream({ pull(controller) {
+          if (!sent) { sent = true; controller.enqueue(bytes.subarray(0, 5)); }
+          else controller.error(Object.assign(new Error("fixture body interrupted"), { code: "ECONNRESET" }));
+        } }));
+      }
+      return new Response(archiveCalls <= shortDownloads ? bytes.subarray(0, 5) : bytes);
     },
     prepare: async ({ planPath, signal }) => {
+      preparations++;
       signal.throwIfAborted();
       const plan = JSON.parse(await readFile(planPath, "utf8"));
       await mkdir(plan.stageRoot);
@@ -42,9 +55,89 @@ async function fixture({ source = repository, corrupt = false, prepareFailure = 
     launch: async () => { launches++; },
   });
   await updater.initialize();
-  return { root, data, install, updater, fetches: () => fetches, launches: () => launches,
+  return { root, data, install, updater, bytes, fetches: () => fetches, launches: () => launches, apiCalls: () => apiCalls, archiveCalls: () => archiveCalls, preparations: () => preparations,
     cleanup: async () => { updater.dispose(); if (path.dirname(root) === os.tmpdir() && path.basename(root).startsWith("verdflow-update-test-")) await rm(root, { recursive: true }); } };
 }
+
+test("transient check and interrupted streams recover automatically with a fresh archive", async () => {
+  const f = await fixture({ latestFailures: 1, interruptedDownloads: 1 });
+  try {
+    await f.updater.check();
+    assert.equal(f.updater.snapshot().stage, "ready");
+    assert.equal(f.apiCalls(), 2);
+    assert.equal(f.archiveCalls(), 2);
+    assert.equal(f.preparations(), 1);
+    assert.deepEqual(await readFile(f.updater.plan.archive), f.bytes);
+    const logs = JSON.parse(await readFile(path.join(f.data, "Updates/diagnostics.json"), "utf8"));
+    assert.deepEqual(logs.map(item => item.phase), ["release", "downloading"]);
+    assert.ok(logs.every(item => item.category === "network" && item.retry === 1));
+    assert.equal(f.launches(), 0);
+  } finally { await f.cleanup(); }
+});
+
+test("incomplete downloads retry, but checksum and preparation failures do not", async () => {
+  for (const options of [{ shortDownloads: 1 }, { corrupt: true }, { prepareFailure: true }]) {
+    const f = await fixture(options);
+    try {
+      await f.updater.check();
+      assert.equal(f.archiveCalls(), options.shortDownloads ? 2 : 1);
+      assert.equal(f.updater.snapshot().stage, options.shortDownloads ? "ready" : "available");
+      const logs = JSON.parse(await readFile(path.join(f.data, "Updates/diagnostics.json"), "utf8"));
+      if (options.corrupt) assert.equal(logs.at(-1).category, "checksum");
+      if (options.prepareFailure) assert.equal(logs.at(-1).phase, "preparing");
+      assert.equal(f.launches(), 0);
+    } finally { await f.cleanup(); }
+  }
+});
+
+test("retry budget is bounded, diagnostics omit raw secrets, and a manual retry remains possible", async () => {
+  const f = await fixture({ latestFailures: 3 });
+  try {
+    await f.updater.check();
+    assert.equal(f.apiCalls(), 3);
+    assert.equal(f.updater.snapshot().stage, "error");
+    assert.match(f.updater.snapshot().message, /连接中断或超时/);
+    await f.updater.check();
+    assert.equal(f.updater.snapshot().stage, "ready");
+    const error = Object.assign(new Error("secret-query-and-private-path"), { code: "EACCES" });
+    for (let i = 0; i < 45; i++) await f.updater.diagnostic("downloading", error);
+    const content = await readFile(path.join(f.data, "Updates/diagnostics.json"), "utf8");
+    assert.equal(JSON.parse(content).length, 40);
+    assert.ok(!content.includes("secret-query-and-private-path") && !content.includes(f.root));
+  } finally { await f.cleanup(); }
+});
+
+test("rate limits are not hammered and cancelling backoff stops the next transfer", async () => {
+  const limited = await fixture({ latestStatus: 403, latestHeaders: { "x-ratelimit-remaining": "0" } });
+  try {
+    await limited.updater.check();
+    assert.equal(limited.apiCalls(), 1);
+    assert.match(limited.updater.snapshot().message, /访问次数/);
+  } finally { await limited.cleanup(); }
+  const f = await fixture({ interruptedDownloads: 5, retryDelays: [5000, 5000] });
+  try {
+    f.updater.notify = state => { if (state.message?.includes("自动重试")) f.updater.cancel(); };
+    await f.updater.check();
+    assert.equal(f.archiveCalls(), 1);
+    assert.equal(f.updater.snapshot().stage, "available");
+    assert.match(f.updater.snapshot().message, /已取消/);
+    assert.equal(f.preparations(), 0);
+    assert.deepEqual((await readdir(path.join(f.data, "Updates"))).filter(name => /^[a-f0-9]{32}$/.test(name)), []);
+  } finally { await f.cleanup(); }
+});
+
+test("broken or unwritable diagnostic storage never blocks a valid update", async () => {
+  for (const blocked of [false, true]) {
+    const f = await fixture({ latestFailures: 1 });
+    try {
+      const file = path.join(f.data, "Updates/diagnostics.json");
+      if (blocked) await mkdir(file);
+      else await writeFile(file, "incomplete json");
+      await f.updater.check();
+      assert.equal(f.updater.snapshot().stage, "ready");
+    } finally { await f.cleanup(); }
+  }
+});
 
 test("unconfigured source makes no network requests", async () => {
   const f = await fixture({ source: null });

@@ -152,7 +152,7 @@ class ProjectSnapshotService:
         point_artifact = self.store.get_artifact(point_set.point_artifact_id)
         if (
             point_artifact.schema_id != "verdflow.points"
-            or point_artifact.schema_version != "2"
+            or point_artifact.schema_version not in {"2", "3"}
         ):
             raise ProjectSnapshotFinalizationError(
                 "PointSet artifact schema is unsupported"

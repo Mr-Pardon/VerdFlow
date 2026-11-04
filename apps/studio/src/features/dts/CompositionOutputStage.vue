@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DismissibleNotice from "../../components/DismissibleNotice.vue";
 import { Check, FileDown, FolderOpen, LoaderCircle, Trash2 } from "@lucide/vue";
 import {
   computed,
@@ -290,7 +291,7 @@ const readableError = (error: unknown) => {
       </div>
     </header>
 
-    <div v-if="errorMessage" class="output-error" role="alert">{{ errorMessage }}</div>
+    <DismissibleNotice class="output-error" :message="errorMessage" @dismiss="errorMessage = null" />
 
     <div class="output-content">
       <dl class="composition-output-stats">

@@ -88,7 +88,7 @@ python -m unittest discover -s tests\unit -v
 
 - 没有 OS 权限沙箱、代码签名、发布者身份、撤销列表或策略市场信任链。
 - trusted hash 已通过 Core 只读端口接入持久 LibraryStore；Studio 只对精确 hash 提供人工信任。
-- 首版只支持 Python、`api_version=1` 和 `verdflow.points` v2 返回值。
+- 支持 Python、`api_version=1`。策略省略 `input_geometry` 时按 polygon 处理，接收 `selected_regions`/输出 PointSet v2；polyline 只接收 `selected_paths`/输出 PointSet v3。Worker 在执行前检查输入类型，不向生成器注入资产或平台协议。
 - 项目策略快照读取限制为 1024 个条目和 64 MiB 解压后大小；仅在项目 runtime
   临时目录展开并在调用结束后清理。该机制只用于策略代码包，不用于大型模型资产库。
 - Windows 已验证 Host 强杀后整个策略进程树回收、Attempt 重排和第二次执行；POSIX

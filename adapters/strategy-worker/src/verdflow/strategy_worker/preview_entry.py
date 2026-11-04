@@ -29,7 +29,7 @@ def main() -> int:
     if (
         not isinstance(result, dict)
         or result.get("schema") != "verdflow.points"
-        or result.get("version") != "2"
+        or result.get("version") not in {"2", "3"}
         or result.get("kind") != "generated"
         or result.get("offset_applied") is not False
     ):
@@ -78,9 +78,13 @@ def main() -> int:
         if role not in excluded:
             points.append([xyz[0], xyz[1], roles[role]])
             point_ids.append(point_id)
+    projection = {"points": points, "point_ids": point_ids if identities_valid else []}
+    path_hook = getattr(module, "preview_path_xy", None)
+    if "selected_paths" in command["context"] and callable(path_hook):
+        projection["evaluated_path_xy"] = path_hook(command["context"])
     output_path.write_text(
         json.dumps(
-            {"points": points, "point_ids": point_ids if identities_valid else []},
+            projection,
             separators=(",", ":"),
         ),
         encoding="utf-8",

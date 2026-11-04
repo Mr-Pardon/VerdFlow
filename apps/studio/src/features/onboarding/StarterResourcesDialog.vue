@@ -3,11 +3,12 @@ import { computed, onMounted, onScopeDispose, ref, watch } from "vue";
 import { ArrowUpRight, BookOpen, Check, Download, FileInput, LoaderCircle, PackageOpen, RefreshCw, Sprout, X } from "@lucide/vue";
 import { useResourceImport } from "./useResourceImport";
 import type { StarterImportItem } from "../../api/starterResources";
+import type { ResourceSelection } from "../../api/resourceCenter";
 import { platformBridge } from "../../platform";
 
-const props = withDefaults(defineProps<{ paths?: readonly string[] }>(), { paths: () => [] });
+const props = withDefaults(defineProps<{ paths?: readonly string[]; selection?: ResourceSelection }>(), { paths: () => [] });
 const emit = defineEmits<{ close: []; imported: [] }>();
-const state = useResourceImport(props.paths);
+const state = useResourceImport(props.paths, undefined, props.selection);
 const bridge = platformBridge();
 const dialog = ref<HTMLDialogElement>();
 const labels: Record<StarterImportItem["status"], string> = {
@@ -37,7 +38,7 @@ onScopeDispose(() => dialog.value?.close());
 <template>
   <dialog ref="dialog" class="starter-dialog" aria-labelledby="starter-title" @cancel.prevent="close">
     <header class="starter-dialog__header">
-      <div><span class="guide-eyebrow">资源导入</span><h2 id="starter-title">{{ paths.length ? '导入种植方案' : '准备推荐资源' }}</h2></div>
+      <div><span class="guide-eyebrow">资源导入</span><h2 id="starter-title">{{ selection ? '确认导入资源' : paths.length ? '导入种植方案' : '准备推荐资源' }}</h2></div>
       <button class="icon-button" title="关闭并取消未完成的导入" aria-label="关闭" @click="close"><X :size="18" /></button>
     </header>
     <div class="starter-dialog__body">
@@ -64,10 +65,10 @@ onScopeDispose(() => dialog.value?.close());
       </section>
       <p v-for="warning in state.operation.value?.warnings" :key="warning" class="starter-dialog__note">{{ warning }}</p>
       <p class="starter-dialog__notice">策略导入后仍需确认信任。DTS 模型本体未包含在资产库中，配套 PAK 请从资产资源说明页获取。</p>
-      <a class="text-button" href="https://mr-pardon.github.io/verdflow-resources/" target="_blank" rel="noopener noreferrer">浏览资源中心<ArrowUpRight :size="14" /></a>
+      <RouterLink v-if="!selection" class="text-button" to="/resources" @click="close">浏览资源中心<ArrowUpRight :size="14" /></RouterLink>
       <p v-if="state.error.value" role="alert" class="guide-error">{{ state.error.value }}</p>
       <p v-if="state.finished.value && successful" role="status" class="starter-dialog__result"><Check :size="17" />{{ successful }} 项资源已导入或已存在</p>
-      <RouterLink v-if="state.finished.value && successful" class="text-button" to="/strategies" @click="close">前往策略库确认信任<ArrowUpRight :size="14" /></RouterLink>
+      <RouterLink v-if="state.finished.value && successful && choices.some(item => item.kind === 'strategies')" class="text-button" to="/strategies" @click="close">前往策略库确认信任<ArrowUpRight :size="14" /></RouterLink>
     </div>
     <footer class="starter-dialog__footer">
       <span>{{ size(totalBytes) }}</span>

@@ -1,4 +1,5 @@
 export interface StrategySummary {
+  input_geometry?: "polygon" | "polyline";
   library_entry_id: string;
   strategy_id: string;
   strategy_version: string;
@@ -192,18 +193,33 @@ export interface SessionSnapshot {
   export_id: string | null;
   error: string | null;
   selection_regions: LiveRegion[];
-  sampling_failures?: { region_id: string; name: string; reason: string }[];
+  selection_paths?: LivePath[];
+  sampling_failures?: { region_id?: string | null; path_id?: string | null; name: string; reason: string }[];
 }
 
 export interface LiveRegion {
+  path_id?: never;
   region_id: string;
+  name: string;
+  coordinates: number[][];
+  holes?: number[][][];
+  bbox: number[];
+}
+
+export interface LivePath {
+  path_id: string;
+  region_id?: never;
+  holes?: never;
   name: string;
   coordinates: number[][];
   bbox: number[];
 }
 
+export type LiveGeometry = LiveRegion | LivePath;
+
 export interface ElevationBatch {
-  region_id: string;
+  region_id?: string | null;
+  path_id?: string | null;
   name: string;
   bbox: number[];
   start: number;

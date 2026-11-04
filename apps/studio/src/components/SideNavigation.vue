@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import {
-  ArrowUpRight,
   BookOpen,
   Box,
   Boxes,
@@ -85,18 +84,16 @@ const isActive = (to: string): boolean =>
       </section>
     </div>
     <div class="nav-footer">
-      <a
+      <RouterLink
         class="nav-item nav-resource-center"
-        href="https://mr-pardon.github.io/verdflow-resources/"
-        target="_blank"
-        rel="noopener noreferrer"
+        :class="{ 'nav-item--active': isActive('/resources') }"
+        :aria-current="isActive('/resources') ? 'page' : undefined"
+        to="/resources"
         title="打开资源中心"
-        aria-label="资源中心（在浏览器中打开）"
       >
         <LibraryBig :size="19" :stroke-width="1.8" aria-hidden="true" />
         <span>资源中心</span>
-        <ArrowUpRight class="nav-resource-center__arrow" :size="16" :stroke-width="1.8" aria-hidden="true" />
-      </a>
+      </RouterLink>
     </div>
   </nav>
 </template>

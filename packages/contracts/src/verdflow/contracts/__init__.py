@@ -136,6 +136,7 @@ from .plant_run_executions import (
 )
 from .projects import ProjectInfo, ProjectWorkflowState
 from .regions import RegionSetInfo, RegionSummary
+from .paths import PathSetInfo, PlantingInputRef
 from .region_jobs import (
     REGION_EXTRACTION_COMMAND_SCHEMA,
     REGION_EXTRACTION_COMMAND_VERSION,
@@ -275,6 +276,8 @@ __all__ = [
     "ProjectInfo",
     "ProjectWorkflowState",
     "RegionSetInfo",
+    "PathSetInfo",
+    "PlantingInputRef",
     "RegionSummary",
     "REGION_EXTRACTION_COMMAND_SCHEMA",
     "REGION_EXTRACTION_COMMAND_VERSION",

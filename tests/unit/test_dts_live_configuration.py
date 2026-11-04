@@ -130,7 +130,7 @@ class DtsLiveConfigurationTests(unittest.TestCase):
                 )
 
             self.assertEqual(snapshot.strategy_id, "universal_street_tree")
-            self.assertEqual(snapshot.strategy_version, "2.0.2")
+            self.assertEqual(snapshot.strategy_version, "2.1.0")
             self.assertEqual(snapshot.target_type, "dts")
             self.assertEqual(snapshot.asset_source_kind, "profile")
             self.assertEqual(snapshot.asset_source_id, profile_id)
@@ -138,7 +138,13 @@ class DtsLiveConfigurationTests(unittest.TestCase):
             self.assertEqual(snapshot.random_seed, 17)
             self.assertEqual(
                 snapshot.generation_args,
-                {"strategy_parameters": {}},
+                {"strategy_parameters": {
+                    "tree_spacing_m": 20.0,
+                    "shrub_spacing_m": 2.0,
+                    "triple_row_spacing_m": 1.55,
+                    "tree_edge_margin_m": 9.0,
+                    "tree_clear_radius_m": 0.5,
+                }},
             )
             self.assertRegex(
                 snapshot.effective_binding_semantic_hash,

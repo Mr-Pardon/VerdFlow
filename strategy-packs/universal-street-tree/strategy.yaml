@@ -1,7 +1,7 @@
 schema: verdflow.strategy
 version: '2'
 strategy_id: universal_street_tree
-strategy_version: 2.0.2
+strategy_version: 2.1.0
 display_name: 通用行道树
 description: >-
   沿道路型绿地的局部中心路径生成宽度自适应灌木带，并在所有宽度模式中等距放置乔木。
@@ -60,7 +60,7 @@ extensions:
     version: '1'
     display_name: 道路绿带
     fixed_seed: 17
-    boundary_xy: [[0, -3], [160, -3], [160, 3], [0, 3]]
+    boundary_xy: [[0, -0.45], [35, -0.45], [50, -1.4], [85, -1.4], [105, -5], [160, -5], [160, 5], [105, 5], [85, 1.4], [50, 1.4], [35, 0.45], [0, 0.45]]
   role_presentation:
     version: '1'
     roles:
@@ -174,3 +174,9 @@ parameters:
     - 1.55
   edge_clearance_m: 0.45
   centerline_jitter_m: 0.0
+generation_parameters:
+  - {key: tree_spacing_m, value_type: number, default: 20.0, min: 1.0, max: 100.0, step: 0.5, group: quick, display_name: '乔木沿线间距（m）', effect: 沿绿带中心路径控制乔木的疏密。}
+  - {key: shrub_spacing_m, value_type: number, default: 2.0, min: 0.5, max: 20.0, step: 0.1, group: quick, display_name: '灌木沿线株距（m）', effect: 控制单排、双排和三排中沿绿带方向的布点间距。}
+  - {key: triple_row_spacing_m, value_type: number, default: 1.55, min: 0.1, max: 20.0, step: 0.05, group: quick, display_name: '三排灌木横向排距（m）', effect: 中排到任一外排的距离。只影响三排绿带，较窄处按可用宽度收缩。}
+  - {key: tree_edge_margin_m, value_type: number, default: 9.0, min: 0.0, max: 50.0, step: 0.5, group: advanced, display_name: '乔木端部留距（m）', effect: 从中心路径两端预留距离。短绿带放不下时仍尝试在中间放一棵。}
+  - {key: tree_clear_radius_m, value_type: number, default: 0.5, min: 0.0, max: 10.0, step: 0.1, group: advanced, display_name: '乔木周边灌木留空（m）', effect: 按灌木站点与乔木的平面距离判断，影响双排和三排中排，不是每株灌木的净距。}

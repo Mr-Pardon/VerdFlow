@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { FolderSearch, LoaderCircle, X } from "@lucide/vue";
+import DismissibleNotice from "../../components/DismissibleNotice.vue";
 import type { ModelProviderInfo } from "../../api";
 
 defineProps<{
@@ -19,6 +20,7 @@ defineProps<{
 
 const emit = defineEmits<{
   close: [];
+  dismissError: [];
   chooseLocation: [];
   submit: [];
   updateProjectName: [value: string];
@@ -140,10 +142,8 @@ const stageLabel = {
           </label>
         </template>
 
-        <div v-if="!managementAvailable" class="dialog-warning" role="alert">
-          当前服务为只读模式，无法导入本地 FBX。
-        </div>
-        <div v-if="errorMessage" class="dialog-error" role="alert">{{ errorMessage }}</div>
+        <DismissibleNotice class="dialog-warning" :message="!managementAvailable ? '当前服务为只读模式，无法导入本地 FBX。' : null" />
+        <DismissibleNotice class="dialog-error" :message="errorMessage" @dismiss="$emit('dismissError')" />
       </div>
 
       <footer>

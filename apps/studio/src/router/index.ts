@@ -4,6 +4,7 @@ export const router = createRouter({
   history: createWebHashHistory(),
   routes: [
     { path: "/", redirect: "/projects" },
+    { path: "/resources/:resourceId?", component: () => import("../features/resources/ResourceCenterPage.vue") },
     {
       path: "/projects",
       component: () => import("../features/projects/ProjectsPage.vue"),

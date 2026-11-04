@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DismissibleNotice from "../../components/DismissibleNotice.vue";
 import { Maximize2, RotateCcw, Trash2 } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
 
@@ -142,16 +143,14 @@ const formatArea = (value: number) =>
         <h2>选择种植范围</h2>
       </header>
 
-      <div v-if="viewer.errorMessage.value" class="region-error" role="alert">
+      <DismissibleNotice class="region-error" :message="viewer.errorMessage.value">
         <p>{{ viewer.errorMessage.value }}</p>
         <button type="button" @click="reload">
           <RotateCcw :size="15" />
           重试
         </button>
-      </div>
-      <div v-if="operationError" class="region-error" role="alert">
-        <p>{{ operationError }}</p>
-      </div>
+      </DismissibleNotice>
+      <DismissibleNotice class="region-error" :message="operationError" />
 
       <dl class="region-stats">
         <div>

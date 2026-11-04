@@ -11,6 +11,7 @@
     "strategy_version": {"type": "string", "minLength": 1},
     "display_name": {"type": "string", "minLength": 1},
     "description": {"type": "string"},
+    "input_geometry": {"enum": ["polygon", "polyline"], "default": "polygon"},
     "generator": {
       "type": "object",
       "required": ["id", "version"],

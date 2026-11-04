@@ -187,6 +187,12 @@
   white-space: nowrap;
 }
 
+.runtime-path-field .runtime-path-field__hint {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .runtime-setting-row__actions {
   display: flex;
   align-items: center;

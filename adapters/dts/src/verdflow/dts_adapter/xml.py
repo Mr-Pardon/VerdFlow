@@ -11,7 +11,7 @@ from xml.sax.saxutils import escape
 from verdflow.planting import (
     validate_assignment_set,
     validate_effective_binding_snapshot,
-    validate_point_set_v2,
+    validate_point_set,
 )
 
 
@@ -48,7 +48,7 @@ def render_dts_xml_composition(
 
     validated = tuple(
         (
-            validate_point_set_v2(points),
+            validate_point_set(points),
             validate_effective_binding_snapshot(binding),
             validate_assignment_set(assignments),
         )
@@ -196,15 +196,16 @@ def _matrix3(quaternion: list[float], scale: list[float]) -> tuple[float, ...]:
     xx, yy, zz = x * x, y * y, z * z
     xy, xz, yz = x * y, x * z, y * z
     wx, wy, wz = w * x, w * y, w * z
+    # DTS Matrix3 writes each transformed local axis as a consecutive triple.
     return (
         (1.0 - 2.0 * (yy + zz)) * sx,
-        2.0 * (xy - wz) * sy,
-        2.0 * (xz + wy) * sz,
         2.0 * (xy + wz) * sx,
-        (1.0 - 2.0 * (xx + zz)) * sy,
-        2.0 * (yz - wx) * sz,
         2.0 * (xz - wy) * sx,
+        2.0 * (xy - wz) * sy,
+        (1.0 - 2.0 * (xx + zz)) * sy,
         2.0 * (yz + wx) * sy,
+        2.0 * (xz + wy) * sz,
+        2.0 * (yz - wx) * sz,
         (1.0 - 2.0 * (xx + yy)) * sz,
     )
 

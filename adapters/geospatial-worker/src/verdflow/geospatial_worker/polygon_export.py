@@ -12,6 +12,7 @@ class ShapefilePolygon:
     polygon_id: str
     name: str
     coordinates: tuple[tuple[float, float, float], ...]
+    holes: tuple[tuple[tuple[float, float, float], ...], ...] = ()
 
 
 def export_polygon_shapefile(polygons: Sequence[ShapefilePolygon]) -> bytes:
@@ -36,6 +37,12 @@ def export_polygon_shapefile(polygons: Sequence[ShapefilePolygon]) -> bytes:
             if len(polygon.polygon_id.encode("utf-8")) > 80 or len(polygon.name.encode("utf-8")) > 254:
                 raise ValueError("Polygon labels exceed the Shapefile field size")
             points = list(polygon.coordinates)
+            if polygon.holes:
+                from shapely.geometry import Polygon
+                from .errors import GeospatialDataError, invalid_polygon_message
+                geometry = Polygon([p[:2] for p in points], [[p[:2] for p in ring] for ring in polygon.holes])
+                if geometry.is_empty or not geometry.is_valid:
+                    raise GeospatialDataError("shp_invalid_geometry", invalid_polygon_message(geometry, len(seen)))
             if any(len(p) != 3 or not all(math.isfinite(v) for v in p) for p in points):
                 raise ValueError("Polygon coordinates must be finite XYZ values")
             if len(points) > 1 and points[0][:2] == points[-1][:2]:
@@ -53,8 +60,24 @@ def export_polygon_shapefile(polygons: Sequence[ShapefilePolygon]) -> bytes:
             ring = [[p[0], p[1]] for p in points]
             if twice_area > 0:
                 ring.reverse()
-            writer.poly([ring + [ring[0]]])
-            writer.record(polygon.polygon_id, polygon.name, len(points), abs(twice_area) / 2,
+            rings = [ring + [ring[0]]]
+            for hole in polygon.holes:
+                if len(hole) < 3 or any(len(p) != 3 or not all(math.isfinite(v) for v in p) for p in hole):
+                    raise ValueError("Polygon holes require at least three finite XYZ points")
+                inner = [[p[0], p[1]] for p in hole]
+                if inner[0] == inner[-1]:
+                    inner.pop()
+                hx, hy = inner[0]
+                signed = sum((a[0] - hx) * (b[1] - hy) - (b[0] - hx) * (a[1] - hy)
+                             for a, b in zip(inner, inner[1:] + inner[:1]))
+                if signed == 0 or len(set(map(tuple, inner))) < 3:
+                    raise ValueError("Polygon hole area must be positive")
+                if signed < 0:
+                    inner.reverse()
+                rings.append(inner + [inner[0]])
+            writer.poly(rings)
+            area = float(geometry.area) if polygon.holes else abs(twice_area) / 2
+            writer.record(polygon.polygon_id, polygon.name, len(points) + sum(map(len, polygon.holes)), area,
                           min(p[2] for p in points), max(p[2] for p in points))
     output = io.BytesIO()
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:

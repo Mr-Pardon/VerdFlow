@@ -52,14 +52,22 @@ function drawFrame(
   radii = [10, 10, 10],
   display = {},
   size = { width: 400, height: 400 },
+  geometry = sample,
+  projection = result,
 ) {
   let arcs = [];
   let background;
   let transform;
   let paintedSize;
   const fills = [];
+  let closed = 0;
+  const vertices = [];
+  const dashes = [];
   const context = {
     globalAlpha: 1,
+    save() {},
+    restore() { this.globalAlpha = 1; },
+    setLineDash(pattern) { dashes.push(pattern); },
     setTransform(...values) {
       transform = values;
     },
@@ -67,9 +75,9 @@ function drawFrame(
       background = this.fillStyle;
       paintedSize = [width, height];
     },
-    moveTo() {},
-    lineTo() {},
-    closePath() {},
+    moveTo(...point) { vertices.push(point); },
+    lineTo(...point) { vertices.push(point); },
+    closePath() { closed++; },
     stroke() {},
     fillText() {},
     beginPath() {
@@ -91,18 +99,43 @@ function drawFrame(
     clientHeight: size.height,
     getContext: () => context,
   };
-  drawStrategyExample(canvas, sample, result, roles, radii, display);
+  drawStrategyExample(canvas, geometry, projection, roles, radii, display);
   return {
     background,
     transform,
     paintedSize,
     backingSize: [canvas.width, canvas.height],
+    closed,
+    vertices,
+    dashes,
     fills: fills.filter((fill) => fill.arcs.length > 0),
   };
 }
 const draw = (...args) => drawFrame(...args).fills;
 
 try {
+  await test("evaluated paths add an open trace with a dashed original", () => {
+    const geometry = {
+      input_geometry: "polyline", boundary_xy: [], path_xy: [[0, 0], [100, 0], [100, 50]],
+    };
+    const plain = drawFrame([], {}, undefined, geometry);
+    const rounded = drawFrame([], {}, undefined, geometry, {
+      ...result, evaluated_path_xy: [[0, 0], [90, 0], [98, 3], [100, 10], [100, 50]],
+    });
+    assert.deepEqual(plain.dashes, []);
+    assert.deepEqual(rounded.dashes, [[5, 4]]);
+    assert.equal(rounded.closed, 0);
+    assert.equal(rounded.vertices.length - plain.vertices.length, 5);
+  });
+  await test("straight path samples stay open, centered and finite", () => {
+    const frame = drawFrame([], {}, { width: 400, height: 240 }, {
+      input_geometry: "polyline", boundary_xy: [], path_xy: [[0, 0], [100, 0]],
+    });
+    assert.equal(frame.closed, 0);
+    assert.ok(frame.vertices.flat().every(Number.isFinite));
+    assert.ok(frame.vertices.some(([x, y]) => x === 25 && y === 120));
+    assert.ok(frame.vertices.some(([x, y]) => x === 375 && y === 120));
+  });
   await test("solid display uses opaque centers instead of translucent reference circles", () => {
     const reference = draw();
     const solid = draw(undefined, { solidPoints: true });

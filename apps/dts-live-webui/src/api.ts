@@ -5,6 +5,7 @@ import type {
   Correlation,
   LiveCommand,
   LiveRegion,
+  LivePath,
   ProfileDetail,
   SaveProfileRequest,
   SelectionConfiguration,
@@ -13,7 +14,7 @@ import type {
 import type { StrategyPreviewClient } from "@verdflow/strategy-preview-ui";
 
 interface ErrorEnvelope {
-  error?: { code?: string };
+  error?: { code?: string; message?: string };
 }
 
 export class ConnectorApiError extends Error {
@@ -42,7 +43,8 @@ const apiRequest = async <T>(
   const document = (await response.json().catch(() => ({}))) as ErrorEnvelope;
   if (!response.ok) {
     const code = document.error?.code ?? `http_${response.status}`;
-    throw new ConnectorApiError(readableCode(code, path), response.status, code);
+    const message = (code.startsWith("shp_") || code.startsWith("selection_")) && document.error?.message;
+    throw new ConnectorApiError(message || readableCode(code, path), response.status, code);
   }
   return document as T;
 };
@@ -128,7 +130,7 @@ export const saveProfile = (request: SaveProfileRequest) =>
     body: JSON.stringify(request),
   });
 
-export const beginSelection = (configuration: SelectionConfiguration & { regions: LiveRegion[] }) =>
+export const beginSelection = (configuration: SelectionConfiguration & { regions?: LiveRegion[]; paths?: LivePath[] }) =>
   apiRequest<{ correlation: Correlation; regions: LiveRegion[] }>("/api/v1/operations/selection", {
     method: "POST",
     body: JSON.stringify(configuration),
@@ -171,7 +173,7 @@ export const submitSelection = (
 export const submitElevation = (
   correlation: Correlation,
   intersects: unknown,
-  failed_regions: { region_id: string; reason: string }[] = [],
+  failed_regions: { region_id?: string; path_id?: string; reason: string }[] = [],
   chunked = false,
 ) =>
   apiRequest("/api/v1/callbacks/elevation", {
@@ -221,12 +223,14 @@ const readableCode = (code: string, path: string) => {
     authorization_failed: "会话授权已失效，请从 VerdFlow Studio 重新打开面板",
     session_not_found: "当前快速种植会话已结束",
     operation_busy: "当前区域仍在处理中，请完成或取消后再试",
-    payload_too_large: "本次点位数据超过实时传输上限，请增大植被间距或缩小区域",
+    payload_too_large: path.includes("selection") || path.includes("export-shp")
+      ? "选区请求超过实时传输上限；本次操作未被接受。请减少选区，或改用工作台的 SHP＋TIF 路径。"
+      : "本次点位数据超过实时传输上限，请增大植被间距或缩小区域；大范围种植建议改用工作台的 SHP＋TIF 路径。",
     configuration_unavailable: "本地策略与资产配置暂不可用",
     preview_not_allowed: "当前策略尚未信任或已撤销信任，示例暂不可用",
     resource_not_found: "实时种植服务版本已更新，请在 Studio 中停止后重新启动",
     sdk_not_configured: "请先在 VerdFlow Studio 设置 DTS Explorer 根目录",
-    internal_error: "本地服务未能完成请求",
+    internal_error: "本地服务未能完成请求，请稍后重试；若种植已开始，请先核对场景，不要重复提交导入。",
     export_busy: "选区文件窗口已经打开，请先完成或取消当前操作",
     export_unavailable: "选区导出暂不可用，请重启实时种植服务",
     export_save_failed: "选区保存失败，请检查目标目录权限或文件是否被占用",
@@ -239,6 +243,11 @@ const readableCode = (code: string, path: string) => {
     shp_single_dataset_required: "ZIP 中应仅包含一套 SHP 数据",
     shp_companions_missing: "SHP 缺少配套的 .shx 或 .dbf，请放在同一目录后重试",
     shp_empty: "文件中没有可导入的面",
-    shp_too_large: "选区数据过大，请拆分文件或简化面轮廓后再导入",
+    shp_file_size_limit: "SHP 配套文件总量或 ZIP 解压总量超过实时路径 128 MiB 上限，请改用工作台的 SHP＋TIF 路径。",
+    shp_vertex_limit: "SHP 总顶点（含孔洞）超过实时路径 200,000 个上限，请改用工作台的 SHP＋TIF 路径。",
+    selection_vertex_limit: "选区累计顶点（含孔洞）超过实时路径 200,000 个上限，请减少选区或改用工作台。",
+    shp_draft_limit: "解析后的选区超过实时路径 30 MiB 上限，请改用工作台的 SHP＋TIF 路径。",
+    shp_archive_limit: "ZIP 中的文件过多，请只保留一套 SHP 及其配套文件。",
+    shp_too_large: "选区超过当前实时路径的数据上限，请改用工作台的 SHP＋TIF 路径。",
   })[code] ?? `Connector 请求失败：${code}`;
 };

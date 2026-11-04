@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 import zipfile
+from .errors import GeospatialDataError
 
 
 REQUIRED_SUFFIXES = (".shp", ".shx", ".dbf")
@@ -15,7 +16,7 @@ def package_shapefile(shp_path: Path) -> bytes:
     """Package one Shapefile dataset as a deterministic ZIP Artifact."""
     source = Path(shp_path)
     if source.suffix.lower() != ".shp" or not source.is_file():
-        raise ValueError("shp_path must identify an existing .shp file")
+        raise GeospatialDataError("geo_source_missing", "无法读取所选 SHP 文件，请确认文件仍存在、扩展名为 .shp，且当前用户有读取权限。")
     siblings = {
         candidate.suffix.lower(): candidate
         for candidate in source.parent.iterdir()
@@ -23,9 +24,7 @@ def package_shapefile(shp_path: Path) -> bytes:
     }
     missing = [suffix for suffix in REQUIRED_SUFFIXES if suffix not in siblings]
     if missing:
-        raise ValueError(
-            "Shapefile companion file is missing: " + ", ".join(missing)
-        )
+        raise GeospatialDataError("geo_companions_missing", "SHP 缺少同名配套文件 " + "、".join(missing) + "。请将 .shp、.shx、.dbf 放在同一目录后重新选择。")
     output = io.BytesIO()
     with zipfile.ZipFile(
         output,

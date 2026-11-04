@@ -23,6 +23,7 @@ SCHEMAS = {
     "profile": "role-binding-profile-v2.schema.json",
     "catalog": "target-asset-catalog-v1.schema.json",
     "points_v2": "point-set-v2.schema.json",
+    "points_v3": "point-set-v3.schema.json",
     "effective_binding": "effective-binding-snapshot-v1.schema.json",
     "target_asset_use_snapshot": "target-asset-use-snapshot-v1.schema.json",
     "assignment_set": "asset-assignment-set-v1.schema.json",
@@ -157,7 +158,15 @@ def validate_catalog(value: Any) -> dict[str, Any]:
 
 
 def validate_point_set_v2(value: Any) -> dict[str, Any]:
-    document = validate_document(value, "points_v2")
+    validate_document(value, "points_v2")
+    return validate_point_set(value)
+
+
+def validate_point_set(value: Any) -> dict[str, Any]:
+    version = value.get("version") if isinstance(value, dict) else None
+    if version not in {"2", "3"}:
+        raise PlantingDocumentError("PointSet schema is unsupported")
+    document = validate_document(value, "points_v3" if version == "3" else "points_v2")
     points = document["points"]
     if document["point_count"] != len(points):
         raise PlantingDocumentError("point_count does not match points length")
@@ -224,7 +233,7 @@ def validate_persisted_point_set_summary(
         raise PlantingDocumentError("Persisted PointSet must be an object")
     if (
         value.get("schema") != "verdflow.points"
-        or str(value.get("version")) != "2"
+        or str(value.get("version")) not in {"2", "3"}
     ):
         raise PlantingDocumentError("Persisted PointSet schema is unsupported")
     points = value.get("points")

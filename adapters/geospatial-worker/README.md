@@ -23,10 +23,13 @@ SystemHost 在添加 SHP Source 时调用该封装入口，Studio 和 Local API 
 调用方负责选择保存目的地，Adapter 仅返回字节，不依赖 DTS 或 UI。
 
 `import_polygon_shapefile(Path)` 用于轻量选区复用，读取 SHP/ZIP，按 CPG 解码名称，
-返回 `ShapefilePolygon` 集合。多部件拆分，带洞面及无效面整份拒绝；此限制仅针对轻量
-选区交换，不改变标准 Region Source 对洞的支持。Z 为输入参考高度而非地形采样结果。
-读取资源边界与错误语义见 ADR-0007 / ADR-0007（64 MiB、100000 顶点；Connector 草稿 30 MiB）；
+返回 `ShapefilePolygon` 集合。多部件拆分，合法内环通过 `holes` 保留，无效面整份拒绝；
+不自动填洞或修复。Z 为输入参考高度而非地形采样结果。
+读取资源边界与错误语义见 ADR-0021（128 MiB、200000 顶点；Connector 草稿 30 MiB）；
 不执行数据修复、坐标转换或 CRS 校验。
+
+`GeospatialDataError(code, message)` 经 Worker/Job 或 SystemHost 传递安全的用户提示。
+文件、几何、高程及运行错误分别报告；底层堆栈仅写本地诊断。
 
 ## 依赖边界
 

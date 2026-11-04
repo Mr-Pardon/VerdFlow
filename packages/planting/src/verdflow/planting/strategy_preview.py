@@ -17,6 +17,60 @@ def strategy_preview_sample(strategy: dict[str, Any]) -> StrategyPreviewSample |
     )
     if value is None:
         return None
+    if isinstance(value, dict) and value.get("version") == "2":
+        from .path_inputs import strategy_input_kind, validate_path_document
+
+        if (
+            set(value) != {"version", "display_name", "fixed_seed", "path_xy"}
+            or strategy_input_kind(strategy) != "polyline"
+        ):
+            raise PlantingDocumentError("Invalid path preview declaration")
+        path = value["path_xy"]
+        name, seed = value["display_name"], value["fixed_seed"]
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or len(name) > 80
+            or type(seed) is not int
+            or not 0 <= seed <= 2**31 - 1
+        ):
+            raise PlantingDocumentError("Invalid path preview name or seed")
+        if (
+            not isinstance(path, list)
+            or not 2 <= len(path) <= 256
+            or any(
+                not isinstance(point, list)
+                or len(point) != 2
+                or any(
+                    type(v) not in (int, float) or not math.isfinite(v) or abs(v) > 1000
+                    for v in point
+                )
+                for point in path
+            )
+        ):
+            raise PlantingDocumentError("Invalid path preview coordinates")
+        validate_path_document(
+            {
+                "schema": "verdflow.paths",
+                "version": "1",
+                "coordinate_space": "source_scene_world",
+                "offset_applied": False,
+                "path_count": 1,
+                "paths": [
+                    {
+                        "id": "strategy_example",
+                        "coordinates": [[x, y, 0] for x, y in path],
+                    }
+                ],
+            }
+        )
+        return StrategyPreviewSample(
+            name.strip(),
+            (),
+            seed,
+            "polyline",
+            tuple((float(x), float(y)) for x, y in path),
+        )
     if not isinstance(value, dict) or set(value) != {
         "version",
         "display_name",

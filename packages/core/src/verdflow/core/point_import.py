@@ -19,7 +19,7 @@ from verdflow.planting import (
     canonical_json_bytes,
     filter_point_roles,
     validate_elevation_point_set,
-    validate_point_set_v2,
+    validate_point_set,
 )
 
 
@@ -49,13 +49,20 @@ class PointSetImportService:
             command,
             "scene_revision_id",
         )
-        region_set_id = self._required_text(command, "region_set_id")
+        reference = command.get("input")
+        path_input = isinstance(reference, dict) and reference.get("kind") == "polyline"
+        path_set_id = self._required_text(reference, "set_id") if path_input else None
+        region_set_id = (
+            None if path_input else self._required_text(command, "region_set_id")
+        )
         scene = self.store.get_scene_revision(scene_revision_id)
-        region_set = self.store.get_region_set(region_set_id)
+        region_set = (
+            self.store.get_path_set(path_set_id)
+            if path_input
+            else self.store.get_region_set(region_set_id)
+        )
         if region_set.scene_revision_id != scene.scene_revision_id:
-            raise PointSetImportError(
-                "Planting RegionSet differs from SceneRevision"
-            )
+            raise PointSetImportError("Planting input set differs from SceneRevision")
         strategy = command.get("strategy")
         if not isinstance(strategy, dict):
             raise PointSetImportError("strategy provenance is required")
@@ -69,6 +76,10 @@ class PointSetImportService:
             payload,
             expected_kind=PointSetKind.GENERATED,
         )
+        if payload["version"] != ("3" if path_input else "2"):
+            raise PointSetImportError(
+                "PointSet version differs from planting input kind"
+            )
         self._validate_strategy_ref(payload, strategy)
         excluded_roles = tuple(command.get("excluded_role_keys", ()))
         if excluded_roles:
@@ -77,15 +88,24 @@ class PointSetImportService:
             point_artifact_id = self.store.put_bytes(
                 canonical_json_bytes(payload),
                 media_type="application/vnd.verdflow.points+json",
-                schema_id="verdflow.points", schema_version="2",
+                schema_id="verdflow.points",
+                schema_version=payload["version"],
             ).artifact_id
-        allowed_regions = {
-            region.region_id
-            for region in self.store.list_regions(region_set_id)
-        }
+        if path_input:
+            with self.store.open_artifact(region_set.geometry_artifact_id) as stream:
+                rows = json.load(stream)["paths"]
+            allowed_regions = {row["id"] for row in rows}
+        else:
+            allowed_regions = {
+                region.region_id for region in self.store.list_regions(region_set_id)
+            }
+        selected = set(
+            reference["selected_ids"] if path_input else command["selected_region_ids"]
+        )
+        allowed_regions &= selected
         unknown_regions = sorted(
             {
-                self._required_text(point, "region_id")
+                self._required_text(point, "path_id" if path_input else "region_id")
                 for point in points
             }
             - allowed_regions
@@ -113,7 +133,8 @@ class PointSetImportService:
             )
         run, point_set = self.store.create_generated_point_set(
             scene_revision_id=scene.scene_revision_id,
-            region_set_id=region_set.region_set_id,
+            region_set_id=region_set_id,
+            path_set_id=path_set_id,
             producer_job_id=job.job_id,
             strategy_id=self._required_text(strategy, "id"),
             strategy_version=self._required_text(strategy, "version"),
@@ -239,11 +260,9 @@ class PointSetImportService:
                 "Point document must use unshifted coordinates"
             )
         try:
-            document = validate_point_set_v2(payload)
+            document = validate_point_set(payload)
         except PlantingDocumentError as error:
-            raise PointSetImportError(
-                f"PointSet v2 validation failed: {error}"
-            ) from error
+            raise PointSetImportError(f"PointSet validation failed: {error}") from error
         if document["kind"] != expected_kind.value:
             raise PointSetImportError("Point document kind is inconsistent")
         expected_policy = (

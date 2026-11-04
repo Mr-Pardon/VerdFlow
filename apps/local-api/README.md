@@ -1,5 +1,14 @@
 # verdflow-local-api
 
+ADR-0023 增加受管理鉴权保护的 `GET /api/v1/resource-center`、
+`GET /api/v1/resource-center/detail?id=...&version=...` 和
+`GET /api/v1/resource-center/strategy-updates`。目录与更新查询可传 `refresh=1`。
+现有资源预检支持 `selection: { resource_id, version, revision }`，与 paths/recommended
+互斥；仍不接受客户端下载 URL。预览不触发下载、导入或策略信任。
+
+ADR-0021：地理输入错误由 SystemHostDataError 保留 code/message，经本传输返回 400；
+异步数据错误通过既有 JobErrorInfo 暴露，不在 HTTP 层解析 SHP 或猜测错误原因。
+
 ADR-0020 增加管理鉴权的 `POST /api/v1/resource-imports/prepare` 与
 `POST /api/v1/resource-imports/confirm`，查询/取消复用 `starter-resources/import`。
 Local API 只校验有界请求并转发 SystemHost，不下载或解析交换包。详见

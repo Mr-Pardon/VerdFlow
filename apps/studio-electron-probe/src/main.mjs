@@ -405,7 +405,7 @@ const registerHandlers = () => {
     const displayName = normalizedRuntimeDisplayName(request?.displayName);
     const memoryKey = `external-runtime:${String(request?.runtimeId ?? "unknown")}:${pathKind}`;
     const options = {
-      title: `选择 ${displayName}`,
+      title: `选择 ${displayName}${pathKind === "directory" ? " 安装文件夹" : " 可执行文件"}`,
       defaultPath: await rememberedDialogPaths().defaultPath(memoryKey),
       properties: [pathKind === "file" ? "openFile" : "openDirectory"],
     };

@@ -15,6 +15,15 @@ from verdflow.contracts import require_sha256_hash
 
 DTS_LIVE_ELEVATION_PROVIDER_ID = "verdflow.dts.live-elevation"
 DTS_LIVE_CONNECTOR_VERSION = "1"
+DTS_LIVE_MAX_VERTICES = 200_000
+
+
+class DtsLiveGeometryInputError(ValueError):
+    code = "selection_geometry_invalid"
+
+
+class DtsLiveSelectionLimitError(ValueError):
+    code = "selection_vertex_limit"
 
 
 class DtsLiveCommandKind(StrEnum):
@@ -51,8 +60,11 @@ class DtsLiveExecutionSnapshot:
     binding_overrides: dict[str, Any] | None = None
     random_seed: int | None = None
     generation_args: dict[str, Any] | None = None
+    input_geometry: str = "polygon"
 
     def validate(self) -> None:
+        if self.input_geometry not in {"polygon", "polyline"}:
+            raise ValueError("种植输入类型不受支持")
         for value in (
             self.strategy_package_hash,
             self.asset_source_hash,
@@ -149,21 +161,38 @@ class DtsLiveRegion:
     name: str
     coordinates: tuple[tuple[float, float, float], ...]
     bbox: tuple[float, float, float, float, float, float]
+    holes: tuple[tuple[tuple[float, float, float], ...], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class DtsLivePath:
+    path_id: str
+    name: str
+    coordinates: tuple[tuple[float, float, float], ...]
+    bbox: tuple[float, float, float, float, float, float]
 
 
 @dataclass(frozen=True, slots=True)
 class DtsLiveSelection:
     correlation: DtsLiveCorrelation
     regions: tuple[DtsLiveRegion, ...]
+    paths: tuple[DtsLivePath, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
 class DtsLiveElevationBatch:
-    region_id: str
+    region_id: str | None
     name: str
     bbox: tuple[float, float, float, float, float, float]
     start: int
     count: int
+    path_id: str | None = None
+
+    @property
+    def selection_id(self) -> str:
+        if (self.region_id is None) == (self.path_id is None):
+            raise ValueError("Sampling batch must reference exactly one region or path")
+        return self.path_id if self.path_id is not None else self.region_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,9 +203,10 @@ class DtsElevationSample:
 
 @dataclass(frozen=True, slots=True)
 class DtsLiveRegionFailure:
-    region_id: str
+    region_id: str | None
     name: str
     reason: str
+    path_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -202,6 +232,7 @@ class DtsLiveSessionSnapshot:
     error: str | None
     selection_regions: tuple[DtsLiveRegion, ...] = ()
     sampling_failures: tuple[DtsLiveRegionFailure, ...] = ()
+    selection_paths: tuple[DtsLivePath, ...] = ()
 
 
 @dataclass(slots=True)
@@ -240,9 +271,21 @@ class DtsLiveSession:
         self,
         execution: DtsLiveExecutionSnapshot,
         regions: object = None,
+        paths: object = None,
     ) -> DtsLiveCommand | DtsLiveSelection:
         execution.validate()
         normalized = normalize_live_regions(regions) if regions is not None else None
+        normalized_paths = normalize_live_paths(paths) if paths is not None else ()
+        if paths is not None and (
+            regions is not None or execution.input_geometry != "polyline"
+        ):
+            raise DtsLiveGeometryInputError(
+                "当前策略不接受路径输入，或同时选择了区域和路径"
+            )
+        if execution.input_geometry == "polyline" and paths is None:
+            raise DtsLiveGeometryInputError("请先绘制并选择开放折线路径")
+        if regions is not None and execution.input_geometry != "polygon":
+            raise DtsLiveGeometryInputError("当前策略需要路径输入，不能使用区域")
         with self._condition:
             if self._operation is not None and self._operation.stage not in {
                 DtsLiveOperationStage.COMPLETED,
@@ -260,13 +303,16 @@ class DtsLiveSession:
                 stage=DtsLiveOperationStage.SELECTION_PENDING,
             )
             self._operation = operation
-            if normalized is not None:
+            if normalized is not None or normalized_paths:
                 selection = DtsLiveSelection(
                     correlation=DtsLiveCorrelation(
-                        self.connector_session_id, operation.operation_id,
-                        operation.generation_token, uuid4().hex,
+                        self.connector_session_id,
+                        operation.operation_id,
+                        operation.generation_token,
+                        uuid4().hex,
                     ),
-                    regions=normalized,
+                    regions=normalized or (),
+                    paths=normalized_paths,
                 )
                 operation.selection = selection
                 operation.stage = DtsLiveOperationStage.SELECTION_READY
@@ -291,6 +337,10 @@ class DtsLiveSession:
             previous = self._operation
             if previous is None or previous.selection is None:
                 raise ValueError("DTS Live regeneration requires a previous selection")
+            if execution.input_geometry != (
+                "polyline" if previous.selection.paths else "polygon"
+            ):
+                raise ValueError("重新生成的策略与已选几何类型不兼容")
             if previous.stage not in {
                 DtsLiveOperationStage.COMPLETED,
                 DtsLiveOperationStage.CANCELLED,
@@ -315,6 +365,7 @@ class DtsLiveSession:
             selection = DtsLiveSelection(
                 correlation=correlation,
                 regions=previous.selection.regions,
+                paths=previous.selection.paths,
             )
             operation.selection = selection
             self._operation = operation
@@ -386,7 +437,7 @@ class DtsLiveSession:
         if len(normalized_lines) != len(frozen_ids):
             raise ValueError("Elevation lines must match frozen Point IDs")
         cursor = 0
-        if len({batch.region_id for batch in batches}) != len(batches):
+        if len({batch.selection_id for batch in batches}) != len(batches):
             raise ValueError("Elevation batches must have unique region IDs")
         for batch in batches:
             if batch.start != cursor or batch.count < 1:
@@ -453,18 +504,32 @@ class DtsLiveSession:
             if failed_regions is not None:
                 if not isinstance(failed_regions, list):
                     raise ValueError("failed_regions must be an array")
-                batches = {b.region_id: b for b in operation.elevation_batches}
+                batches = {b.selection_id: b for b in operation.elevation_batches}
                 seen: set[str] = set()
                 for failure in failed_regions:
                     if not isinstance(failure, dict):
                         raise ValueError("Invalid region failure")
-                    region_id = _text(failure.get("region_id"), "region_id")
+                    region_id = _text(
+                        failure.get("path_id") or failure.get("region_id"),
+                        "selection_id",
+                    )
                     if region_id not in batches or region_id in seen:
                         raise ValueError("Unknown or duplicate failed region")
                     seen.add(region_id)
                     batch = batches[region_id]
+                    if (
+                        failure.get("path_id") != batch.path_id
+                        or failure.get("region_id") != batch.region_id
+                    ):
+                        raise ValueError(
+                            "Sampling failure input kind differs from its batch"
+                        )
                     reason = _text(failure.get("reason"), "reason")[:2000]
-                    failures.append(DtsLiveRegionFailure(region_id, batch.name, reason))
+                    failures.append(
+                        DtsLiveRegionFailure(
+                            batch.region_id, batch.name, reason, batch.path_id
+                        )
+                    )
                     excluded.update(range(batch.start, batch.start + batch.count))
             if len(positions) != len(operation.point_ids):
                 raise ValueError(
@@ -697,25 +762,31 @@ class DtsLiveSession:
                     else None
                 ),
                 pending_command_kind=(
-                    operation.pending.kind
-                    if operation and operation.pending
-                    else None
+                    operation.pending.kind if operation and operation.pending else None
                 ),
                 selection_coordinate_count=(
-                    sum(len(region.coordinates) for region in operation.selection.regions)
+                    sum(
+                        len(region.coordinates) + sum(map(len, region.holes))
+                        for region in operation.selection.regions
+                    )
+                    + sum(len(path.coordinates) for path in operation.selection.paths)
                     if operation and operation.selection
                     else 0
                 ),
-                elevation_point_count=(
-                    len(operation.elevation) if operation else 0
-                ),
+                elevation_point_count=(len(operation.elevation) if operation else 0),
                 export_id=operation.export_id if operation else None,
                 error=operation.error if operation else None,
                 selection_regions=(
                     operation.selection.regions
-                    if operation and operation.selection else ()
+                    if operation and operation.selection
+                    else ()
                 ),
                 sampling_failures=operation.sampling_failures if operation else (),
+                selection_paths=(
+                    operation.selection.paths
+                    if operation and operation.selection
+                    else ()
+                ),
             )
 
     def _queue(
@@ -817,12 +888,54 @@ class DtsLiveSession:
         return operation
 
 
+def normalize_live_paths(value: object) -> tuple[DtsLivePath, ...]:
+    from verdflow.planting import validate_path_document
+
+    if not isinstance(value, list):
+        raise ValueError("paths must be an array")
+    rows = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("路径数据无效")
+        rows.append(
+            {
+                "id": item.get("path_id"),
+                "name": item.get("name"),
+                "coordinates": item.get("coordinates"),
+            }
+        )
+    try:
+        validate_path_document(
+            {
+                "schema": "verdflow.paths",
+                "version": "1",
+                "coordinate_space": "source_scene_world",
+                "offset_applied": False,
+                "path_count": len(rows),
+                "paths": rows,
+            }
+        )
+    except ValueError as error:
+        raise DtsLiveGeometryInputError(str(error)) from error
+    return tuple(
+        DtsLivePath(
+            row["id"],
+            _text(row["name"], "name"),
+            tuple(tuple(float(v) for v in point) for point in row["coordinates"]),
+            tuple(min(point[i] for point in row["coordinates"]) for i in range(3))
+            + tuple(max(point[i] for point in row["coordinates"]) for i in range(3)),
+        )
+        for row in rows
+    )
+
+
 def normalize_live_regions(value: object) -> tuple[DtsLiveRegion, ...]:
     """Validate and freeze drawn faces without starting a planting operation."""
     if not isinstance(value, (list, tuple)) or not value:
         raise ValueError("DTS selection requires at least one region")
     regions: list[DtsLiveRegion] = []
     ids: set[str] = set()
+    vertex_count = 0
     for item in value:
         if not isinstance(item, dict):
             raise ValueError("DTS region must be an object")
@@ -831,11 +944,20 @@ def normalize_live_regions(value: object) -> tuple[DtsLiveRegion, ...]:
             raise ValueError("DTS region IDs must be unique")
         ids.add(region_id)
         coordinates = _polygon_coordinates(item.get("coordinates"))
+        raw_holes = item.get("holes", ())
+        if not isinstance(raw_holes, (list, tuple)):
+            raise ValueError("DTS region holes must be an array")
+        holes = tuple(_polygon_coordinates(ring) for ring in raw_holes)
+        vertex_count += len(coordinates) + sum(map(len, holes))
+        if vertex_count > DTS_LIVE_MAX_VERTICES:
+            raise DtsLiveSelectionLimitError(
+                f"本次选区累计 {vertex_count:,} 个顶点（含孔洞），超过实时路径 {DTS_LIVE_MAX_VERTICES:,} 个上限。请减少选区，或改用工作台的 SHP＋TIF 路径；本次未开始种植。"
+            )
         bounds = tuple(min(p[i] for p in coordinates) for i in range(3)) + tuple(
             max(p[i] for p in coordinates) for i in range(3)
         )
         regions.append(DtsLiveRegion(
-            region_id, _text(item.get("name"), "name"), coordinates, bounds,
+            region_id, _text(item.get("name"), "name"), coordinates, bounds, holes,
         ))
     return tuple(regions)
 

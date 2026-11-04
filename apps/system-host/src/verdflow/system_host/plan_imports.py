@@ -19,8 +19,9 @@ from verdflow.strategy_worker import StrategyPackage, open_strategy_package_arch
 from .plan_import_library import PlanImportLibrary
 from .resource_downloads import DownloadCancelled, MAX_PACKAGE_BYTES, StarterResource, download_package
 from .resource_index import (
-    IndexedResource, PlanMetadata, ResourceIndex, accepts_dependency, choose_strategy, load_index, plan_metadata,
+    IndexedResource, PlanMetadata, ResourceIndex, ResourceSelection, accepts_dependency, choose_strategy, load_index, plan_metadata,
 )
+from .resource_center import local_state
 from .starter_resources import ImportChoice, StarterImportItem, StarterImportOperation, StarterResourceService
 
 
@@ -49,8 +50,10 @@ class PlanImportService(StarterResourceService):
         self._index_revision = ""
 
     def prepare(self, paths: tuple[str, ...], *, recommended: bool = False,
-                strategy_paths: tuple[str, ...] = ()) -> StarterImportOperation:
-        if len(paths) > 32 or len(strategy_paths) > 8 or (recommended and paths) or (not recommended and not paths):
+                strategy_paths: tuple[str, ...] = (), selection: ResourceSelection | None = None) -> StarterImportOperation:
+        if selection:
+            selection.validate()
+        if len(paths) > 32 or len(strategy_paths) > 8 or sum((bool(paths), recommended, selection is not None)) != 1:
             raise ValueError("请选择 1 到 32 个方案文件，或读取推荐清单。")
         with self._lock:
             if self._closed or (self._operation and self._operation.status in {
@@ -61,7 +64,7 @@ class PlanImportService(StarterResourceService):
             self._cancel = Event()
             self._operation = StarterImportOperation(str(uuid4()), "preparing", ())
             self._temporary = TemporaryDirectory(prefix="verdflow-import-")
-            self._thread = Thread(target=self._prepare, args=(paths, recommended, strategy_paths),
+            self._thread = Thread(target=self._prepare, args=(paths, recommended, strategy_paths, selection),
                                   name="resource-preflight", daemon=True)
             self._thread.start()
             return self._operation
@@ -89,15 +92,37 @@ class PlanImportService(StarterResourceService):
         if self._cancel.is_set():
             raise DownloadCancelled()
 
-    def _prepare(self, paths: tuple[str, ...], recommended: bool, strategy_paths: tuple[str, ...]) -> None:
+    def _prepare(self, paths: tuple[str, ...], recommended: bool, strategy_paths: tuple[str, ...],
+                 selection: ResourceSelection | None = None) -> None:
         warnings: list[str] = []
         try:
             selected = load_index(starter=True) if recommended else ResourceIndex("", ())
+            remote_index = None
+            if selection:
+                try:
+                    remote_index = load_index()
+                except Exception as error:
+                    raise ValueError("暂时无法确认资源版本，请检查网络并刷新资源中心后重试。") from error
+                if remote_index.revision != selection.revision:
+                    raise ValueError("资源清单已更新，请关闭弹窗并刷新资源中心后重新选择。")
+                matches = tuple(r for r in remote_index.resources if
+                                (r.resource.id, r.resource.version) == (selection.resource_id, selection.version))
+                if len(matches) != 1:
+                    raise ValueError("所选资源版本已下架或未开放应用内导入，请刷新后重试。")
+                selected = ResourceIndex(remote_index.revision, matches)
             entries: dict[str, PreparedItem] = {}
+            inventory = self.library.inventory() if selected.resources else None
             for item in selected.resources:
                 r = item.resource
+                conflict = r.kind == "strategies" and local_state(item, inventory) == "conflict"
                 entries[r.id] = PreparedItem(ImportChoice(r.id, r.name, r.kind, r.version, r.bytes, page_url=r.page_url),
                                             indexed=item, metadata=item.plan, explicit=True)
+                if conflict:
+                    entries[r.id].choice = replace(entries[r.id].choice, blocked=True,
+                        message="本地已有同一版本的不同内容，未覆盖。请先在策略库核对来源。")
+                elif r.kind == "strategies":
+                    entries[r.id].choice = replace(entries[r.id].choice,
+                        message="与旧版并存安装；已有方案和项目快照不变，新版仍需确认信任。")
             for source in paths:
                 key = "plan-" + uuid4().hex
                 try:
@@ -139,7 +164,7 @@ class PlanImportService(StarterResourceService):
             index = ResourceIndex("", ())
             if need_index:
                 try:
-                    index = load_index()
+                    index = remote_index if remote_index is not None else load_index()
                     self._index_revision = index.revision
                 except Exception:
                     warnings.append("暂时无法查询资源中心；可选择本地策略包。可选资产库不影响方案导入。")

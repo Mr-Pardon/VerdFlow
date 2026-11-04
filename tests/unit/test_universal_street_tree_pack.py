@@ -181,6 +181,31 @@ class UniversalStreetTreePackTests(unittest.TestCase):
         )
         self.assertEqual(asset_counts["SM_Oak_1D"], role_counts["tree_accent"])
 
+    def test_longitudinal_spacing_and_triple_row_spacing_are_independent(self):
+        def run(width, **overrides):
+            result = self.generator.generate({
+                "strategy": self.strategy,
+                "selected_regions": [rectangle_region("street", width, 100)],
+                "args": {"strategy_parameters": overrides},
+            })
+            return result["points"]
+
+        wide = run(12, triple_row_spacing_m=4)
+        default = run(12, triple_row_spacing_m=1.55)
+        self.assertEqual(default, run(12))
+        def rows(points, role):
+            return [p["generated_position"] for p in points if p["role_key"] == role]
+
+        self.assertEqual(rows(wide, "middle_shrub"), rows(default, "middle_shrub"))
+        self.assertEqual({abs(y) for _, y, _ in rows(wide, "outer_shrub")}, {4.0})
+        capped = rows(run(6, triple_row_spacing_m=4), "outer_shrub")
+        self.assertTrue(capped)
+        self.assertTrue(all(abs(abs(y) - 2.55) < 1e-8 for _, y, _ in capped))
+        self.assertEqual(run(2.5), run(2.5, triple_row_spacing_m=4))
+        spaced = run(12, triple_row_spacing_m=4, tree_spacing_m=10, shrub_spacing_m=4)
+        self.assertGreater(len(rows(spaced, "tree_accent")), len(rows(wide, "tree_accent")))
+        self.assertLess(len(rows(spaced, "outer_shrub")), len(rows(wide, "outer_shrub")))
+
     def test_rotation_is_randomized_without_changing_seeded_positions(self) -> None:
         context = {
             "strategy": self.strategy,

@@ -1,26 +1,46 @@
 import { cancelOperation, submitDelivery, submitElevation, submitElevationChunk, submitSelection } from "../api";
-import type { ElevationBatch, LiveCommand, LiveRegion } from "../types";
+import type { ElevationBatch, LiveCommand, LiveRegion, LiveGeometry } from "../types";
+import { geometryId, geometryKind } from "../shared/regionLimits";
 import type { DtsApi, DtsWindow, PendingSdkRequest, DtsSdkCallbacks } from "./protocol";
 import { loadScript, settle, isPromise, asRecord, readableError } from "./runtime";
-import { findCoordinates, createLiveRegion, previewFrameThickness } from "./regions";
+import { findCoordinates, createLiveRegion, createLivePath, previewFrameThickness } from "./regions";
 import { samplingWindows, intersectionRows } from "./elevation";
 import { DtsXmlImport, XmlImportCancelled } from "./xmlImport";
 import { readCameraPose, type CameraPose } from "./camera";
 
 const CAMERA_FLIGHT_SECONDS = 0.8;
 
+const signedArea = (ring: number[][]) => {
+  const origin = ring[0]!;
+  return ring.reduce((sum, point, index) => {
+    const next = ring[(index + 1) % ring.length]!;
+    return sum + (point[0]! - origin[0]!) * (next[1]! - origin[1]!) -
+      (next[0]! - origin[0]!) * (point[1]! - origin[1]!);
+  }, 0);
+};
+
+function polygonCoordinates(region: LiveRegion) {
+  if (!region.holes?.length) return region.coordinates;
+  const orientation = Math.sign(signedArea(region.coordinates));
+  return [region.coordinates, ...region.holes.map(ring =>
+    Math.sign(signedArea(ring)) === orientation ? [...ring].reverse() : ring)];
+}
+
 export class DtsSdkBridge {
   private disposed = false;
   private api: DtsApi | null = null;
   private selection: LiveCommand | null = null;
   private draftDrawing = false;
+  private drawingKind: "polygon" | "polyline" = "polygon";
   private drawingNumber = 0;
   private samplingGeneration = 0;
   private mousePickingConfigured = false;
   private readonly previewGroup = `verdflow_selection_${crypto.randomUUID()}`;
   private readonly previewIds = new Map<string, string>();
+  private readonly previewKinds = new Map<string, "polygon" | "polyline">();
   private readonly previewRegions = new Map<string, string>();
-  private readonly previewShapes = new Map<string, { region: LiveRegion; path?: Path2D }>();
+  private readonly visiblePreviewIds = new Set<string>();
+  private readonly previewShapes = new Map<string, { bbox: number[]; path?: Path2D }>();
   private pickContext: CanvasRenderingContext2D | null = null;
   private readonly pendingRequests = new Map<number, PendingSdkRequest>();
   private readonly xmlImport: DtsXmlImport;
@@ -101,12 +121,13 @@ export class DtsSdkBridge {
     this.pickContext = null;
   }
 
-  beginDrawing() {
+  beginDrawing(kind: "polygon" | "polyline" = "polygon") {
     if (!this.api?.editHelper) throw new Error("DTS 选面工具不可用");
     if (this.draftDrawing) return;
     this.draftDrawing = true;
+    this.drawingKind = kind;
     try {
-      this.api.editHelper.setParam(0, 1, [53, 183, 159, 255]);
+      this.api.editHelper.setParam(0, kind === "polyline" ? 0 : 1, [53, 183, 159, 255]);
       this.api.editHelper.start();
     } catch (error) {
       this.draftDrawing = false;
@@ -122,33 +143,64 @@ export class DtsSdkBridge {
     this.callbacks.onDrawingFinished();
   }
 
-  showRegion(region: LiveRegion) {
-    if (!this.api?.polygon) throw new Error("DTS 选区预览接口不可用");
-    if (this.previewIds.has(region.region_id)) return;
-    const id = `${this.previewGroup}_${region.region_id}`;
-    this.api.polygon.add({
-      id, groupId: this.previewGroup, coordinates: region.coordinates,
-      coordinateType: 0, style: 10, color: [0.14, 0.63, 0.59, 0.3],
+  showRegion(region: LiveGeometry) {
+    const key = geometryId(region), kind = geometryKind(region);
+    const api = kind === "polyline" ? this.api?.polyline : this.api?.polygon;
+    if (!api) throw new Error(kind === "polyline" ? "DTS 路径预览接口不可用" : "DTS 选区预览接口不可用");
+    const existing = this.previewIds.get(key);
+    if (existing) {
+      if (!this.visiblePreviewIds.has(key)) {
+        api.show(existing);
+        this.visiblePreviewIds.add(key);
+      }
+      return;
+    }
+    const id = `${this.previewGroup}_${key}`;
+    api.add({
+      id, groupId: this.previewGroup, coordinates: kind === "polyline" ? region.coordinates : polygonCoordinates(region as LiveRegion),
+      coordinateType: 0, style: kind === "polyline" ? 0 : 10, shape: 0, thickness: Math.max(0.03, previewFrameThickness(region)), color: [0.14, 0.63, 0.59, kind === "polyline" ? 1 : 0.3],
       frameColor: [0.36, 0.95, 0.82, 0.95], frameThickness: previewFrameThickness(region),
       range: [1, 1000000], depthTest: false, priority: 1,
     });
-    this.previewIds.set(region.region_id, id);
-    this.previewRegions.set(id, region.region_id);
-    this.previewShapes.set(region.region_id, { region });
+    this.previewIds.set(key, id);
+    this.previewKinds.set(key, kind);
+    this.previewRegions.set(id, key);
+    this.visiblePreviewIds.add(key);
+    const path = typeof Path2D === "undefined" ? undefined : new Path2D();
+    if (path) {
+      for (const ring of [region.coordinates, ...(region.holes ?? [])]) {
+        ring.forEach((point, index) => {
+          if (index === 0) path.moveTo(point[0]! - region.bbox[0]!, point[1]! - region.bbox[1]!);
+          else path.lineTo(point[0]! - region.bbox[0]!, point[1]! - region.bbox[1]!);
+        });
+        if (kind === "polygon") path.closePath();
+      }
+    }
+    // Picking keeps a compact render path, not a second coordinate document.
+    this.previewShapes.set(key, { bbox: [...region.bbox], path });
   }
 
   hideRegion(regionId: string) {
     const id = this.previewIds.get(regionId);
+    if (!id || !this.visiblePreviewIds.has(regionId)) return;
+    (this.previewKinds.get(regionId) === "polyline" ? this.api?.polyline : this.api?.polygon)?.hide(id);
+    this.visiblePreviewIds.delete(regionId);
+  }
+
+  removeRegion(regionId: string) {
+    const id = this.previewIds.get(regionId);
     if (!id) return;
-    this.api?.polygon?.delete(id);
+    (this.previewKinds.get(regionId) === "polyline" ? this.api?.polyline : this.api?.polygon)?.delete(id);
     this.previewIds.delete(regionId);
+    this.previewKinds.delete(regionId);
+    this.visiblePreviewIds.delete(regionId);
     this.previewRegions.delete(id);
     this.previewShapes.delete(regionId);
   }
 
   clearRegionPreviews() {
     for (const regionId of [...this.previewIds.keys()]) {
-      try { this.hideRegion(regionId); }
+      try { this.removeRegion(regionId); }
       catch (error) { this.callbacks.onError(`选区预览清理失败：${readableError(error)}`); }
     }
   }
@@ -197,8 +249,9 @@ export class DtsSdkBridge {
     if (this.xmlImport.consume(event)) return;
     const document = asRecord(event);
     if (document?.eventtype === "LeftMouseButtonClick") {
-      let regionId = document.Type === "Polygon" && typeof document.Id === "string"
+      let regionId = ["Polygon", "Polyline"].includes(document.Type as string) && typeof document.Id === "string"
         ? this.previewRegions.get(document.Id) : undefined;
+      if (regionId && !this.visiblePreviewIds.has(regionId)) regionId = undefined;
       // OnTerrain polygons may be picked as the underlying terrain in Explorer.
       // Never reinterpret a click on somebody else's Polygon as our selection.
       if (!regionId && document.Type === "TileLayer") {
@@ -213,8 +266,8 @@ export class DtsSdkBridge {
       try {
         const coordinates = findCoordinates(event);
         if (!coordinates) throw new Error("DTS 选面结果没有可识别的坐标");
-        const region = createLiveRegion(coordinates, ++this.drawingNumber);
-        this.callbacks.onRegionDrawn(region);
+        if (this.drawingKind === "polyline") this.callbacks.onPathDrawn?.(createLivePath(coordinates, ++this.drawingNumber));
+        else this.callbacks.onRegionDrawn(createLiveRegion(coordinates, ++this.drawingNumber));
       } catch (error) {
         this.callbacks.onError(readableError(error));
       }
@@ -240,21 +293,18 @@ export class DtsSdkBridge {
     if (!Array.isArray(value) || value.length !== 3 || !value.every(v => typeof v === "number" && Number.isFinite(v))) return;
     const [x, y] = value as [number, number, number];
     for (const [regionId, shape] of [...this.previewShapes].reverse()) {
-      const { region } = shape;
-      const [minX, minY, , maxX, maxY] = region.bbox as [number, number, number, number, number, number];
-      if (x < minX || x > maxX || y < minY || y > maxY) continue;
+      if (!this.visiblePreviewIds.has(regionId)) continue;
+      const [minX, minY, , maxX, maxY] = shape.bbox as [number, number, number, number, number, number];
+      const isLine = this.previewKinds.get(regionId) === "polyline";
+      const padding = isLine ? 0.5 : 0;
+      if (x < minX - padding || x > maxX + padding || y < minY - padding || y > maxY + padding) continue;
       this.pickContext ??= document.createElement("canvas").getContext("2d");
       if (!this.pickContext) return;
-      if (!shape.path) {
-        const path = new Path2D();
-        region.coordinates.forEach((point, index) => {
-          if (index === 0) path.moveTo(point[0]! - minX, point[1]! - minY);
-          else path.lineTo(point[0]! - minX, point[1]! - minY);
-        });
-        path.closePath();
-        shape.path = path;
-      }
-      if (this.pickContext.isPointInPath(shape.path, x - minX, y - minY, "evenodd")) return regionId;
+      if (!shape.path) continue;
+      if (isLine) {
+        this.pickContext.lineWidth = 1;
+        if (this.pickContext.isPointInStroke(shape.path, x - minX, y - minY)) return regionId;
+      } else if (this.pickContext.isPointInPath(shape.path, x - minX, y - minY, "evenodd")) return regionId;
     }
   }
 
@@ -318,13 +368,13 @@ export class DtsSdkBridge {
     const windows = samplingWindows(lines, plan);
     for (const [index, window] of windows.entries()) {
       assertActive();
-      if (window.groups.every(group => failures.has(group.region_id))) continue;
+      if (window.groups.every(group => failures.has(group.selection_id))) continue;
       this.callbacks.onActivity(`定位采样窗口 ${index + 1}/${windows.length}`);
       this.focusRegion(window);
       await this.waitForScene(1400);
       assertActive();
       for (const group of window.groups) {
-        if (failures.has(group.region_id)) continue;
+        if (failures.has(group.selection_id)) continue;
         for (let offset = 0; offset < group.indices.length; offset += 2000) {
           const indices = group.indices.slice(offset, offset + 2000);
           const chunk = indices.map(i => lines[i]);
@@ -343,7 +393,7 @@ export class DtsSdkBridge {
               break;
             } catch (error) {
               assertActive();
-              if (attempt === 1) failures.set(group.region_id, readableError(error));
+              if (attempt === 1) failures.set(group.selection_id, readableError(error));
             }
           }
           if (!rows) break;
@@ -355,8 +405,11 @@ export class DtsSdkBridge {
     }
     assertActive();
     await submitElevation(command.correlation, streamed ? null : results,
-      [...failures].map(([region_id, reason]) => ({ region_id, reason })), streamed);
-    this.callbacks.onActivity(failures.size ? `采样完成，跳过 ${failures.size} 个失败面` : "采样完成，正在整理高程结果并生成 XML");
+      [...failures].map(([identifier, reason]) => {
+        const batch = plan.find(item => (item.path_id ?? item.region_id) === identifier)!;
+        return batch.path_id ? {path_id: batch.path_id, reason} : {region_id: batch.region_id!, reason};
+      }), streamed);
+    this.callbacks.onActivity(failures.size ? `采样完成，跳过 ${failures.size} 个失败选区` : "采样完成，正在整理高程结果并生成 XML");
     this.callbacks.onCommandComplete();
   }
 

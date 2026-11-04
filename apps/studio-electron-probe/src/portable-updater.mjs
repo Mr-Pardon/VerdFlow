@@ -4,11 +4,11 @@ import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { newerVersion, releaseAssets, releaseRepository, UpdateHttpError, updateDescriptor, updateJson, updateResponse } from "./update-source.mjs";
+import { newerVersion, releaseAssets, releaseRepository, UpdateHttpError, updateDescriptor, updateJson, updateResponse, retryUpdate, updateFailureInfo, updateFailureMessage } from "./update-source.mjs";
 import { launchPortableUpdate, preparePortableUpdate } from "./update-runner.mjs";
 
 export class PortableUpdater {
-  constructor({ portable, version, scriptRoot, notify = () => {}, fetcher = fetch, prepare = preparePortableUpdate, launch = launchPortableUpdate }) {
+  constructor({ portable, version, scriptRoot, notify = () => {}, fetcher = fetch, prepare = preparePortableUpdate, launch = launchPortableUpdate, retryDelays = [700, 1600] }) {
     Object.assign(this, { portable, version, scriptRoot, notify, fetcher, prepare, launch });
     this.repository = null;
     this.release = null;
@@ -16,12 +16,30 @@ export class PortableUpdater {
     this.timer = null;
     this.abort = null;
     this.closed = false;
+    this.retryDelays = retryDelays;
     this.state = { supported: process.platform === "win32" && portable !== null, configured: false, currentVersion: version,
       stage: "idle", latestVersion: null, progress: 0, message: null, autoCheck: true, autoDownload: true, lastCheckedAt: null };
   }
 
   snapshot() { return { ...this.state }; }
   update(values) { Object.assign(this.state, values); if (!this.closed) this.notify(this.snapshot()); }
+
+  async diagnostic(phase, error, retry = 0) {
+    if (!this.cache) return;
+    try {
+      const file = path.join(this.cache, "diagnostics.json");
+      const info = await lstat(file).catch(() => null);
+      if (info && (!info.isFile() || info.isSymbolicLink())) return;
+      let records = [];
+      if (info && info.size < 64 * 1024) {
+        try { records = JSON.parse(await readFile(file, "utf8")); } catch { /* Discard an incomplete diagnostic file. */ }
+      }
+      if (!Array.isArray(records)) records = [];
+      records = records.slice(-39);
+      records.push({ at: new Date().toISOString(), phase, retry, ...updateFailureInfo(error) });
+      await writeFile(file, JSON.stringify(records), "utf8");
+    } catch { /* Diagnostic failures cannot block updating or expand the cleanup boundary. */ }
+  }
 
   async initialize() {
     if (!this.state.supported) return;
@@ -62,18 +80,24 @@ export class PortableUpdater {
     const signal = AbortSignal.any([this.abort.signal, AbortSignal.timeout(30_000)]);
     this.update({ stage: "checking", message: null });
     let readingLatestRelease = true;
+    const retry = async (error, attempt) => {
+      await this.diagnostic(readingLatestRelease ? "release" : "descriptor", error, attempt);
+      this.update({ message: `连接暂时中断，正在自动重试（${attempt}/2）` });
+    };
     try {
-      const document = await updateJson(`https://api.github.com/repos/${this.repository}/releases/latest`, { fetcher: this.fetcher, signal });
+      const document = await updateJson(`https://api.github.com/repos/${this.repository}/releases/latest`, { fetcher: this.fetcher, signal, onRetry: retry, retryDelays: this.retryDelays });
       readingLatestRelease = false;
       const release = releaseAssets(document, this.repository, this.version);
-      this.release = release ? updateDescriptor(await updateJson(release.metadataUrl, { fetcher: this.fetcher, signal }), release) : null;
-      this.update({ stage: this.release ? "available" : "idle", latestVersion: this.release?.version ?? null, lastCheckedAt: new Date().toISOString() });
+      this.release = release ? updateDescriptor(await updateJson(release.metadataUrl, { fetcher: this.fetcher, signal, onRetry: retry, retryDelays: this.retryDelays }), release) : null;
+      this.update({ stage: this.release ? "available" : "idle", latestVersion: this.release?.version ?? null, lastCheckedAt: new Date().toISOString(), message: null });
     } catch (error) {
       if (readingLatestRelease && error instanceof UpdateHttpError && error.status === 404) {
         this.release = null;
         this.update({ stage: "idle", latestVersion: null, lastCheckedAt: new Date().toISOString(), message: "暂未发现公开发布版本" });
       } else {
-        this.update({ stage: "error", message: "检查更新失败，请稍后重试；不影响继续使用" });
+        this.release = null;
+        await this.diagnostic(readingLatestRelease ? "release" : "descriptor", error);
+        this.update({ stage: "error", latestVersion: null, message: updateFailureMessage(readingLatestRelease ? "release" : "descriptor", error) });
       }
     }
     finally { this.abort = null; }
@@ -91,6 +115,7 @@ export class PortableUpdater {
     const directory = path.join(this.cache, id);
     const stageRoot = path.join(path.dirname(installRoot), `.verdflow-update-${id}`);
     let ownsDirectory = false, ownsStage = false;
+    let phase = "downloading";
     this.abort = new AbortController();
     const signal = AbortSignal.any([this.abort.signal, AbortSignal.timeout(60 * 60 * 1000)]);
     this.update({ stage: "downloading", progress: 0, message: null });
@@ -102,30 +127,38 @@ export class PortableUpdater {
       ownsStage = true;
       await rmdir(stageRoot);
       const archive = path.join(directory, release.archiveName);
-      const response = await updateResponse(release.archiveUrl, { fetcher: this.fetcher, signal });
-      const digest = createHash("sha256");
-      let received = 0, emitted = 0;
-      const monitor = new Transform({ transform: (chunk, _encoding, callback) => {
-        received += chunk.length;
-        if (received > release.bytes) return callback(new Error("更新包大小超出发布记录"));
-        digest.update(chunk);
-        if (Date.now() - emitted > 250) { emitted = Date.now(); this.update({ progress: Math.min(99, Math.floor(received / release.bytes * 100)) }); }
-        callback(null, chunk);
+      await retryUpdate(async attempt => {
+        const response = await updateResponse(release.archiveUrl, { fetcher: this.fetcher, signal });
+        const digest = createHash("sha256");
+        let received = 0, emitted = 0;
+        const monitor = new Transform({ transform: (chunk, _encoding, callback) => {
+          received += chunk.length;
+          if (received > release.bytes) return callback(new Error("更新包大小超出发布记录"));
+          digest.update(chunk);
+          if (Date.now() - emitted > 250) { emitted = Date.now(); this.update({ progress: Math.min(99, Math.floor(received / release.bytes * 100)) }); }
+          callback(null, chunk);
+        } });
+        await pipeline(Readable.fromWeb(response.body), monitor, createWriteStream(archive, { flags: attempt === 0 ? "wx" : "w" }), { signal });
+        if (received !== release.bytes) throw Object.assign(new Error("更新下载未完成"), { code: "UPDATE_INCOMPLETE" });
+        if (digest.digest("hex") !== release.sha256) throw Object.assign(new Error("更新包校验失败"), { code: "UPDATE_CHECKSUM" });
+      }, { signal, delays: this.retryDelays, onRetry: async (error, attempt) => {
+        await this.diagnostic("downloading", error, attempt);
+        this.update({ progress: 0, message: `下载连接中断，正在自动重试（${attempt}/2）` });
       } });
-      await pipeline(Readable.fromWeb(response.body), monitor, createWriteStream(archive, { flags: "wx" }), { signal });
-      if (received !== release.bytes || digest.digest("hex") !== release.sha256) throw new Error("更新包校验失败，请重新下载");
       const plan = { id, repository: this.repository, installRoot, stageRoot, archive, sha256: release.sha256,
         targetVersion: release.version, rootName: release.rootName, parentPid: process.pid };
       const planPath = path.join(directory, "plan.json");
       await writeFile(planPath, JSON.stringify(plan), "utf8");
-      this.update({ stage: "preparing", progress: 100 });
+      phase = "preparing";
+      this.update({ stage: "preparing", progress: 100, message: null });
       await this.prepare({ python: this.portable.pythonExecutablePath, script: path.join(this.scriptRoot, "prepare-update.py"), planPath, signal });
       signal.throwIfAborted();
       this.plan = { ...plan, planPath };
       await writeFile(path.join(this.cache, "pending.json"), JSON.stringify({ id }), "utf8");
       this.update({ stage: "ready", progress: 100 });
     } catch (error) {
-      this.update({ stage: "available", progress: 0, message: signal.aborted ? "更新下载已取消或超时，可重新下载" : (error.code === "EACCES" || error.code === "EPERM") ? "程序目录不可写，请移动到有写入权限的目录后再更新" : "下载或校验更新失败，现有程序未改变，请重试" });
+      await this.diagnostic(phase, error);
+      this.update({ stage: "available", progress: 0, message: signal.aborted ? "更新下载已取消或超时，可重新下载" : updateFailureMessage(phase, error) });
       if (ownsStage) await removeOwnedDirectory(stageRoot, path.join(path.dirname(installRoot), `.verdflow-update-${id}`));
       if (ownsDirectory) await removeOwnedDirectory(directory, path.join(this.cache, id));
     } finally { this.abort = null; }

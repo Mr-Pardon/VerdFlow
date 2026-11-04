@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertUpdateIdle, newerVersion, releaseAssets, releaseRepository, updateDescriptor, updateJson, updateResponse } from "../src/update-source.mjs";
+import { assertUpdateIdle, newerVersion, releaseAssets, releaseRepository, updateDescriptor, updateJson, updateResponse, UpdateHttpError, retryUpdate } from "../src/update-source.mjs";
 
 export const repository = "example/verdflow-test";
 export const archiveName = "VerdFlow-Studio-v0.4.0-win-x64.zip";
@@ -9,6 +9,26 @@ export const releaseDocument = (bytes = 12) => ({ tag_name: "v0.4.0", draft: fal
   { name: archiveName, size: bytes, browser_download_url: `https://github.com/${repository}/releases/download/v0.4.0/${archiveName}` },
 ] });
 export const descriptorDocument = (bytes = 12, sha256 = "a".repeat(64)) => ({ schema: "verdflow.portable-update", version: "1", product_version: "0.4.0", platform: "windows-x64", archive_name: archiveName, archive_bytes: bytes, archive_sha256: sha256 });
+
+test("request retries are bounded and exclude validation, TLS and long server backoff", async () => {
+  for (const error of [new SyntaxError("invalid json"), new Error("invalid identity"),
+    Object.assign(new Error("permission denied"), { code: "EACCES" }),
+    Object.assign(new Error("disk full"), { code: "ENOSPC" }),
+    new TypeError("fetch failed", { cause: { code: "CERT_HAS_EXPIRED" } }),
+    new UpdateHttpError(503, new Headers({ "retry-after": "60" })), new UpdateHttpError(429)]) {
+    let attempts = 0;
+    await assert.rejects(retryUpdate(async () => { attempts++; throw error; }, { delays: [0, 0] }));
+    assert.equal(attempts, 1);
+  }
+  let attempts = 0;
+  const result = await retryUpdate(async () => {
+    attempts++;
+    if (attempts < 3) throw new UpdateHttpError(502);
+    return "recovered";
+  }, { delays: [0, 0, 0, 0] });
+  assert.equal(result, "recovered");
+  assert.equal(attempts, 3);
+});
 
 test("stable versions compare numerically and never downgrade", () => {
   assert.equal(newerVersion("0.10.0", "0.9.9"), true);

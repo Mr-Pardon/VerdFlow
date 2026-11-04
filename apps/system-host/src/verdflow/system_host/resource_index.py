@@ -46,6 +46,19 @@ class ResourceIndex:
     resources: tuple[IndexedResource, ...]
 
 
+@dataclass(frozen=True)
+class ResourceSelection:
+    resource_id: str
+    version: str
+    revision: str
+
+    def validate(self) -> None:
+        if (not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,99}", self.resource_id)
+                or not self.version or len(self.version) > 100
+                or not re.fullmatch(r"[a-f0-9]{64}", self.revision)):
+            raise ValueError("资源选择无效，请刷新资源中心后重试。")
+
+
 def plan_metadata(inspection: ProfilePackageInspection) -> PlanMetadata:
     value = json.loads(inspection.profile.canonical_json)
     if prepare_role_binding_profile_document(value).semantic_hash != inspection.profile.semantic_hash:

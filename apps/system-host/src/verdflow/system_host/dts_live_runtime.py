@@ -10,8 +10,8 @@ from pathlib import Path
 import shutil
 import time
 
-from verdflow.contracts import JobStatus, SourceKind
-from verdflow.core import CommandDocument, RegionExtractionRequest
+from verdflow.contracts import JobStatus, SourceKind, PlantingInputRef
+from verdflow.core import CommandDocument, RegionExtractionRequest, PathSetImportService
 from verdflow.core_host import (
     CoreHost,
     CoreHostConfig,
@@ -23,6 +23,7 @@ from verdflow.dts_adapter import (
     DTS_ADAPTER_ID,
     DTS_LIVE_ADAPTER_ID,
     DTS_LIVE_SCENE_INSPECTION_COMMAND,
+    DTS_LIVE_PATH_SELECTION_COMMAND,
     DtsLiveCorrelation,
     DtsLiveSelection,
 )
@@ -43,12 +44,13 @@ class DtsLivePreparedScene:
 class DtsLiveOperationOutcome:
     operation_id: str
     generation_token: int
-    region_set_id: str
+    region_set_id: str | None
     generated_point_set_id: str
     elevation_point_set_id: str
     asset_assignment_set_id: str
     export_id: str
     record_count: int
+    path_set_id: str | None = None
 
 
 class DtsLiveTemporaryRuntime:
@@ -208,37 +210,80 @@ def _execute_operation(
         "operation_id": correlation.operation_id,
         "generation_token": correlation.generation_token,
     }
-    regions = host.extract_regions(
-        RegionExtractionRequest(
-            scene_revision_id=prepared.scene_revision_id,
-            provider_id=DTS_LIVE_ADAPTER_ID,
-            rule_pack={
-                "schema": "verdflow.region-rule-pack",
-                "version": "1",
-                "rules": [
-                    {
-                        "id": "dts-live-user-selection",
-                        "label": "DTS Live user selection",
-                        "match": {"selection": "polygon_collection"},
-                    }
-                ],
-            },
-            import_settings=context,
-        ),
-        idempotency_key=(
-            f"dts-live-region:{correlation.operation_id}:"
-            f"{correlation.generation_token}"
-        ),
-        timeout_seconds=30.0,
-    )
-    region_ids = tuple(
-        item.region_id
-        for item in host.store.list_regions(regions.region_set.region_set_id)
+    path_set = None
+    regions = None
+    if selection.paths:
+        content = {
+            "schema": "verdflow.path-selection.command",
+            "version": "1",
+            "operation": "select_paths",
+            "scene_revision_id": prepared.scene_revision_id,
+            "source_id": prepared.source_id,
+            "context": context,
+        }
+        submitted = host.submit_extension_command(
+            CommandDocument(
+                command_type=DTS_LIVE_PATH_SELECTION_COMMAND,
+                command_version="1",
+                content=_json_bytes(content),
+                schema_id="verdflow.path-selection.command",
+                schema_version="1",
+            ),
+            idempotency_key=f"dts-live-path:{correlation.operation_id}:{correlation.generation_token}",
+        )
+        completed = host.service_loop.run_until_terminal(
+            submitted.job_id, timeout_seconds=30.0
+        )
+        if completed.status is not JobStatus.SUCCEEDED:
+            raise ValueError(
+                completed.error.message if completed.error else "路径快照生成失败"
+            )
+        path_set = PathSetImportService(host.store).finalize(completed.job_id)
+    else:
+        regions = host.extract_regions(
+            RegionExtractionRequest(
+                scene_revision_id=prepared.scene_revision_id,
+                provider_id=DTS_LIVE_ADAPTER_ID,
+                rule_pack={
+                    "schema": "verdflow.region-rule-pack",
+                    "version": "1",
+                    "rules": [
+                        {
+                            "id": "dts-live-user-selection",
+                            "label": "DTS Live user selection",
+                            "match": {"selection": "polygon_collection"},
+                        }
+                    ],
+                },
+                import_settings=context,
+            ),
+            idempotency_key=(
+                f"dts-live-region:{correlation.operation_id}:"
+                f"{correlation.generation_token}"
+            ),
+            timeout_seconds=30.0,
+        )
+    region_ids = (
+        ()
+        if path_set
+        else tuple(
+            item.region_id
+            for item in host.store.list_regions(regions.region_set.region_set_id)
+        )
     )
     prepared_run = host.generate_and_assign(
         GenerateAndAssignRequest(
             scene_revision_id=prepared.scene_revision_id,
-            region_set_id=regions.region_set.region_set_id,
+            region_set_id=None if path_set else regions.region_set.region_set_id,
+            input_ref=(
+                PlantingInputRef(
+                    "polyline",
+                    path_set.path_set_id,
+                    tuple(path.path_id for path in selection.paths),
+                )
+                if path_set
+                else None
+            ),
             selected_region_ids=region_ids,
             strategy_package_hash=execution.strategy_package_hash,
             random_seed=(
@@ -297,7 +342,8 @@ def _execute_operation(
     return DtsLiveOperationOutcome(
         operation_id=correlation.operation_id,
         generation_token=correlation.generation_token,
-        region_set_id=regions.region_set.region_set_id,
+        region_set_id=None if path_set else regions.region_set.region_set_id,
+        path_set_id=path_set.path_set_id if path_set else None,
         generated_point_set_id=prepared_run.generation.point_set.point_set_id,
         elevation_point_set_id=resolved.elevation.point_set.point_set_id,
         asset_assignment_set_id=(

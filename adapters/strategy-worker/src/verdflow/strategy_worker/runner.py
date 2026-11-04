@@ -14,7 +14,7 @@ import tempfile
 import time
 from typing import Any, Callable, Collection
 
-from verdflow.planting import canonical_json_bytes, validate_point_set_v2
+from verdflow.planting import canonical_json_bytes, validate_point_set
 from verdflow.worker_runtime import ProcessTreeGuard
 
 from .errors import (
@@ -211,7 +211,7 @@ class StrategyWorker:
                 raise StrategyExecutionError("Strategy worker output exceeds configured limit")
             try:
                 value = json.loads(output_path.read_text(encoding="utf-8"))
-                return validate_point_set_v2(value)
+                return validate_point_set(value)
             except Exception as error:
                 raise StrategyExecutionError(
                     f"Strategy worker returned an invalid PointSet: {error}"

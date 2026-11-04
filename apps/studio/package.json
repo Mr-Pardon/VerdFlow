@@ -1,6 +1,6 @@
 {
   "name": "@verdflow/studio",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,14 +10,16 @@
     "typecheck": "vue-tsc -b"
   },
   "dependencies": {
-    "@verdflow/asset-browser-ui": "workspace:*",
-    "@verdflow/strategy-preview-ui": "workspace:*",
-    "@verdflow/role-guide-ui": "workspace:*",
     "@lucide/vue": "^1.31.0",
+    "@verdflow/asset-browser-ui": "workspace:*",
+    "@verdflow/role-guide-ui": "workspace:*",
+    "@verdflow/strategy-preview-ui": "workspace:*",
+    "markdown-it": "^15.0.3",
     "vue": "^3.5.18",
     "vue-router": "4.5.1"
   },
   "devDependencies": {
+    "@types/markdown-it": "^14.2.0",
     "@types/node": "^24.2.1",
     "@vitejs/plugin-vue": "^6.0.1",
     "typescript": "^5.9.2",

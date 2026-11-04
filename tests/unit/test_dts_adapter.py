@@ -45,8 +45,8 @@ class DtsXmlAdapterTests(unittest.TestCase):
         self.assertEqual(point.findtext("LocationZ"), "33.000000")
         self.assertEqual(
             point.findtext("Matrix3"),
-            "0.000000,-0.750000,0.000000,"
-            "0.500000,0.000000,0.000000,"
+            "0.000000,0.500000,0.000000,"
+            "-0.750000,0.000000,0.000000,"
             "0.000000,0.000000,1.250000",
         )
         self.assertNotIn(b"-0.000000", document.content)

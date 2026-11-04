@@ -234,6 +234,7 @@ class StrategyLibrarySummary:
     display_name: str
     trust_state: str | None
     executable: bool
+    input_geometry: str = "polygon"
 
 
 @dataclass(frozen=True, slots=True)

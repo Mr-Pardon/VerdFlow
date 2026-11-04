@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from dataclasses import replace
 import sys
 import unittest
 
@@ -24,6 +25,32 @@ from verdflow.dts_adapter import (  # noqa: E402
 
 
 class DtsLiveSessionTests(unittest.TestCase):
+
+    def test_path_input_is_frozen_and_mismatched_or_invalid_requests_preserve_selection(
+        self,
+    ) -> None:
+        session = DtsLiveSession()
+        execution = replace(_execution_snapshot(), input_geometry="polyline")
+        path = {
+            "path_id": "road",
+            "name": "Road",
+            "coordinates": [[0, 0, 1], [10, 0, 2]],
+        }
+        selection = session.begin_selection(execution, paths=[path])
+        path["coordinates"][0][0] = 999
+        self.assertEqual(selection.paths[0].coordinates[0], (0, 0, 1))
+        self.assertEqual(selection.regions, ())
+        before = session.snapshot()
+        for wrong_execution, regions, paths in (
+            (_execution_snapshot(), None, [path]),
+            (execution, [], [path]),
+            (execution, [], None),
+            (execution, None, [{**path, "coordinates": [[0, 0, 0], [0, 0, 0]]}]),
+        ):
+            with self.assertRaises(ValueError):
+                session.begin_selection(wrong_execution, regions=regions, paths=paths)
+            self.assertEqual(session.snapshot(), before)
+
     def test_chunked_elevation_excludes_whole_failed_regions_and_validates_ids(self) -> None:
         session = DtsLiveSession()
         selection = session.begin_selection(_execution_snapshot(), [

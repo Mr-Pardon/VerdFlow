@@ -14,7 +14,7 @@ export const guideSteps = [
   {
     id: "runtimes", route: "/settings", title: "准备运行环境", section: "系统 / 设置",
     description: "只配置你要使用的路径。FBX 工作流使用 Blender 解析模型；DTS 实时种植使用 Explorer。已自动发现的可用环境无需重复设置。",
-    hint: "选择 Blender 程序或 Explorer 根目录即可。设置页还可以管理软件更新，或重新打开本次引导。",
+    hint: "选择 Blender 程序或 Explorer 7.1 安装文件夹即可。设置页还可以管理软件更新，或重新打开本次引导。",
   },
   {
     id: "models", route: "/model-services", title: "让 AI 辅助识别绿地", section: "运行 / 模型服务 · 可选",

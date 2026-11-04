@@ -1,12 +1,9 @@
 """ProjectStore schema gate with narrowly scoped internal migrations.
 
-VerdFlow has not published a project format yet. Development projects from
-earlier Profile and snapshot models must be recreated instead of teaching the
-runtime how to read abandoned pre-release contracts. Schemas 19 through 22 are
-accepted only for the active Studio baseline: schemas 20 and 21 add composition
-facts and durable XML history, while schema 22 corrects deferred elevation
-completion for composition batches. Schema 23 admits self-contained unsaved
-binding sources without changing existing snapshot identities.
+Schemas 19 through 23 migrate to the active baseline; abandoned earlier
+development contracts remain rejected. Schema 23 admits self-contained unsaved
+bindings. Schema 24 adds typed PathSet inputs while preserving existing polygon
+run identities, foreign keys and immutable artifacts.
 """
 
 from __future__ import annotations
@@ -23,6 +20,8 @@ from .schema import (
     PLANT_RUN_EXECUTION_SCHEMA_STATEMENTS,
     PLANTING_COMPOSITION_SCHEMA_STATEMENTS,
     SCHEMA_VERSION,
+    PATH_SCHEMA_STATEMENTS,
+    POINT_SCHEMA_STATEMENTS,
     SNAPSHOT_SCHEMA_STATEMENTS,
     read_schema_version,
     validate_schema,
@@ -46,7 +45,7 @@ def migrate_to_current(
             f"Project schema {source_version} is newer than supported "
             f"schema {SCHEMA_VERSION}"
         )
-    if source_version in {19, 20, 21, 22} and SCHEMA_VERSION == 23:
+    if source_version in {19, 20, 21, 22, 23} and SCHEMA_VERSION == 24:
         backup_directory.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         database.backup_to(
@@ -64,7 +63,9 @@ def migrate_to_current(
                     _migrate_v20_composition_outputs(connection)
                 if source_version <= 21:
                     _migrate_v21_plant_run_elevation_completion(connection)
-                _migrate_v22_binding_draft_sources(connection)
+                if source_version <= 22:
+                    _migrate_v22_binding_draft_sources(connection)
+                _migrate_v23_path_inputs(connection)
                 connection.execute(
                     "UPDATE schema_metadata SET value = ? "
                     "WHERE key = 'schema_version'",
@@ -93,6 +94,35 @@ def migrate_to_current(
     del backup_directory
     validate_schema(database)
     return MigrationResult(source_version, SCHEMA_VERSION, False)
+
+
+def _migrate_v23_path_inputs(connection: sqlite3.Connection) -> None:
+    for statement in PATH_SCHEMA_STATEMENTS:
+        connection.execute(
+            statement.replace("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1)
+        )
+    columns = {
+        row["name"] for row in connection.execute("PRAGMA table_info(planting_runs)")
+    }
+    if "path_set_id" in columns:
+        return
+    statement = next(
+        item for item in POINT_SCHEMA_STATEMENTS if "CREATE TABLE planting_runs" in item
+    )
+    connection.execute(
+        statement.replace(
+            "CREATE TABLE planting_runs", "CREATE TABLE planting_runs_v24"
+        )
+    )
+    names = "planting_run_id, scene_revision_id, region_set_id, producer_job_id, strategy_id, strategy_version, strategy_package_hash, generator_id, generator_version, random_seed, input_hash, created_at"
+    connection.execute(
+        f"INSERT INTO planting_runs_v24 ({names}) SELECT {names} FROM planting_runs"
+    )
+    connection.execute("DROP TABLE planting_runs")
+    connection.execute("ALTER TABLE planting_runs_v24 RENAME TO planting_runs")
+    for statement in POINT_SCHEMA_STATEMENTS:
+        if "CREATE INDEX planting_runs_" in statement:
+            connection.execute(statement)
 
 
 def _migrate_v22_binding_draft_sources(connection: sqlite3.Connection) -> None:

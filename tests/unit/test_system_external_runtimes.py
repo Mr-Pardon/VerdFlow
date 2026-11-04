@@ -66,6 +66,7 @@ class ExternalRuntimeConfigStoreTests(unittest.TestCase):
             self.assertTrue(configured_blender.available)
             self.assertEqual(configured_blender.resolution_source, "manual")
             self.assertTrue(configured_explorer.available)
+            self.assertEqual(configured_explorer.display_name, "DTS Explorer 7.1")
             self.assertEqual(
                 configured_explorer.required_names,
                 (
@@ -109,7 +110,7 @@ class ExternalRuntimeConfigStoreTests(unittest.TestCase):
             store = ExternalRuntimeConfigStore(root / "system")
             store.prepare()
 
-            with self.assertRaisesRegex(ValueError, "directory_not_found"):
+            with self.assertRaisesRegex(ValueError, "请选择同时包含 SDK 和 AirCityExplorer 的文件夹"):
                 store.configure(
                     DTS_EXPLORER_RUNTIME_ID,
                     str(root / "missing"),
@@ -124,6 +125,52 @@ class ExternalRuntimeConfigStoreTests(unittest.TestCase):
             self.assertTrue(discovered.available)
             self.assertEqual(discovered.resolution_source, "auto")
             self.assertEqual(discovered.resolved_path, str(explorer.resolve()))
+
+    def test_explorer_internal_directories_and_quoted_executable_resolve_to_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            explorer = _create_dts_explorer(root / "DTS Explorer" / "v7.1")
+            executable = explorer / "AirCityExplorer" / "Binaries" / "Win64" / "DTS Explorer.exe"
+            store = ExternalRuntimeConfigStore(root / "system")
+            store.prepare()
+            for path in (
+                str(explorer / "SDK"),
+                str(explorer / "AirCityExplorer"),
+                str(explorer / "AirCityExplorer" / "Binaries"),
+                str(executable.parent),
+                str(executable),
+                f'"{executable}"',
+            ):
+                with self.subTest(path=path):
+                    configured = store.configure(DTS_EXPLORER_RUNTIME_ID, path)
+                    self.assertTrue(configured.available)
+                    self.assertEqual(configured.configured_path, str(explorer.resolve()))
+                    self.assertEqual(configured.resolved_path, str(explorer.resolve()))
+                    persisted = json.loads(store.path.read_text(encoding="utf-8"))
+                    self.assertEqual(persisted["manual_paths"][DTS_EXPLORER_RUNTIME_ID], str(explorer.resolve()))
+
+    def test_failed_explorer_correction_does_not_guess_versions_or_replace_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            explorer = _create_dts_explorer(root / "DTS Explorer" / "v7.1")
+            _create_dts_explorer(root / "DTS Explorer" / "other-version")
+            incomplete = _create_dts_explorer(root / "incomplete")
+            (incomplete / "SDK" / "ac.min.js").unlink()
+            unrelated = explorer / "SDK" / "other.exe"
+            unrelated.write_bytes(b"fixture")
+            impostor = explorer / "SDK" / "DTS Explorer.exe"
+            impostor.write_bytes(b"fixture")
+            deep = explorer / "one" / "two" / "three" / "four"
+            deep.mkdir(parents=True)
+            store = ExternalRuntimeConfigStore(root / "system")
+            store.prepare()
+            store.configure(DTS_EXPLORER_RUNTIME_ID, str(explorer))
+            saved = store.path.read_bytes()
+            for path in (explorer.parent, incomplete / "SDK", unrelated, impostor, deep, root / "missing.exe"):
+                with self.subTest(path=path):
+                    with self.assertRaisesRegex(ValueError, "未找到完整的 Explorer 7.1 安装目录"):
+                        store.configure(DTS_EXPLORER_RUNTIME_ID, str(path))
+                    self.assertEqual(store.path.read_bytes(), saved)
 
 
 class ExternalRuntimeLocalApiTests(unittest.TestCase):
@@ -167,12 +214,22 @@ class ExternalRuntimeLocalApiTests(unittest.TestCase):
                     status, configured = _request_json(
                         url,
                         method="PUT",
-                        document={"path": str(explorer)},
+                        document={"path": str(explorer / "AirCityExplorer" / "Binaries" / "Win64")},
                         headers=headers,
                     )
                     self.assertEqual(status, 200)
                     self.assertTrue(configured["available"])
                     self.assertEqual(configured["resolution_source"], "manual")
+                    self.assertEqual(configured["configured_path"], str(explorer.resolve()))
+
+                    status, rejected = _request_json(
+                        url,
+                        method="PUT",
+                        document={"path": str(root / "missing")},
+                        headers=headers,
+                    )
+                    self.assertEqual(status, 400)
+                    self.assertIn("请选择同时包含 SDK 和 AirCityExplorer 的文件夹", rejected["error"]["message"])
 
                     status, cleared = _request_json(
                         url,

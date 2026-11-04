@@ -1,5 +1,5 @@
 import { shallowRef, ref, computed, onMounted, onBeforeUnmount } from "vue";
-import { type SessionSnapshot, type SelectionConfiguration, type LiveRegion } from "../types";
+import { type SessionSnapshot, type SelectionConfiguration, type LiveGeometry, type LivePath, type LiveRegion } from "../types";
 import { cancelOperation, sessionSnapshot, commandsAfter, bootstrapSession, beginSelection } from "../api";
 import { DtsSdkBridge } from "../sdk/DtsSdkBridge";
 import type { Ref } from "vue";
@@ -9,7 +9,7 @@ interface SessionCallbacks {
   initializeConfiguration: () => Promise<void>;
   onRestored: (snapshot: SessionSnapshot) => void;
   onCompleted: () => void;
-  onRegionDrawn: (region: LiveRegion) => void;
+  onRegionDrawn: (region: LiveGeometry) => void;
   onDrawingFinished: () => void;
   onRegionClicked: (id: string) => void;
 }
@@ -45,15 +45,16 @@ export function useLiveSession(errorMessage: Ref<string | null>, callbacks: Sess
   );
 
   const stageLabel = computed(() => {
+    const pathMode = Boolean(snapshot.value?.selection_paths?.length);
     if (["elevation_pending", "delivery_pending"].includes(currentStage.value ?? "") &&
         activityStage.value === currentStage.value && samplingActivity.value) return samplingActivity.value;
     const labels: Record<string, string> = {
-      selection_pending: "等待区域绘制",
+      selection_pending: pathMode ? "等待路径绘制" : "等待区域绘制",
       selection_ready: "正在生成植被点位",
       elevation_pending: "正在采样高程",
       elevation_ready: "正在整理高程结果并生成 XML",
       delivery_pending: "正在加载到 DTS",
-      completed: samplingFailures.value.length ? `部分完成 · 跳过 ${samplingFailures.value.length} 个面` : "本次种植已完成",
+      completed: samplingFailures.value.length ? `部分完成 · 跳过 ${samplingFailures.value.length} ${samplingFailures.value[0]?.path_id ? '条路径' : '个面'}` : "本次种植已完成",
       cancelled: "本次种植已取消",
       superseded: "本次种植已被替换",
       failed: "本次种植失败",
@@ -84,7 +85,11 @@ export function useLiveSession(errorMessage: Ref<string | null>, callbacks: Sess
       const refreshed = await sessionSnapshot();
       if (stopped) return;
       snapshot.value = refreshed;
-      if (snapshot.value.error) errorMessage.value = snapshot.value.error;
+      if (refreshed.error && (refreshed.error !== previous?.error ||
+          refreshed.operation_id !== previous?.operation_id ||
+          refreshed.generation_token !== previous?.generation_token)) {
+        errorMessage.value = refreshed.error;
+      }
       if (snapshot.value.stage === "completed" && previous?.stage !== "completed") {
         callbacks.onCompleted();
       }
@@ -137,6 +142,7 @@ export function useLiveSession(errorMessage: Ref<string | null>, callbacks: Sess
     },
     onActivity: (message) => { samplingActivity.value = message; activityStage.value = currentStage.value; },
     onRegionDrawn: callbacks.onRegionDrawn,
+    onPathDrawn: callbacks.onRegionDrawn,
     onDrawingFinished: callbacks.onDrawingFinished,
     onRegionClicked: callbacks.onRegionClicked,
     onError: (message) => {
@@ -168,13 +174,16 @@ export function useLiveSession(errorMessage: Ref<string | null>, callbacks: Sess
     }
   };
 
-  const startSelection = async (configuration: SelectionConfiguration, regions: LiveRegion[]) => {
+  const startSelection = async (configuration: SelectionConfiguration, regions: LiveGeometry[]) => {
     if (operationActive.value || submitting.value) return;
     submitting.value = true;
     errorMessage.value = null;
     samplingActivity.value = "";
     try {
-      await beginSelection({ ...configuration, regions });
+      const paths = regions.filter((geometry): geometry is LivePath => Boolean(geometry.path_id));
+      const areas = regions.filter((geometry): geometry is LiveRegion => !geometry.path_id);
+      if (paths.length && areas.length) throw new Error("一次种植不能混用区域和路径");
+      await beginSelection({ ...configuration, ...(paths.length ? {paths} : {regions: areas}) });
       await refreshSnapshot();
     } catch (error) { errorMessage.value = readableError(error); }
     finally { submitting.value = false; }

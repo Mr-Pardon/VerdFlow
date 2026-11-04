@@ -133,7 +133,7 @@ python -B tools\project_store_recovery_probe.py
   `logs/recovery/.blocked` 会阻止项目继续打开，当前仍需人工诊断。
 - 普通打开校验对象路径和大小；异常恢复会额外重算全部正式对象的 SHA-256，
   因此大型项目恢复会产生一次顺序读取成本。
-- 当前只允许 v19 到 v20 的加表迁移；更早的发布前测试格式继续明确拒绝。迁移前会备份
+- 当前支持 v19 至 v23 迁移到 v24；更早的发布前测试格式继续明确拒绝。迁移前会备份
   SQLite，迁移中途强杀仍需继续验证。
 - 首次发布前曾生成的旧 v9 POC 若仍使用 `point_set_assets`，打开时会明确提示重建；
   不会把目标资产静默改写为策略 Role。
@@ -151,3 +151,4 @@ python -B tools\project_store_recovery_probe.py
   Studio Service 可以从各不可变 Artifact 构建临时查询索引。放弃预览只以 compare-and-set
   清除匹配的当前 Plant Run 指针，并明确拒绝已经登记为 `PlantingBatch` 的执行。
 - Job 状态机属于 Core；本包只执行原子持久化与 compare-and-set。
+- v24 新增 `path_sets`、PathRepository 和 PlantingRun 输入二选一约束。v23 面运行保留原 ID、外键和 Artifact；路径完整几何不拆为逐顶点行，Retention 保护其 Artifact 引用。

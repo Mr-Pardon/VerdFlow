@@ -14,6 +14,7 @@ from verdflow.profile_package import ProfilePackageInspection
 from .profile_strategies import ProfileStrategyResolver
 from .resource_index import CatalogSource, PlanMetadata, accepts_dependency
 from .runtime import LibraryRuntime
+from .resource_center import InstalledStrategy, ResourceInventory
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,15 @@ class PlanImportLibrary:
     def __init__(self, runtime: Callable[[], LibraryRuntime], timeout: float) -> None:
         self.runtime = runtime
         self.timeout = timeout
+
+    def inventory(self) -> ResourceInventory:
+        def read(store: LibraryStore) -> ResourceInventory:
+            return ResourceInventory(
+                tuple(InstalledStrategy(s.package_id, s.package_version, s.package_hash) for s in store.list_strategies()),
+                tuple((c.target_type, c.catalog_id) for c in store.list_asset_catalogs()),
+                tuple((p.profile_id, p.semantic_hash) for p in store.list_role_binding_profiles()),
+            )
+        return self.runtime().call(read, timeout_seconds=self.timeout)
 
     def inspect(self, metadata: PlanMetadata, inspection: ProfilePackageInspection | None = None) -> PlanImportState:
         def read(store: LibraryStore) -> PlanImportState:

@@ -52,6 +52,7 @@ from .region_extraction_import import (
     RegionExtractionImportService,
 )
 from .region_import import RegionSetImportError, RegionSetImportService
+from .path_import import PathSetImportService
 from .region_providers import RegionSetProducerDefinition
 from .region_source_import import (
     RegionSourceImportError,
@@ -223,6 +224,7 @@ __all__ = [
     "RegionSourceService",
     "RegionSetImportError",
     "RegionSetImportService",
+    "PathSetImportService",
     "RegionSetProducerDefinition",
     "RetentionMaintenanceTask",
     "RoleBindingProfileLibraryPort",

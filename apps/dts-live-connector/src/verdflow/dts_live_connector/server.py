@@ -20,6 +20,8 @@ from verdflow.contracts import (
 from verdflow.core import StrategyAccessError
 
 from verdflow.dts_adapter import (
+    DtsLiveSelectionLimitError,
+    DtsLiveGeometryInputError,
     DtsLiveCorrelation, DtsLiveSelection, DtsLiveRegion, normalize_live_regions,
 )
 from .region_exchange import (
@@ -247,7 +249,7 @@ class DtsLiveConnectorServer:
                     if target.path == "/api/v1/session":
                         snapshot = manager.snapshot(session_id, token)
                         if parse_qs(target.query).get("include_regions") == ["false"]:
-                            snapshot = replace(snapshot, selection_regions=())
+                            snapshot = replace(snapshot, selection_regions=(), selection_paths=())
                         document = asdict(snapshot)
                         self._json(
                             HTTPStatus.OK,
@@ -403,7 +405,7 @@ class DtsLiveConnectorServer:
                             self._error(HTTPStatus.CONFLICT, "export_busy")
                             return
                         except RegionImportError as error:
-                            self._error(HTTPStatus.BAD_REQUEST, error.code)
+                            self._error(HTTPStatus.BAD_REQUEST, error.code, str(error))
                             return
                         except OSError:
                             self._error(HTTPStatus.BAD_REQUEST, "shp_read_failed")
@@ -418,8 +420,9 @@ class DtsLiveConnectorServer:
                             token,
                             self._configuration_request(document),
                             regions=document.get("regions"),
+                            paths=document.get("paths"),
                         )
-                        if "regions" in document and owner._on_selection_ready is not None:
+                        if ("regions" in document or "paths" in document) and owner._on_selection_ready is not None:
                             try:
                                 owner._on_selection_ready(command)
                             except BaseException:
@@ -672,6 +675,9 @@ class DtsLiveConnectorServer:
                 )
 
             def _known_error(self, error: Exception) -> None:
+                if isinstance(error, (DtsLiveSelectionLimitError, DtsLiveGeometryInputError)):
+                    self._error(HTTPStatus.BAD_REQUEST, error.code, str(error))
+                    return
                 if _is_client_disconnect(error):
                     return
                 if isinstance(error, _RequestBodyTooLargeError):
@@ -724,8 +730,8 @@ class DtsLiveConnectorServer:
                 self.end_headers()
                 self.wfile.write(payload)
 
-            def _error(self, status: HTTPStatus, code: str) -> None:
-                self._json(status, {"error": {"code": code}})
+            def _error(self, status: HTTPStatus, code: str, message: str | None = None) -> None:
+                self._json(status, {"error": {"code": code, **({"message": message} if message else {})}})
 
             def _bytes(
                 self,

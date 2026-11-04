@@ -15,7 +15,7 @@ class PointSetKind(StrEnum):
 class PlantingRunInfo:
     planting_run_id: str
     scene_revision_id: str
-    region_set_id: str
+    region_set_id: str | None
     producer_job_id: str
     strategy_id: str
     strategy_version: str
@@ -25,6 +25,7 @@ class PlantingRunInfo:
     random_seed: int
     input_hash: str
     created_at: str
+    path_set_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

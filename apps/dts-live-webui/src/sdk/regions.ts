@@ -1,4 +1,4 @@
-import type { LiveRegion } from "../types";
+import type { LiveRegion, LivePath } from "../types";
 import { asRecord } from "./runtime";
 
 export const previewFrameThickness = ({ bbox }: Pick<LiveRegion, "bbox">): number => {
@@ -40,7 +40,7 @@ export const findCoordinates = (value: unknown, depth = 4): number[][] | null =>
 
 export const normalizeCoordinates = (value: unknown): number[][] | null => {
   if (!Array.isArray(value)) return null;
-  if (value.length >= 9 && value.length % 3 === 0 && typeof value[0] === "number") {
+  if (value.length >= 6 && value.length % 3 === 0 && typeof value[0] === "number") {
     const result: number[][] = [];
     for (let index = 0; index < value.length; index += 3) {
       const point = numericPoint(value.slice(index, index + 3));
@@ -54,7 +54,7 @@ export const normalizeCoordinates = (value: unknown): number[][] | null => {
       ? value[0]
       : value;
   const result = rows.map(numericPoint);
-  return result.length >= 3 && result.every(Boolean) ? (result as number[][]) : null;
+  return result.length >= 2 && result.every(Boolean) ? (result as number[][]) : null;
 };
 
 export const numericPoint = (value: unknown): number[] | null => {
@@ -93,4 +93,17 @@ export const createLiveRegion = (input: number[][], ordinal: number): LiveRegion
     coordinates,
     bbox: [...min, ...max],
   };
+};
+
+export const createLivePath = (input: number[][], ordinal: number): LivePath => {
+  const coordinates = input.filter((point, index) => index === 0 || !point.every((value, axis) => value === input[index - 1]![axis])).map(point => [...point]);
+  if (coordinates.length < 2 || coordinates.some(point => point.length !== 3 || !point.every(Number.isFinite))) throw new Error("路径至少需要两个有效顶点");
+  if (coordinates[0]![0] === coordinates.at(-1)![0] && coordinates[0]![1] === coordinates.at(-1)![1]) throw new Error("当前仅支持开放折线，请不要闭合路径");
+  if (coordinates.some((point, index) => index > 0 && point[0] === coordinates[index - 1]![0] && point[1] === coordinates[index - 1]![1])) throw new Error("路径包含零长度线段");
+  const minimum = [Infinity, Infinity, Infinity], maximum = [-Infinity, -Infinity, -Infinity];
+  for (const point of coordinates) for (let axis = 0; axis < 3; axis++) {
+    minimum[axis] = Math.min(minimum[axis]!, point[axis]!);
+    maximum[axis] = Math.max(maximum[axis]!, point[axis]!);
+  }
+  return {path_id: `path_${crypto.randomUUID()}`, name: `路径 ${ordinal}`, coordinates, bbox: [...minimum, ...maximum]};
 };

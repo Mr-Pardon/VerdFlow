@@ -25,6 +25,9 @@
 | [0018](0018-curated-starter-resources.md) | 推荐资源清单与快捷导入 |
 | [0019](0019-multi-catalog-browsing.md) | 多资产库检索与独立配置快照 |
 | [0020](0020-plan-import-dependencies.md) | 方案导入依赖补齐与可选来源资产库 |
+| [0021](0021-bounded-live-geospatial-input.md) | 有界实时地理输入、内环与语义化错误 |
+| [0022](0022-typed-path-input-and-paired-placement.md) | 路径输入、双角色共位置与旧面链路兼容 |
+| [0023](0023-native-resource-center.md) | 内嵌资源预览与只读策略更新发现 |
 
 ## 阅读原则
 

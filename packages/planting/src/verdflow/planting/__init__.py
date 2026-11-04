@@ -2,6 +2,7 @@
 
 from .authoring import load_catalog_yaml, load_profile_yaml, load_strategy_yaml
 from .canonical import canonical_json_bytes, semantic_hash
+from .path_inputs import strategy_input_kind, validate_path_document
 from .binding_drafts import build_binding_draft, catalog_binding_candidate, profile_from_binding_draft
 from .binding_profiles import (
     binding_catalog_drift,
@@ -41,6 +42,7 @@ from .validation import (
     validate_persisted_point_set_summary,
     validate_elevation_point_set,
     validate_point_set_v2,
+    validate_point_set,
 )
 
 __all__ = [
@@ -84,4 +86,7 @@ __all__ = [
     "validate_persisted_point_set_summary",
     "validate_elevation_point_set",
     "validate_point_set_v2",
+    "validate_point_set",
+    "strategy_input_kind",
+    "validate_path_document",
 ]

@@ -53,6 +53,7 @@ class PointSetImportServiceTests(unittest.TestCase):
                     command={
                         "scene_revision_id": scene_id,
                         "region_set_id": region_set_id,
+                        "selected_region_ids": ["region_1"],
                         "strategy": {
                             "id": "test-grove",
                             "version": "1.2.0",
@@ -145,6 +146,7 @@ class PointSetImportServiceTests(unittest.TestCase):
                     command={
                         "scene_revision_id": scene_id,
                         "region_set_id": region_set_id,
+                        "selected_region_ids": ["region_1"],
                         "strategy": {
                             "id": "test-grove",
                             "version": "1.2.0",
@@ -188,6 +190,7 @@ class PointSetImportServiceTests(unittest.TestCase):
                     command={
                         "scene_revision_id": scene_id,
                         "region_set_id": region_set_id,
+                        "selected_region_ids": ["region_1"],
                         "strategy": {
                             "id": "test-grove",
                             "version": "1.2.0",
@@ -248,6 +251,7 @@ class PointSetImportServiceTests(unittest.TestCase):
                     command={
                         "scene_revision_id": scene_id,
                         "region_set_id": region_set_id,
+                        "selected_region_ids": ["region_1"],
                         "strategy": {
                             "id": "test-grove",
                             "version": "1.2.0",
@@ -279,6 +283,7 @@ class PointSetImportServiceTests(unittest.TestCase):
                     command={
                         "scene_revision_id": scene_id,
                         "region_set_id": region_set_id,
+                        "selected_region_ids": ["region_1"],
                         "strategy": {
                             "id": "test-grove",
                             "version": "1.2.0",

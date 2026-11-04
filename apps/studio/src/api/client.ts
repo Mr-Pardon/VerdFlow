@@ -1,5 +1,6 @@
 import type { PlatformBridge } from "../platform";
 import type { StarterManifest, StarterImportOperation } from "./starterResources";
+import type { CenterCatalog, CenterDetail, ResourceSelection, StrategyUpdates } from "./resourceCenter";
 import type {
   AssignmentPreviewInput,
   AssignmentPreviewResult,
@@ -92,8 +93,20 @@ export class LocalApiClient {
     return this.request("/api/v1/starter-resources");
   }
 
-  prepareResourceImport(paths: readonly string[], recommended: boolean, strategyPaths: readonly string[] = []): Promise<StarterImportOperation> {
-    return this.request("/api/v1/resource-imports/prepare", { method: "POST", body: JSON.stringify({ paths, recommended, strategy_paths: strategyPaths }) });
+  prepareResourceImport(paths: readonly string[], recommended: boolean, strategyPaths: readonly string[] = [], selection?: ResourceSelection): Promise<StarterImportOperation> {
+    return this.request("/api/v1/resource-imports/prepare", { method: "POST", body: JSON.stringify({ paths, recommended, strategy_paths: strategyPaths, selection }) });
+  }
+
+  resourceCenter(refresh = false): Promise<CenterCatalog> {
+    return this.request(`/api/v1/resource-center?refresh=${refresh ? 1 : 0}`);
+  }
+
+  resourceCenterDetail(id: string, version = ""): Promise<CenterDetail> {
+    return this.request(`/api/v1/resource-center/detail?id=${encodeURIComponent(id)}&version=${encodeURIComponent(version)}`);
+  }
+
+  strategyResourceUpdates(refresh = false): Promise<StrategyUpdates> {
+    return this.request(`/api/v1/resource-center/strategy-updates?refresh=${refresh ? 1 : 0}`);
   }
 
   confirmResourceImport(operationId: string, optionalIds: readonly string[], overwriteIds: readonly string[]): Promise<StarterImportOperation> {

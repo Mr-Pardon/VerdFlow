@@ -421,6 +421,7 @@ export interface RegionViewportChunk {
 }
 
 export interface StrategyLibrarySummary {
+  input_geometry?: "polygon" | "polyline";
   library_entry_id: string;
   strategy_id: string;
   strategy_version: string;

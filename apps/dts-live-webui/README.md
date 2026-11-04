@@ -1,5 +1,9 @@
 # verdflow-dts-live-webui
 
+ADR-0021：实时文件 128 MiB、累计 200000 顶点（含内环）、草稿 30 MiB；合法 `holes`
+贯通标准区域与导出。超限提示引导工作台 SHP＋TIF。SDK 仅首次创建，常规切换使用
+show/hide，移除和销毁才删除本会话对象；隐藏面不参与点击。不新增大数据自动执行队列。
+
 ADR-0016：方案选择采用服务端解析的兼容策略 hash；同时安装多个版本时按解析结果
 去重，手动配置仍可使用服务端提供的适用方案。旧方案未配置的新增角色默认为关闭。
 
@@ -163,3 +167,7 @@ python -m unittest tests.unit.test_dts_live_connector_server -v
 ## Multi-Catalog Browsing
 
 The mapping workspace uses `@verdflow/asset-browser-ui` with the authenticated connector route `POST /api/v1/configuration/asset-search`. The feature controller supplies transport; views do not call the SDK or transport directly. Search scope never enters assignments or triggers strategy execution. Unmount aborts browser fetches and clears debounce, observers and listeners; completed selections remain self-contained.
+
+## Typed Path Input
+
+Verified strategy metadata selects polygon or open-polyline drawing. Path drafts use SDK `EditHelper` line mode and native `Polyline` handles; show/hide reuses handles and remove/dispose deletes them. Switching input kind preserves drafts but hides incompatible objects. SHP import/export remains polygon-only. Formal stations, rotations and paired roles come from the trusted strategy Worker through shared Core execution, never a second WebUI planting algorithm. See ADR-0022; Explorer 7.1 scene validation remains required.

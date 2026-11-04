@@ -1,11 +1,14 @@
 import type { ElevationBatch } from "../types";
 import { asRecord } from "./runtime";
+import { selectionId } from "../shared/regionLimits";
 
 export function samplingWindows(lines: unknown[], batches: ElevationBatch[], size = 1024) {
   if (!Number.isFinite(size) || size <= 0) throw new Error("采样窗口大小无效");
-  type Group = { region_id: string; name: string; indices: number[] };
+  type Group = { selection_id: string; name: string; indices: number[] };
   const cells = new Map<string, { x: number; y: number; bbox: number[]; groups: Map<string, Group> }>();
   for (const batch of batches) {
+    const identifier = selectionId(batch);
+    if (!identifier) throw new Error("采样批次缺少区域或路径标识");
     for (let i = batch.start; i < batch.start + batch.count; i++) {
       const line = asRecord(lines[i]);
       const start = line?.start;
@@ -29,8 +32,8 @@ export function samplingWindows(lines: unknown[], batches: ElevationBatch[], siz
       cell.bbox[3] = Math.max(cell.bbox[3]!, start[0]);
       cell.bbox[4] = Math.max(cell.bbox[4]!, start[1]);
       cell.bbox[5] = Math.max(cell.bbox[5]!, z);
-      let group = cell.groups.get(batch.region_id);
-      if (!group) { group = { region_id: batch.region_id, name: batch.name, indices: [] }; cell.groups.set(batch.region_id, group); }
+      let group = cell.groups.get(identifier);
+      if (!group) { group = { selection_id: identifier, name: batch.name, indices: [] }; cell.groups.set(identifier, group); }
       group.indices.push(i);
     }
   }

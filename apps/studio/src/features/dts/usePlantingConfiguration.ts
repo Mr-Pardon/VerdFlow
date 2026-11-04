@@ -181,6 +181,7 @@ export const usePlantingConfiguration = (input: {
       input.selectedRegionIds().length > 0 &&
       selectedStrategy.value !== null &&
       selectedStrategy.value.executable &&
+      selectedStrategy.value.input_geometry !== "polyline" &&
       mappingReady.value &&
       parametersValid.value &&
       (randomSeed.value === null || Number.isSafeInteger(randomSeed.value)) &&
@@ -213,6 +214,10 @@ export const usePlantingConfiguration = (input: {
   };
 
   const chooseStrategy = async (packageHash: string) => {
+    if (strategies.value.find(item => item.package_hash === packageHash)?.input_geometry === "polyline") {
+      errorMessage.value = "此策略需要路径输入，请使用 DTS 实时种植绘制路径；当前工作台使用区域输入。";
+      return;
+    }
     selectedStrategyHash.value = packageHash;
     strategyDetail.value = null;
     profiles.value = [];

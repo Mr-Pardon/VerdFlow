@@ -19,6 +19,7 @@ ARTIFACT_REFERENCE_COLUMNS = (
     ("scene_revisions", "scene_manifest_artifact_id"),
     ("region_sets", "geometry_artifact_id"),
     ("region_sets", "metrics_artifact_id"),
+    ("path_sets", "geometry_artifact_id"),
     ("point_sets", "point_artifact_id"),
     ("strategy_package_snapshots", "package_artifact_id"),
     ("target_asset_use_snapshots", "snapshot_artifact_id"),

@@ -28,6 +28,7 @@ from verdflow.contracts import (
 from verdflow.core import JobRuntime, WorkerDescriptor
 from verdflow.project_store import ProcessStatus, SystemProcessInspector
 from verdflow.worker_runtime import ProcessTreeGuard, terminate_process_by_pid
+from .errors import GeospatialDataError
 
 from .protocol import (
     GEOSPATIAL_ADAPTER_ID,
@@ -197,9 +198,7 @@ class GeospatialWorkerSupervisor:
                             process,
                             grace_seconds=self.config.termination_grace_seconds,
                         )
-                        raise GeospatialWorkerError(
-                            "Geospatial worker exceeded its execution timeout"
-                        )
+                        raise GeospatialDataError("geo_worker_timeout", f"地理数据处理超过 {self.config.timeout_seconds:g} 秒执行上限，任务已停止且项目已保留。请减少单批面数或轮廓复杂度后重试。")
                     if now - last_heartbeat >= self.config.heartbeat_interval_seconds:
                         self.runtime.heartbeat(
                             lease,
@@ -230,17 +229,15 @@ class GeospatialWorkerSupervisor:
                 process_registered = False
             if self._is_cancelled(lease.job_id):
                 return self.runtime.acknowledge_cancel(lease)
+            if not result_path.is_file():
+                raise GeospatialDataError("geo_worker_exited", "地理数据处理进程提前退出，未生成完整结果。项目已保留；请减少数据量后重试，详细原因可查看任务诊断。")
             result = _read_json(result_path)
             if process.returncode != 0 or result.get("status") != "succeeded":
-                message = str(
-                    result.get("message")
-                    or _tail(stderr_path)
-                    or f"process exited with code {process.returncode}"
-                )
+                message = str(result.get("message") or "地理数据处理失败，项目已保留，请查看任务诊断并检查输入数据。")
                 return self.runtime.fail(
                     lease,
                     JobErrorInfo(
-                        code="GEOSPATIAL_OPERATION_FAILED",
+                        code=str(result.get("error_code") or "GEOSPATIAL_OPERATION_FAILED"),
                         message=message,
                         retryable=False,
                         diagnostic_artifact_id=self._diagnostic(
@@ -280,8 +277,8 @@ class GeospatialWorkerSupervisor:
             return self.runtime.fail(
                 lease,
                 JobErrorInfo(
-                    code="GEOSPATIAL_SUPERVISOR_FAILED",
-                    message=str(error),
+                    code=error.code if isinstance(error, GeospatialDataError) else "GEOSPATIAL_SUPERVISOR_FAILED",
+                    message=str(error) if isinstance(error, GeospatialDataError) else "地理数据任务未能正常完成，项目已保留。请检查输入文件和运行环境，详细原因可查看任务诊断。",
                     retryable=False,
                     diagnostic_artifact_id=self._diagnostic(
                         stdout_path,

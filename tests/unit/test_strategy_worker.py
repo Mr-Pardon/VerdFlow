@@ -59,7 +59,7 @@ class StrategyWorkerTests(unittest.TestCase):
         package = inspect_strategy_package(STRATEGY_ROOT)
 
         self.assertEqual(package.package_id, "universal_street_tree")
-        self.assertEqual(package.package_version, "2.0.2")
+        self.assertEqual(package.package_version, "2.1.0")
         self.assertEqual(package.entry_function, "generate")
         self.assertRegex(package.package_hash, r"^sha256:[0-9a-f]{64}$")
 

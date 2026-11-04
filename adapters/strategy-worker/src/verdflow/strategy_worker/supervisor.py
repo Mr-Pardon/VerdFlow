@@ -138,7 +138,20 @@ class StrategyWorkerSupervisor:
                 raise ValueError(
                     "Strategy package identity differs from the Job command"
                 )
-            selected_regions = self._selected_regions(command)
+            from verdflow.planting import strategy_input_kind
+
+            path_input = "input" in command
+            if strategy_input_kind(package.strategy) != (
+                "polyline" if path_input else "polygon"
+            ):
+                raise ValueError(
+                    "策略与当前几何输入不兼容，请选择适用于区域或路径的策略"
+                )
+            selected_geometry = (
+                self._selected_paths(command)
+                if path_input
+                else self._selected_regions(command)
+            )
             package_archive = package_archive_bytes(package)
             self.runtime.heartbeat(
                 lease,
@@ -171,21 +184,19 @@ class StrategyWorkerSupervisor:
                 package,
                 {
                     "strategy": package.strategy,
-                    "selected_regions": selected_regions,
+                    (
+                        "selected_paths" if path_input else "selected_regions"
+                    ): selected_geometry,
                     "seed": command["random_seed"],
                     "args": command["args"],
                     "excluded_role_keys": command.get("excluded_role_keys", []),
                 },
                 heartbeat=heartbeat,
-                cancellation_requested=lambda: self._is_cancelled(
-                    lease.job_id
-                ),
+                cancellation_requested=lambda: self._is_cancelled(lease.job_id),
                 process_started=register_process,
                 process_finished=finish_process,
                 workdir_parent=self.config.runtime_root,
-                workdir_prefix=(
-                    f"{lease.job_id}-{lease.attempt_count}-"
-                ),
+                workdir_prefix=(f"{lease.job_id}-{lease.attempt_count}-"),
             )
             if self._is_cancelled(lease.job_id):
                 return self._acknowledge_cancel(lease)
@@ -198,7 +209,7 @@ class StrategyWorkerSupervisor:
                 canonical_json_bytes(points),
                 media_type="application/vnd.verdflow.points+json",
                 schema_id="verdflow.points",
-                schema_version="2",
+                schema_version=str(points["version"]),
             )
             package_artifact = self.runtime.store.put_bytes(
                 package_archive,
@@ -322,6 +333,32 @@ class StrategyWorkerSupervisor:
             field: self._required_text(strategy, field)
             for field in ("id", "version", "package_hash")
         }
+
+    def _selected_paths(self, command: dict[str, Any]) -> list[dict[str, Any]]:
+        from verdflow.planting import validate_path_document
+
+        reference = command["input"]
+        if not isinstance(reference, dict) or reference.get("kind") != "polyline":
+            raise ValueError("路径种植输入类型不匹配")
+        path_set = self.runtime.store.get_path_set(
+            self._required_text(reference, "set_id")
+        )
+        if path_set.scene_revision_id != command["scene_revision_id"]:
+            raise ValueError("PathSet differs from SceneRevision")
+        with self.runtime.store.open_artifact(path_set.geometry_artifact_id) as stream:
+            rows = validate_path_document(json.load(stream))["paths"]
+        selected = reference.get("selected_ids")
+        if (
+            not isinstance(selected, list)
+            or not selected
+            or any(not isinstance(key, str) for key in selected)
+            or len(set(selected)) != len(selected)
+        ):
+            raise ValueError("路径选择无效")
+        by_id = {row["id"]: row for row in rows}
+        if any(key not in by_id for key in selected):
+            raise ValueError("所选路径不属于当前快照")
+        return [by_id[key] for key in selected]
 
     def _selected_regions(self, command: dict[str, Any]) -> list[dict[str, Any]]:
         region_set_id = self._required_text(command, "region_set_id")

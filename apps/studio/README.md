@@ -1,5 +1,10 @@
 # @verdflow/studio
 
+`features/resources` 提供原生资源中心：分类检索、封面、Markdown 说明、版本与关联资源。
+策略库通过 SystemHost 只读检查新版，提示只跳转对应详情。单项导入复用 `StarterResourcesDialog`，
+仅传身份、版本与索引 revision，不在 Renderer 下载或校验包。Markdown 禁用 HTML，图片受
+固定数据目录及 CSP 约束。卸载丢弃迟到响应，关闭弹窗取消操作。参见 ADR-0023。
+
 方案文件导入与新手推荐资源共用 `StarterResourcesDialog` / `useResourceImport`：先由
 SystemHost 预检查，展示策略补齐、独立的可选来源资产库和显式覆盖选项，再提交确认。
 可选库及覆盖默认不选；选择本地 VFS 会重新预检查。关闭弹窗停止轮询并取消未完成操作，
@@ -29,7 +34,7 @@ PlatformBridge 订阅，卸载时解除；浏览器开发环境不执行更新�
 资产与策略步骤提供“导入推荐资源”：`StarterResourcesDialog` 展示在线清单，
 `useStarterResources` 通过 Local API 提交、查询和取消，结束后刷新当前页面。
 仅用户打开弹窗时联网，不在 Renderer 下载文件、解析包或决定信任；失败保留手动导入入口。
-资源中心地址交给桌面壳限定页面白名单打开，详情链接可访问配套 PAK 的说明。
+导航底部进入应用内资源中心；网页版和受控 PAK 分享链接交给系统浏览器打开。
 空配置首次启动提供欢迎页，已有配置不自动打断；设置中的“产品引导”可以继续或重看。
 页面通过可释放的注册提供真实状态及既有动作；引导不复制导入、信任、环境配置或种植业务，
 不依赖尚未准备的随包资源。VFA Author / VFS Author 为可选 Agent 创作工具包，不是直接

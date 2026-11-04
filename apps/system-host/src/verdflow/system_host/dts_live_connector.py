@@ -165,6 +165,7 @@ class DtsLiveConnectorManager:
         access_token: str,
         request: DtsLiveConfigurationRequest,
         regions: object = None,
+        paths: object = None,
     ) -> DtsLiveCommand | DtsLiveSelection:
         with self._lock:
             managed = self._authorize(connector_session_id, access_token)
@@ -189,7 +190,7 @@ class DtsLiveConnectorManager:
                     raise DtsLiveSessionNotFoundError(
                         "DTS Live session changed during configuration"
                     )
-                return managed.session.begin_selection(execution, regions)
+                return managed.session.begin_selection(execution, regions, paths)
         finally:
             with self._lock:
                 managed.begin_pending = False

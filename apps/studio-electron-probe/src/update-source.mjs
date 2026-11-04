@@ -1,3 +1,5 @@
+import { setTimeout as pause } from "node:timers/promises";
+
 export const UPDATE_ASSET = "VerdFlow-update-win-x64.json";
 export const MAX_ARCHIVE_BYTES = 1024 ** 3;
 
@@ -59,9 +61,58 @@ export const updateDescriptor = (document, release) => {
 const downloadHosts = new Set(["api.github.com", "github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com"]);
 
 export class UpdateHttpError extends Error {
-  constructor(status) {
+  constructor(status, headers = new Headers()) {
     super(`更新服务暂不可用（HTTP ${status}）`);
     this.status = status;
+    this.rateLimited = status === 429 || (status === 403 && headers.get("x-ratelimit-remaining") === "0");
+    const raw = headers.get("retry-after");
+    const seconds = raw && !Number.isFinite(Number(raw)) ? (Date.parse(raw) - Date.now()) / 1000 : Number(raw);
+    this.retryAfterSeconds = Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 86400) : 0;
+  }
+}
+
+const transientCodes = new Set(["ECONNRESET", "ECONNREFUSED", "ECONNABORTED", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "EAI_AGAIN", "EPIPE", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT", "UND_ERR_HEADERS_TIMEOUT", "UND_ERR_BODY_TIMEOUT", "UPDATE_INCOMPLETE"]);
+const errorCode = error => [error?.code, error?.cause?.code, ...(Array.isArray(error?.cause?.errors) ? error.cause.errors.map(item => item?.code) : [])]
+  .find(value => typeof value === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(value));
+
+export function updateFailureInfo(error) {
+  const code = errorCode(error);
+  const category = error instanceof UpdateHttpError ? error.rateLimited ? "rate-limit" : "http"
+    : ["TimeoutError", "AbortError"].includes(error?.name) ? "timeout-or-cancel"
+    : transientCodes.has(code) || (error?.name === "TypeError" && error?.message === "fetch failed" && !code) ? "network"
+    : ["EACCES", "EPERM"].includes(code) ? "permission"
+    : code === "ENOSPC" ? "disk-space"
+    : code === "UPDATE_CHECKSUM" ? "checksum" : "validation-or-preparation";
+  return { category, ...(code ? { code } : {}), ...(error instanceof UpdateHttpError ? { status: error.status } : {}) };
+}
+
+export function updateFailureMessage(phase, error) {
+  const { category, status } = updateFailureInfo(error);
+  if (category === "rate-limit") return "GitHub 访问次数已达限制，请稍后再检查更新";
+  if (category === "permission") return "程序或更新目录不可写，请确认目录权限后重试";
+  if (category === "disk-space") return "磁盘可用空间不足，请清理空间后重试";
+  if (category === "checksum") return "更新包完整性校验失败，未替换程序，请重新下载";
+  if (category === "network" || category === "timeout-or-cancel") return "更新连接中断或超时，请检查网络或代理后重试";
+  if (category === "http") return `更新服务暂不可用（HTTP ${status}），请稍后重试`;
+  if (phase === "preparing") return "更新包解压或逐文件校验失败，未替换程序，请重试";
+  if (phase === "downloading") return "下载或校验更新失败，现有程序未改变，请重试";
+  return "更新信息读取或校验失败，请稍后重试；不影响继续使用";
+}
+
+export async function retryUpdate(operation, { signal, onRetry, delays = [700, 1600] } = {}) {
+  const bounded = delays.slice(0, 2);
+  for (let attempt = 0; ; attempt++) {
+    signal?.throwIfAborted();
+    try { return await operation(attempt); }
+    catch (error) {
+      const retryable = error instanceof UpdateHttpError
+        ? !error.rateLimited && error.retryAfterSeconds <= 3 && [408, 425, 500, 502, 503, 504].includes(error.status)
+        : updateFailureInfo(error).category === "network";
+      if (signal?.aborted || !retryable || attempt >= bounded.length) throw error;
+      const delay = Math.max(bounded[attempt], (error.retryAfterSeconds ?? 0) * 1000);
+      await onRetry?.(error, attempt + 1);
+      await pause(delay, undefined, { signal });
+    }
   }
 }
 
@@ -81,22 +132,24 @@ export async function updateResponse(url, { signal, fetcher = fetch } = {}) {
       target = new URL(location, target);
       continue;
     }
-    if (!response.ok) { await response.body?.cancel(); throw new UpdateHttpError(response.status); }
+    if (!response.ok) { await response.body?.cancel(); throw new UpdateHttpError(response.status, response.headers); }
     return response;
   }
   throw new Error("更新下载重定向次数过多");
 }
 
-export async function updateJson(url, options) {
-  const response = await updateResponse(url, options);
-  const chunks = [];
-  let length = 0;
-  for await (const chunk of response.body) {
-    length += chunk.length;
-    if (length > 1024 ** 2) throw new Error("更新信息过大");
-    chunks.push(Buffer.from(chunk));
-  }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+export async function updateJson(url, options = {}) {
+  return retryUpdate(async () => {
+    const response = await updateResponse(url, options);
+    const chunks = [];
+    let length = 0;
+    for await (const chunk of response.body) {
+      length += chunk.length;
+      if (length > 1024 ** 2) throw new Error("更新信息过大");
+      chunks.push(Buffer.from(chunk));
+    }
+    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  }, { signal: options.signal, onRetry: options.onRetry, delays: options.retryDelays });
 }
 
 export async function assertUpdateIdle(read) {

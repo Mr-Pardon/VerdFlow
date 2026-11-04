@@ -74,6 +74,17 @@ Profile 或输出选择，也不发起生成或搭配解析请求。默认仍为
 
 ## 实时 WebUI
 
+路径策略可在生成器模块提供可选的 `preview_path_xy(context)`。预览 Worker 在
+同一隔离进程内调用它，将最多 8192 个二维坐标作为 `evaluated_path_xy` 返回。
+无变化时返回 `None`。画布仅绘制这些坐标，保留原折线作为虚线对照；
+该字段不进入正式 PointSet 或导出。
+
+ADR-0022 增加可选的路径样本声明 v2：单一 polyline 策略的 `parameter_preview` 使用
+`version: "2"`、`display_name`、`fixed_seed` 和 `path_xy`（2 至 256 个有限局部米制点），
+必须是有效开放折线，不含避让或多样本选项。沿用原生成器与固定种子，Worker 传入
+`selected_paths` 并将 PointSet v3 投影为既有 XY/角色 DTO。画布只绘开放线，不封面。
+现有面声明 v1 保持不变；资产/缩放重绘不重新执行策略。
+
 `@verdflow/strategy-preview-ui` 共用通用画布、控件与异步状态；应用注入自己的 client，
 不从 WebUI 引用 Studio 私有文件。深色附属侧板由 WebUI 持有，默认关闭，仅打开时请求。
 共享组件通过 `theme` 提供明暗配色；WebUI 使用深色画布、网格、边界和提亮后的角色色，

@@ -12,7 +12,9 @@ into DTS `ModelPointClass` XML.
 
 - Resolve DTS `ModelName` from the frozen catalog asset metadata.
 - Apply the user-provided XYZ offset only during final output.
-- Convert point quaternion and assigned scale into DTS `Matrix3`.
+- Convert point quaternion and assigned scale into DTS `Matrix3`, serialized
+  as consecutive transformed local X, Y and Z axis triples. This transposes
+  the canonical column-vector matrix without changing the stored quaternion.
 - Run the `verdflow.dts.export-xml` Job and persist the XML as an Artifact.
 - Render an ordered set of independently frozen planting batches into one XML
   document without reading or concatenating earlier XML exports.
@@ -76,3 +78,4 @@ python -m unittest tests.unit.test_planting_generation_stage -v
 - `provider_metadata.model_name` 是 DTS Catalog 的必填输出映射。
 - DTS Live 的 Session、Region/Elevation Worker 与临时 CoreHost 合成纵向测试已通过；
   Explorer WebUI、真实 SDK 兼容和场景门禁仍待后续切片完成。
+- 路径选择生成独立 `verdflow.paths` Artifact；高程批次与失败回执显式携带 `path_id`，不复用 `region_id`。同 XYZ 的共点角色统一高程命中，旋转保持不变。XML 输出共用 v2/v3 点位解析，不感知具体路径策略。

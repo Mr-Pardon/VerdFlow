@@ -90,6 +90,7 @@ python -m unittest discover -s tests\unit -v
 
 - 当前包含 ProjectStore 与 Job Runtime POC 所需类型。
 - RegionSet 契约已进入实现；完整几何仍通过 Artifact 引用，不进入值对象。
+- `PlantingInputRef` 区分 polygon/RegionSet 与 polyline/PathSet；`PathSetInfo` 只持有不可变几何 Artifact 引用。PlantingRun 的两种输入外键必须二选一，不能用线 ID 冒充 Region。
 - PlantingRun 与 PointSet 契约已进入实现；完整逐点数据通过 Artifact 引用。
 - Source Assembly 成员、显式 source-to-scene 矩阵和 Region member provenance
   已进入实现；首版只允许一层 Assembly。

@@ -49,6 +49,8 @@ def check_update(previous: Path, current: Path) -> None:
 
 def compatible_update_issues(before: dict, after: dict) -> list[str]:
     issues = []
+    if before.get("input_geometry", "polygon") != after.get("input_geometry", "polygon"):
+        issues.append("changed input geometry kind")
     old_roles = {item["role_key"]: item for item in before["roles"]}
     new_roles = {item["role_key"]: item for item in after["roles"]}
     for key, role in old_roles.items():

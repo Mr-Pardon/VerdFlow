@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { FolderSearch, LoaderCircle, X } from "@lucide/vue";
+import DismissibleNotice from "../../components/DismissibleNotice.vue";
 
 defineProps<{
   vectorPath: string;
@@ -21,6 +22,7 @@ defineProps<{
 
 defineEmits<{
   close: [];
+  dismissError: [];
   chooseVector: [];
   chooseElevation: [];
   chooseLocation: [];
@@ -104,10 +106,8 @@ const stageLabel = {
         <p class="dialog-note">
           VerdFlow 按输入数值直接处理；请确保区域与 GeoTIFF 已使用相同的米制坐标。
         </p>
-        <div v-if="!managementAvailable" class="dialog-warning" role="alert">
-          当前服务为只读模式，无法导入本地地理数据。
-        </div>
-        <div v-if="errorMessage" class="dialog-error" role="alert">{{ errorMessage }}</div>
+        <DismissibleNotice class="dialog-warning" :message="!managementAvailable ? '当前服务为只读模式，无法导入本地地理数据。' : null" />
+        <DismissibleNotice class="dialog-error" :message="errorMessage" @dismiss="$emit('dismissError')" />
       </div>
 
       <footer>

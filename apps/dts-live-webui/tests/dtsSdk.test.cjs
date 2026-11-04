@@ -5,7 +5,7 @@ const { webcrypto } = require('node:crypto');
 const { createModuleLoader } = require('./helpers/load-typescript.cjs');
 
 async function fixture({ cef = true, miss = false, timeout = false, containsPoint = false, transformResponse } = {}) {
-  const calls = { pickMasks: [], camera: [], cameraReads: [], restoredCamera: [], sequence: [], lines: [], polygons: [], deleted: [], elevation: [], chunks: [], clicked: [], delivery: [], regions: [], errors: [], activity: [] };
+  const calls = { pickMasks: [], camera: [], cameraReads: [], restoredCamera: [], sequence: [], lines: [], polygons: [], paths: [], drawnPaths: [], drawParameters: [], shown: [], hidden: [], deleted: [], elevation: [], chunks: [], clicked: [], delivery: [], regions: [], errors: [], activity: [] };
   let events;
   let instance;
   const window = {
@@ -23,7 +23,7 @@ async function fixture({ cef = true, miss = false, timeout = false, containsPoin
       if (event.eventtype === 'LeftMouseButtonClick' && !(calls.pickMasks.at(-1) & 1)) return;
       events.onEvent(event);
     };
-    editHelper = { setParam() {}, start() {}, cancel() {} };
+    editHelper = { setParam(...args) { calls.drawParameters.push(args); }, start() {}, cancel() {} };
     camera = {
       lookAtBBox: (...args) => { calls.sequence.push('focus'); calls.camera.push(args); },
       get: callback => {
@@ -34,7 +34,8 @@ async function fixture({ cef = true, miss = false, timeout = false, containsPoin
       },
       set: (...args) => { calls.sequence.push('restore'); calls.restoredCamera.push(args); },
     };
-    polygon = { add: data => calls.polygons.push(data), delete: id => calls.deleted.push(id) };
+    polygon = { add: data => calls.polygons.push(data), show: ids => calls.shown.push(ids), hide: ids => calls.hidden.push(ids), delete: id => calls.deleted.push(id) };
+    polyline = { add: data => calls.paths.push(data), show: ids => calls.shown.push(ids), hide: ids => calls.hidden.push(ids), delete: id => calls.deleted.push(id) };
     tools = { linesIntersect: (lines, precision, details, callback) => {
       calls.lines.push(lines);
       const index = ++this.callbackIndex;
@@ -49,7 +50,7 @@ async function fixture({ cef = true, miss = false, timeout = false, containsPoin
   };
   const document = {
     write() {}, writeln() {},
-    createElement: name => name === 'canvas' ? { getContext: () => ({ isPointInPath: () => containsPoint }) } : {},
+    createElement: name => name === 'canvas' ? { getContext: () => ({ isPointInPath: (...args) => typeof containsPoint === 'function' ? containsPoint(...args) : containsPoint }) } : {},
     head: { appendChild: script => queueMicrotask(() => script.onload()) },
   };
   const api = {
@@ -58,7 +59,12 @@ async function fixture({ cef = true, miss = false, timeout = false, containsPoin
     submitElevationChunk: async (...args) => calls.chunks.push(args),
     submitDelivery: async (...args) => calls.delivery.push(args),
   };
-  class Path2D { moveTo() {} lineTo() {} closePath() {} }
+  class Path2D {
+    rings = [];
+    moveTo(x, y) { this.rings.push([[x, y]]); }
+    lineTo(x, y) { this.rings.at(-1).push([x, y]); }
+    closePath() {}
+  }
   const load = createModuleLoader({ window, document, Path2D, crypto: webcrypto, console }, {
     [path.resolve(__dirname, '../src/api.ts')]: api,
   });
@@ -68,6 +74,7 @@ async function fixture({ cef = true, miss = false, timeout = false, containsPoin
   const bridge = new DtsSdkBridge({
     onReady() {}, onActivity: message => calls.activity.push(message), onError: message => calls.errors.push(message),
     onCommandComplete() {}, onRegionDrawn: region => calls.regions.push(region), onDrawingFinished() {},
+    onPathDrawn: path => calls.drawnPaths.push(path),
     onRegionClicked: id => calls.clicked.push(id),
   });
   await bridge.initialize();
@@ -109,6 +116,43 @@ test('drawing is local; terrain polygons belong to this bridge only', async () =
   f.bridge.dispose();
 });
 
+test('open polyline drawing uses line mode, preserves path identity and reuses native visibility handles', async () => {
+  const f = await fixture();
+  f.bridge.beginDrawing('polyline');
+  assert.equal(f.calls.drawParameters[0][1], 0);
+  await f.events.onEvent({eventtype:'EditHelperFinished',coordinates:[[0,0,0],[10,0,0]]});
+  assert.equal(f.calls.drawnPaths.length, 1);
+  const geometry = f.calls.drawnPaths[0];
+  assert.ok(geometry.path_id);
+  assert.equal(geometry.region_id, undefined);
+  assert.equal(f.calls.regions.length, 0);
+  f.bridge.showRegion(geometry);
+  const id = f.calls.paths[0].id;
+  assert.equal(f.calls.polygons.length, 0);
+  f.bridge.hideRegion(geometry.path_id);
+  f.bridge.showRegion(geometry);
+  assert.equal(f.calls.paths.length, 1);
+  assert.deepEqual(f.calls.hidden, [id]);
+  assert.deepEqual(f.calls.shown, [id]);
+  await f.events.onEvent({eventtype:'LeftMouseButtonClick',Type:'Polyline',Id:id});
+  assert.deepEqual(f.calls.clicked, [geometry.path_id]);
+  f.bridge.dispose();
+  assert.deepEqual(f.calls.deleted, [id]);
+});
+
+test('closed paths and cancelled late drawings do not become valid selection drafts', async () => {
+  const f = await fixture();
+  f.bridge.beginDrawing('polyline');
+  await f.events.onEvent({eventtype:'EditHelperFinished',coordinates:[[0,0,0],[10,0,0],[0,0,0]]});
+  assert.equal(f.calls.drawnPaths.length, 0);
+  assert.match(f.calls.errors[0], /开放折线/);
+  f.bridge.beginDrawing('polyline');
+  f.bridge.cancelDrawing();
+  await f.events.onEvent({eventtype:'EditHelperFinished',coordinates:[[0,0,0],[10,0,0]]});
+  assert.equal(f.calls.drawnPaths.length, 0);
+  f.bridge.dispose();
+});
+
 test('selection outlines scale with the short side, with bounds for tiny and very large polygons', async () => {
   const f = await fixture();
   for (const [width, height, thickness] of [[1, 1, 0.01], [10, 20, 0.04], [1000, 1000, 1], [1000, 2, 0.01]]) {
@@ -116,6 +160,48 @@ test('selection outlines scale with the short side, with bounds for tiny and ver
     f.bridge.showRegion(region);
     assert.equal(f.calls.polygons.at(-1).frameThickness, thickness);
   }
+  f.bridge.dispose();
+});
+
+test('hidden previews reuse native IDs; only removal and disposal delete owned objects', async () => {
+  const f = await fixture();
+  const region = f.createLiveRegion([[0,0,0],[10,0,0],[10,10,0],[0,10,0]], 1);
+  f.bridge.showRegion(region);
+  const id = f.calls.polygons[0].id;
+  f.bridge.hideRegion(region.region_id);
+  f.bridge.hideRegion(region.region_id);
+  assert.deepEqual(f.calls.hidden, [id]);
+  assert.deepEqual(f.calls.deleted, []);
+  await f.events.onEvent({eventtype:'LeftMouseButtonClick',Type:'Polygon',Id:id});
+  assert.deepEqual(f.calls.clicked, []);
+  f.bridge.showRegion(region);
+  f.bridge.showRegion(region);
+  assert.equal(f.calls.polygons.length, 1);
+  assert.deepEqual(f.calls.shown, [id]);
+  f.bridge.removeRegion(region.region_id);
+  assert.deepEqual(f.calls.deleted, [id]);
+  f.bridge.dispose();
+  assert.deepEqual(f.calls.deleted, [id]);
+});
+
+test('holes reach the SDK and terrain picking uses an even-odd path containing inner rings', async () => {
+  const f = await fixture({containsPoint: (path, x, y, rule) => {
+    assert.equal(rule, 'evenodd');
+    return path.rings.filter(ring => {
+      const xs = ring.map(p => p[0]), ys = ring.map(p => p[1]);
+      return x > Math.min(...xs) && x < Math.max(...xs) && y > Math.min(...ys) && y < Math.max(...ys);
+    }).length % 2 === 1;
+  }});
+  const region = f.createLiveRegion([[0,0,0],[10,0,0],[10,10,0],[0,10,0]], 1);
+  region.holes = [[[2,2,0],[8,2,0],[8,8,0],[2,8,0]]];
+  const original = JSON.stringify(region);
+  f.bridge.showRegion(region);
+  assert.equal(f.calls.polygons[0].coordinates.length, 2);
+  assert.equal(JSON.stringify(region), original);
+  await f.events.onEvent({eventtype:'LeftMouseButtonClick',Type:'TileLayer',MouseClickPoint:[5,5,0]});
+  assert.deepEqual(f.calls.clicked, []);
+  await f.events.onEvent({eventtype:'LeftMouseButtonClick',Type:'TileLayer',MouseClickPoint:[1,1,0]});
+  assert.deepEqual(f.calls.clicked, [region.region_id]);
   f.bridge.dispose();
 });
 
@@ -285,6 +371,18 @@ test('SDK timeouts terminate regions and report all failures', async () => {
   await f.bridge.execute(command());
   assert.equal(f.calls.elevation.length, 1);
   assert.equal(f.calls.elevation[0][2].length, 2);
+  f.bridge.dispose();
+});
+
+test('path sampling failures preserve path identity instead of inventing region IDs', async () => {
+  const f = await fixture({ miss: true });
+  const c = command();
+  c.payload.lines = c.payload.lines.slice(0, 2);
+  c.payload.batches = [{ region_id: null, path_id: 'road-a', name: 'Road A', start: 0, count: 2, bbox: [] }];
+  await f.bridge.execute(c);
+  assert.equal(f.calls.elevation[0][2][0].path_id, 'road-a');
+  assert.equal(f.calls.elevation[0][2][0].region_id, undefined);
+  assert.match(f.calls.elevation[0][2][0].reason, /未命中地形/);
   f.bridge.dispose();
 });
 

@@ -52,3 +52,10 @@ Resolver 解析，参考圆由 Studio 计算和绘制；本功能不增加策略
 
 声明随策略文档进入正常包 hash；修改后应升级策略版本并重新导入、显式信任。没有声明
 的旧包仍可使用。可选声明不合法时 UI 不展示示例，不应破坏正式种植。
+
+## 开放路径样本
+
+单一 `input_geometry: polyline` 策略使用声明 v2：`version: "2"`、`display_name`、
+`fixed_seed`、`path_xy`。`path_xy` 为 2 至 256 个有限局部 XY 米制点（每轴绝对值不超过
+1000），不重复相邻点、不闭合。Worker 以 `selected_paths` 调用同一生成器；生成器仍输出
+PointSet v3。不要提供 boundary_xy、额外执行对照、用户随机种子控件或第二套预览算法。

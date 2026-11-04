@@ -18,6 +18,7 @@ const parameters = [
   { key: "spacing", default: 3, minimum: 1, maximum: 10, group: "advanced" },
 ];
 const strategy = { strategy_id: "test", strategy_version: "1", package_hash: "test-hash", executable: true };
+const pathStrategy = { ...strategy, strategy_id: "path", package_hash: "path-hash", input_geometry: "polyline" };
 const assignments = { tree: { enabled: true, candidates: [{ asset_id: "oak", weight: 1, scale: { mode: "fixed", value: 1 } }] } };
 const details = Object.fromEntries(["preset", "pure", "empty"].map(id => [id, {
   summary: { profile_id: id, strategy_id: "test", strategy_version: "1", display_name: id, catalog_id: null, generation: 1 },
@@ -30,7 +31,7 @@ globalThis.window = { verdflowPlatform: {
   requestLocalApi: async request => {
     const path = new URL(request.path, "http://test").pathname;
     let value;
-    if (path === "/api/v1/strategies") value = { items: [strategy] };
+    if (path === "/api/v1/strategies") value = { items: [strategy, pathStrategy] };
     else if (path === "/api/v1/asset-catalogs") value = { items: [] };
     else if (path === "/api/v1/strategies/test-hash") value = {
       summary: strategy, roles: [{ role_key: "tree", required: true }], generation_parameters: parameters, default_random_seed: 42,
@@ -50,6 +51,16 @@ const { parseRoleEnabled } = await server.ssrLoadModule("/src/features/shared/ro
 const { usePlantingPlans } = await server.ssrLoadModule("/src/features/library/usePlantingPlans.ts");
 const input = { sessionId: "test", sceneRevisionId: "scene", regionSetId: "regions", selectedRegionIds: () => ["r"],
   currentExecution: () => null, onPreviewSubmitted() {} };
+
+await test("polygon workbench rejects line-only choices without losing current configuration", async () => {
+  const model = usePlantingConfiguration(input);
+  await model.initialize();
+  await model.chooseStrategy("test-hash");
+  const previous = model.selectedStrategyHash.value;
+  await model.chooseStrategy("path-hash");
+  assert.equal(model.selectedStrategyHash.value, previous);
+  assert.match(model.errorMessage.value, /路径.*DTS/);
+});
 
 await test("every plan resets parameters; legacy mappings use exact strategy defaults", async () => {
   const model = usePlantingConfiguration(input);

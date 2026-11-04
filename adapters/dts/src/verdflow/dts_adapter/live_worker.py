@@ -32,10 +32,12 @@ DTS_LIVE_ADAPTER_ID = "verdflow.dts.live"
 DTS_LIVE_ADAPTER_VERSION = "1"
 DTS_LIVE_SCENE_INSPECTION_COMMAND = "verdflow.dts.live-inspect-scene"
 DTS_LIVE_REGION_SELECTION_COMMAND = "verdflow.dts.live-select-region"
+DTS_LIVE_PATH_SELECTION_COMMAND = "verdflow.dts.live-select-paths"
 DTS_LIVE_ELEVATION_COMMAND = "verdflow.dts.live-sample-elevation"
 DTS_LIVE_SUPPORTED_COMMANDS = (
     DTS_LIVE_SCENE_INSPECTION_COMMAND,
     DTS_LIVE_REGION_SELECTION_COMMAND,
+    DTS_LIVE_PATH_SELECTION_COMMAND,
     DTS_LIVE_ELEVATION_COMMAND,
 )
 
@@ -113,6 +115,8 @@ class DtsLiveCoreWorker:
                 result_id = self._inspect_scene(command)
             elif claimed.job.command.command_type == DTS_LIVE_REGION_SELECTION_COMMAND:
                 result_id = self._select_region(command)
+            elif claimed.job.command.command_type == DTS_LIVE_PATH_SELECTION_COMMAND:
+                result_id = self._select_paths(command)
             elif claimed.job.command.command_type == DTS_LIVE_ELEVATION_COMMAND:
                 result_id = self._sample_elevation(command, lease)
             else:
@@ -186,6 +190,50 @@ class DtsLiveCoreWorker:
             operation="inspect_scene",
         )
 
+    def _select_paths(self, command: dict[str, Any]) -> str:
+        if (
+            command.get("schema") != "verdflow.path-selection.command"
+            or command.get("version") != "1"
+            or command.get("operation") != "select_paths"
+        ):
+            raise ValueError("路径选择命令格式不匹配")
+        context = self._live_context(command.get("context"))
+        selection = self.port.selection(
+            context["operation_id"], context["generation_token"]
+        )
+        if selection.regions or not selection.paths:
+            raise ValueError("路径策略只接受开放折线")
+        document = {
+            "schema": "verdflow.paths",
+            "version": "1",
+            "coordinate_space": "source_scene_world",
+            "offset_applied": False,
+            "path_count": len(selection.paths),
+            "paths": [
+                {
+                    "id": path.path_id,
+                    "name": path.name,
+                    "coordinates": [list(point) for point in path.coordinates],
+                    "bbox": list(path.bbox),
+                }
+                for path in selection.paths
+            ],
+        }
+        from verdflow.planting import validate_path_document
+
+        validate_path_document(document)
+        artifact = self._put_json(
+            document,
+            media_type="application/vnd.verdflow.paths+json",
+            schema_id="verdflow.paths",
+        )
+        return self._result(
+            "path_selection",
+            source_id=_text(command, "source_id"),
+            outputs=(("paths", artifact),),
+            operation="select_paths",
+        )
+
     def _select_region(self, command: dict[str, Any]) -> str:
         self._validate_provider_command(
             command,
@@ -203,6 +251,8 @@ class DtsLiveCoreWorker:
         for region in selection.regions:
             polygon = [list(point) for point in region.coordinates]
             boundary = [*polygon, list(polygon[0])]
+            hole_rings = [[list(point) for point in ring] for ring in region.holes]
+            boundaries = [boundary, *[[*ring, list(ring[0])] for ring in hole_rings]]
             bbox = list(region.bbox)
             regions.append({
                 "id": region.region_id,
@@ -214,7 +264,7 @@ class DtsLiveCoreWorker:
                 "coordinate_space": "source_scene_world",
                 "offset_applied": False,
                 "bbox": bbox,
-                "footprint_boundary_xyz": [boundary],
+                "footprint_boundary_xyz": boundaries,
                 "mesh": "",
                 "extraction_method": "dts_user_polygon",
             })
@@ -222,9 +272,9 @@ class DtsLiveCoreWorker:
                 "id": region.region_id,
                 "bbox": bbox,
                 "bbox_size": [bbox[i + 3] - bbox[i] for i in range(3)],
-                "footprint_area_xy": _polygon_area_xy(polygon),
-                "boundary_perimeter_xy": _polygon_perimeter_xy(polygon),
-                "boundary_loop_count": 1,
+                "footprint_area_xy": _polygon_area_xy(polygon) - sum(_polygon_area_xy(ring) for ring in hole_rings),
+                "boundary_perimeter_xy": sum(_polygon_perimeter_xy(ring) for ring in [polygon, *hole_rings]),
+                "boundary_loop_count": len(boundaries),
                 "is_near_horizontal": True,
             })
         geometry = self._put_json(
@@ -276,7 +326,7 @@ class DtsLiveCoreWorker:
         points = points_document.get("points")
         if (
             points_document.get("schema") != "verdflow.points"
-            or str(points_document.get("version")) != "2"
+            or str(points_document.get("version")) not in {"2", "3"}
             or points_document.get("kind") != "generated"
             or points_document.get("offset_applied") is not False
             or not isinstance(points, list)
@@ -286,22 +336,32 @@ class DtsLiveCoreWorker:
         point_ids: list[str] = []
         lines: list[dict[str, object]] = []
         selection = self.port.selection(context["operation_id"], context["generation_token"])
+        path_input = bool(selection.paths)
+        geometries = selection.paths if path_input else selection.regions
+        key = "path_id" if path_input else "region_id"
         by_region: dict[str, list[dict[str, Any]]] = {
-            region.region_id: [] for region in selection.regions
+            getattr(region, key): [] for region in geometries
         }
         for point in points:
-            if not isinstance(point, dict) or point.get("region_id") not in by_region:
+            if not isinstance(point, dict) or point.get(key) not in by_region:
                 raise ValueError("DTS Live point must belong to a selected region")
-            by_region[point["region_id"]].append(point)
+            by_region[point[key]].append(point)
         batches: list[DtsLiveElevationBatch] = []
         ordered_points = []
-        for region in selection.regions:
-            group = by_region[region.region_id]
+        for region in geometries:
+            group = by_region[getattr(region, key)]
             if not group:
                 continue
-            batches.append(DtsLiveElevationBatch(
-                region.region_id, region.name, region.bbox, len(ordered_points), len(group),
-            ))
+            batches.append(
+                DtsLiveElevationBatch(
+                    None if path_input else region.region_id,
+                    region.name,
+                    region.bbox,
+                    len(ordered_points),
+                    len(group),
+                    path_id=region.path_id if path_input else None,
+                )
+            )
             ordered_points.extend(group)
         half_range = _positive_float(context.get("ray_half_range", 5000.0))
         for point in ordered_points:
@@ -344,8 +404,14 @@ class DtsLiveCoreWorker:
         resolved = copy.deepcopy(points_document)
         resolved["kind"] = "elevation_resolved"
         resolved["resolution_policy"] = "sample_hit_else_generated"
+        # Identical rays must resolve identically for co-located role instances.
+        samples_by_position = {}
+        for point in points:
+            samples_by_position.setdefault(
+                tuple(point["generated_position"]), by_id[point["id"]]
+            )
         for point in resolved["points"]:
-            sample = by_id[_text(point, "id")]
+            sample = samples_by_position[tuple(point["generated_position"])]
             if sample.position is None:
                 point["terrain_sample"] = {"hit": False, "target": "dts_region_sampling_failed"}
                 point["resolved_position"] = list(point["generated_position"])
@@ -362,7 +428,7 @@ class DtsLiveCoreWorker:
             resolved,
             media_type="application/vnd.verdflow.points+json",
             schema_id="verdflow.points",
-            schema_version="2",
+            schema_version=resolved["version"],
         )
         return self._result(
             "elevation_sampling",
@@ -419,9 +485,14 @@ class DtsLiveCoreWorker:
         outputs: tuple[tuple[str, str], ...],
         operation: str,
     ) -> str:
+        result_schema = (
+            "verdflow.path-selection.result"
+            if result_kind == "path_selection"
+            else "verdflow.dts-live.result"
+        )
         return self._put_json(
             {
-                "schema": "verdflow.dts-live.result",
+                "schema": result_schema,
                 "version": "1",
                 "status": "succeeded",
                 "operation": operation,
@@ -437,7 +508,7 @@ class DtsLiveCoreWorker:
                 ],
             },
             media_type="application/vnd.verdflow.worker-result+json",
-            schema_id="verdflow.dts-live.result",
+            schema_id=result_schema,
         )
 
     def _put_json(

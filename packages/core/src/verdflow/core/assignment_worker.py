@@ -192,20 +192,20 @@ class AssetAssignmentWorker:
             record = self.runtime.store.get_point_set(record_id)
             expected = record.point_artifact_id
             expected_schema = "verdflow.points"
-            expected_version = "2"
+            expected_version = {"2", "3"}
             point_count = record.point_count
         else:
             record = self.runtime.store.get_effective_binding_snapshot(record_id)
             expected = record.snapshot_artifact_id
             expected_schema = "verdflow.effective-binding-snapshot"
-            expected_version = "1"
+            expected_version = {"1"}
             point_count = 0
         if expected != artifact_id:
             raise ValueError("Assignment command Artifact reference is stale")
         artifact = self.runtime.store.get_artifact(artifact_id)
         if (
             artifact.schema_id != expected_schema
-            or artifact.schema_version != expected_version
+            or artifact.schema_version not in expected_version
         ):
             raise ValueError("Assignment input Artifact schema is unsupported")
         return self._read_json(artifact_id), point_count

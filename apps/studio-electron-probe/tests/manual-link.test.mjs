@@ -54,16 +54,22 @@ test("the Studio logo uses the exact approved manual address in a separate conte
   assert.match(link, /rel="noopener noreferrer"/);
 });
 
-test("the sidebar resource center opens the approved page externally", async () => {
+test("the sidebar opens native resource center while the website remains available externally", async () => {
   const source = await readFile(new URL("../../studio/src/components/SideNavigation.vue", import.meta.url), "utf8");
-  const link = source.match(/<a\b[^>]*class="nav-item nav-resource-center"[^>]*>/)?.[0];
+  const link = source.match(/<RouterLink\b[^>]*class="nav-item nav-resource-center"[^>]*>/)?.[0];
   assert.ok(link);
-  assert.ok(link.includes(`href="${RESOURCE_CENTER_URL}"`));
-  assert.match(link, /target="_blank"/);
-  assert.match(link, /rel="noopener noreferrer"/);
+  assert.ok(link.includes('to="/resources"'));
   const opened = [];
   const handler = manualWindowOpenHandler({ openExternal: async url => opened.push(url), onError: assert.fail });
   assert.deepEqual(handler({ url: RESOURCE_CENTER_URL }), { action: "deny" });
   await settle();
   assert.deepEqual(opened, [RESOURCE_CENTER_URL]);
+});
+
+test("reviewed PAK share links and documentation subpages use the system browser", async () => {
+  const opened = [];
+  const handler = manualWindowOpenHandler({ openExternal: async url => opened.push(url), onError: assert.fail });
+  const allowed = [USER_MANUAL_URL + 'resources/strategies.html', 'https://pan.baidu.com/s/exampleShare?pwd=test'];
+  for (const url of [...allowed, 'https://pan.baidu.com.evil.test/s/example', 'https://pan.baidu.com/s/example?redirect=https://evil.test', 'https://user@pan.baidu.com/s/example', 'https://pan.baidu.com/other']) handler({ url });
+  await settle(); assert.deepEqual(opened, allowed);
 });

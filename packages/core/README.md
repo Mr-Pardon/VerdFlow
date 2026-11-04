@@ -220,7 +220,7 @@ python -B tools\job_runtime_recovery_probe.py
 - 资产分配只接受调用方明确给出的当前 Catalog 或自包含 Profile。Core 不读取 active 指针，
   并在执行前冻结 Catalog generation、内容 hash 或 Profile hash 及稀疏资产事实；当前没有
   自动资产推荐或跨目标 Catalog 合并。
-- `PointSetImportService` 只接收目标中立 PointSet v2；旧点位格式不属于 Core
+- `PointSetImportService` 按输入类型接收面 PointSet v2 或路径 PointSet v3，校验真实集合及所选成员；旧点位格式不属于 Core
   兼容边界。生成 PointSet 定版同时要求并冻结精确策略包 Artifact。
 - Retention sweeper 已接入 Core Host 同线程周期调度，并与低频 object GC 分离；
   尚未完成 Scale 数据和维护阶段进程强杀门禁。调度状态当前只保存在 Host 内存，
@@ -231,3 +231,9 @@ python -B tools\job_runtime_recovery_probe.py
 `StrategyPreviewService` 沿用精确策略授权及公开参数校验，通过 `StrategyPreviewPort`
 执行策略包持有的单一样本。该短暂用例不创建项目或 Job，不持有几何和生成器实现。
 协议见 `docs/architecture/STRATEGY_PARAMETER_PREVIEWS.md`。
+
+## 路径种植
+
+`PathSetImportService` 定版已成功 Job 的规范路径快照；`PlantingGenerationRequest.input_ref`
+使用 `PlantingInputRef("polyline", ...)`。路径与面共用生成、资产分配、高程及输出链路，Core
+不生成沿线站点、不把面转为线、不补随机旋转。详见 ADR-0022。

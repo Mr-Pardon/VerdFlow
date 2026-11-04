@@ -101,6 +101,14 @@ class StrategyPreviewWorker:
                     "excluded_role_keys": list(request.excluded_role_keys),
                 },
             }
+            if request.sample.input_geometry == "polyline":
+                del command["context"]["selected_regions"]
+                command["context"]["selected_paths"] = [
+                    {
+                        "id": "strategy_example",
+                        "coordinates": [[x, y, 0.0] for x, y in request.sample.path_xy],
+                    }
+                ]
             command_path.write_text(json.dumps(command), encoding="utf-8")
             guard = ProcessTreeGuard()
             process = None
@@ -206,6 +214,20 @@ class StrategyPreviewWorker:
             ):
                 raise StrategyExecutionError("Invalid preview coordinate or role")
             parsed.append((float(point[0]), float(point[1]), point[2]))
+        path = value.get("evaluated_path_xy")
+        if path is not None and (
+            request.sample.input_geometry != "polyline"
+            or not isinstance(path, list)
+            or not 2 <= len(path) <= 8192
+            or any(
+                not isinstance(point, list)
+                or len(point) != 2
+                or any(type(v) not in (int, float) or abs(v) > 1e9 or not math.isfinite(v) for v in point)
+                for point in path
+            )
+        ):
+            raise StrategyExecutionError("Invalid evaluated preview path")
         return StrategyPreviewResult(
-            request.package_hash, request.role_keys, tuple(parsed), tuple(point_ids)
+            request.package_hash, request.role_keys, tuple(parsed), tuple(point_ids),
+            evaluated_path_xy=None if path is None else tuple((float(x), float(y)) for x, y in path),
         )

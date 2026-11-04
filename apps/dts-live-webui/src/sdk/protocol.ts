@@ -1,4 +1,4 @@
-import type { LiveRegion } from "../types";
+import type { LiveRegion, LivePath } from "../types";
 
 export type UnknownRecord = Record<string, unknown>;
 
@@ -20,6 +20,14 @@ export type DtsApi = UnknownRecord & {
   };
   polygon?: {
     add: (data: UnknownRecord) => unknown;
+    show: (ids: string | string[]) => unknown;
+    hide: (ids: string | string[]) => unknown;
+    delete: (id: string) => unknown;
+  };
+  polyline?: {
+    add: (data: UnknownRecord) => unknown;
+    show: (ids: string | string[]) => unknown;
+    hide: (ids: string | string[]) => unknown;
     delete: (id: string) => unknown;
   };
   tools?: {
@@ -63,6 +71,7 @@ export interface DtsSdkCallbacks {
   onError: (message: string) => void;
   onCommandComplete: () => void;
   onRegionDrawn: (region: LiveRegion) => void;
+  onPathDrawn?: (path: LivePath) => void;
   onDrawingFinished: () => void;
   onRegionClicked?: (regionId: string) => void;
 }

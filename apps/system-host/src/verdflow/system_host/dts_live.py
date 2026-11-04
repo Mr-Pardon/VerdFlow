@@ -14,6 +14,7 @@ from verdflow.planting import (
     build_effective_binding_from_profile,
     build_effective_binding_snapshot,
     profile_generation_args,
+    strategy_input_kind,
 )
 from verdflow.strategy_worker import inspect_strategy_package
 
@@ -119,6 +120,7 @@ def freeze_dts_live_execution(
         asset_source_generation = catalog_info.generation
         asset_source_hash = catalog_info.semantic_hash
     snapshot = DtsLiveExecutionSnapshot(
+        input_geometry=strategy_input_kind(package.strategy),
         strategy_package_hash=package.package_hash,
         strategy_id=package.package_id,
         strategy_version=package.package_version,

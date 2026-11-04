@@ -17,7 +17,8 @@
 .region-clear-dialog .danger-button { color: #f1c2b9; background: #482e2c; border-color: #79504a; }
 .region-clear-dialog button:focus-visible { outline: 2px solid #72d8c4; outline-offset: 3px; }
 .region-list { display: grid; gap: 7px; max-height: 186px; overflow-y: auto; margin-top: 10px; scrollbar-width: thin; scrollbar-color: #385550 transparent; }
-.region-export-notice { margin: 8px 0 0; color: #a8c5bc; font-size: 12px; overflow-wrap: anywhere; }
+.region-export-notice { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin: 8px 0 0; color: #a8c5bc; font-size: 12px; overflow-wrap: anywhere; }
+.region-export-notice > span { min-width: 0; flex: 1; }
 .region-row { display: flex; align-items: center; gap: 4px; padding: 9px 7px; border: 1px solid var(--live-line); border-radius: 6px; background: #132325; }
 .region-row label { display: flex; min-width: 0; flex: 1; align-items: center; gap: 8px; }
 .region-row input { width: 15px; height: 15px; flex: 0 0 auto; accent-color: #35b79f; }

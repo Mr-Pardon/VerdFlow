@@ -9,6 +9,8 @@ export interface StrategyPreviewSample {
   display_name: string;
   boundary_xy: [number, number][];
   fixed_seed: number;
+  input_geometry?: "polygon" | "polyline";
+  path_xy?: [number, number][];
 }
 
 export interface StrategyPreviewInput {
@@ -24,6 +26,7 @@ export interface StrategyPreviewResult {
   role_keys: string[];
   points: [number, number, number][];
   point_ids?: string[];
+  evaluated_path_xy?: [number, number][] | null;
 }
 
 export interface AssignmentPreviewInput {

@@ -22,7 +22,7 @@ from verdflow.strategy_worker import inspect_strategy_package, write_strategy_pa
 from verdflow.system_host import SystemHost, RoleBindingProfileSaveRequest
 from verdflow.local_api import LocalApiConfig, LocalApiServer
 from verdflow.system_host.resource_downloads import DownloadCancelled, StarterResource
-from verdflow.system_host.resource_index import IndexedResource, ResourceIndex, parse_index, plan_metadata
+from verdflow.system_host.resource_index import IndexedResource, ResourceIndex, ResourceSelection, parse_index, plan_metadata
 from test_system_library_queries import _config, _prepare_library, _editable_assignments
 import test_plan_version_compatibility as compatibility
 
@@ -104,6 +104,47 @@ class PlanImportTests(unittest.TestCase):
         plan = self.system.get_role_binding_profile("import-plan")
         self.assertEqual(plan.summary.strategy_version, "2.0.0")
         self.assertEqual(plan.summary.resolved_strategy_hash, newer.summary.package_hash)
+
+    def test_single_center_strategy_import_keeps_existing_versions_and_trust(self):
+        self.system.uninstall_strategy(self.package.package_hash)
+        selection = ResourceSelection("strategy", self.strategies.resource.version, self.index.revision)
+        op = wait(self.system, self.system.prepare_resource_import((), selection=selection))
+        self.assertEqual([c.id for c in op.choices], ["strategy"])
+        self.assertEqual(self.confirm(op).status, "completed")
+        self.assertEqual(self.downloads, ["strategy"])
+        self.assertNotEqual(self.system.list_strategies()[0].trust_state, "trusted")
+
+    def test_single_center_plan_uses_existing_dependency_rules(self):
+        self.system.delete_asset_catalog("dts", self.catalog_id)
+        self.index = replace(self.index, resources=(*self.index.resources, self.plans))
+        selection = ResourceSelection("plan", self.plans.resource.version, self.index.revision)
+        op = wait(self.system, self.system.prepare_resource_import((), selection=selection))
+        self.assertEqual([c.id for c in op.choices if c.optional], ["assets"])
+        self.assertEqual(self.confirm(op).status, "completed")
+        self.assertEqual(self.downloads, ["plan"])
+
+    def test_center_stale_or_withdrawn_selection_never_downloads(self):
+        for selection in (ResourceSelection("strategy", self.strategies.resource.version, "e" * 64),
+                          ResourceSelection("missing", "1.0.0", self.index.revision)):
+            op = wait(self.system, self.system.prepare_resource_import((), selection=selection))
+            self.assertEqual(op.status, "failed")
+            self.assertTrue(op.error)
+        self.download.assert_not_called()
+
+    def test_center_same_version_different_hash_blocks_without_overwrite(self):
+        self.index = replace(self.index, resources=(replace(self.strategies, strategy_hash="sha256:" + "f" * 64),))
+        selection = ResourceSelection("strategy", self.strategies.resource.version, self.index.revision)
+        op = wait(self.system, self.system.prepare_resource_import((), selection=selection))
+        self.assertTrue(op.choices[0].blocked)
+        self.assertIn("未覆盖", op.choices[0].message)
+        self.confirm(op)
+        self.download.assert_not_called()
+
+    def test_center_selection_cannot_mix_recommended_or_local_paths(self):
+        selection = ResourceSelection("strategy", self.strategies.resource.version, self.index.revision)
+        for paths, recommended in (((), True), ((str(self.plan),), False)):
+            with self.assertRaises(ValueError):
+                self.system.prepare_resource_import(paths, recommended=recommended, selection=selection)
 
     def test_optional_catalog_default_skip_and_failed_download_do_not_block_plan(self):
         self.system.delete_asset_catalog("dts", self.catalog_id)

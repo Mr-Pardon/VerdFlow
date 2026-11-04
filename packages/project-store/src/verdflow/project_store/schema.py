@@ -10,7 +10,7 @@ from .database import ProjectDatabase
 from .errors import ProjectSchemaError
 
 
-SCHEMA_VERSION = 23
+SCHEMA_VERSION = 24
 
 JOB_SCHEMA_STATEMENTS = (
     """
@@ -256,14 +256,28 @@ REGION_SCHEMA_STATEMENTS = (
     "ON regions(region_set_id, min_x, max_x, min_y, max_y)",
 )
 
+PATH_SCHEMA_STATEMENTS = (
+    """CREATE TABLE path_sets (
+        path_set_id TEXT PRIMARY KEY,
+        scene_revision_id TEXT NOT NULL REFERENCES scene_revisions(scene_revision_id),
+        producer_job_id TEXT NOT NULL UNIQUE REFERENCES jobs(job_id),
+        input_hash TEXT NOT NULL,
+        coordinate_frame_id TEXT NOT NULL REFERENCES coordinate_frames(coordinate_frame_id),
+        geometry_artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id),
+        path_count INTEGER NOT NULL CHECK(path_count > 0),
+        created_at TEXT NOT NULL
+    )""",
+)
+
 POINT_SCHEMA_STATEMENTS = (
     """
     CREATE TABLE planting_runs (
         planting_run_id TEXT PRIMARY KEY,
         scene_revision_id TEXT NOT NULL
             REFERENCES scene_revisions(scene_revision_id),
-        region_set_id TEXT NOT NULL
+        region_set_id TEXT
             REFERENCES region_sets(region_set_id),
+        path_set_id TEXT REFERENCES path_sets(path_set_id),
         producer_job_id TEXT NOT NULL UNIQUE REFERENCES jobs(job_id),
         strategy_id TEXT NOT NULL,
         strategy_version TEXT NOT NULL,
@@ -272,7 +286,8 @@ POINT_SCHEMA_STATEMENTS = (
         generator_version TEXT NOT NULL,
         random_seed INTEGER NOT NULL,
         input_hash TEXT NOT NULL,
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        CHECK ((region_set_id IS NOT NULL) != (path_set_id IS NOT NULL))
     )
     """,
     "CREATE INDEX planting_runs_scene_created_idx "
@@ -795,6 +810,7 @@ SCHEMA_STATEMENTS = (
     *JOB_SCHEMA_STATEMENTS,
     *WORKER_PROCESS_SCHEMA_STATEMENTS,
     *REGION_SCHEMA_STATEMENTS,
+    *PATH_SCHEMA_STATEMENTS,
     *POINT_SCHEMA_STATEMENTS,
     *SNAPSHOT_SCHEMA_STATEMENTS,
     *EXPORT_SCHEMA_STATEMENTS,

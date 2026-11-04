@@ -71,9 +71,22 @@ class LiveRegionImportTests(unittest.TestCase):
             result = import_polygon_shapefile(source)
             self.assertEqual({tuple(p) for p in result[0].coordinates}, {(x, y, 20 + x) for x, y in SQUARE})
 
-    def test_holes_and_invalid_geometry_fail_entire_import(self) -> None:
+    def test_valid_holes_survive_import_export_and_live_normalization(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "holes.zip"
+            source.write_bytes(dataset([SQUARE, [[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]]))
+            polygon, = import_polygon_shapefile(source)
+            self.assertEqual(len(polygon.holes), 1)
+            regions = normalize_live_regions([{"region_id": "a", "name": "Garden", "coordinates": polygon.coordinates, "holes": polygon.holes}])
+            self.assertEqual(regions[0].holes, polygon.holes)
+            service = RegionExchangeService(import_picker=lambda _: source)
+            self.assertEqual(service.import_regions().regions[0].holes, polygon.holes)
+            source.write_bytes(export_polygon_shapefile((polygon,)))
+            restored, = import_polygon_shapefile(source)
+            self.assertEqual({p[:2] for p in restored.holes[0]}, {p[:2] for p in polygon.holes[0]})
+
+    def test_invalid_geometry_fails_entire_import_with_feature_number(self) -> None:
         cases = [
-            ([SQUARE, [[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]], "shp_holes_unsupported"),
             ([[[0, 0], [10, 10], [0, 10], [10, 0], [0, 0]]], "shp_invalid_geometry"),
         ]
         with tempfile.TemporaryDirectory() as directory:
@@ -83,6 +96,8 @@ class LiveRegionImportTests(unittest.TestCase):
                 with self.assertRaises(ShapefileImportError) as caught:
                     import_polygon_shapefile(source)
                 self.assertEqual(caught.exception.code, code)
+                self.assertIn("第 1 条", str(caught.exception))
+                self.assertIn("修复", str(caught.exception))
 
     def test_missing_companions_unsafe_zip_and_limits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -91,7 +106,9 @@ class LiveRegionImportTests(unittest.TestCase):
             with patch("verdflow.geospatial_worker.polygon_import.MAX_DATASET_BYTES", 4):
                 with self.assertRaises(ShapefileImportError) as caught:
                     import_polygon_shapefile(source)
-                self.assertEqual(caught.exception.code, "shp_too_large")
+                self.assertEqual(caught.exception.code, "shp_file_size_limit")
+                self.assertIn("MiB", str(caught.exception))
+                self.assertIn("工作台", str(caught.exception))
             with zipfile.ZipFile(source, "a") as archive:
                 archive.writestr("../data.shp", b"unsafe")
             with self.assertRaises(ShapefileImportError) as caught:
@@ -102,6 +119,34 @@ class LiveRegionImportTests(unittest.TestCase):
             with self.assertRaises(ShapefileImportError) as caught:
                 import_polygon_shapefile(shp)
             self.assertEqual(caught.exception.code, "shp_companions_missing")
+
+    def test_vertex_limit_includes_holes_and_live_budget_cannot_be_bypassed_by_appending(self) -> None:
+        from verdflow.dts_adapter import DtsLiveSelectionLimitError
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "holes.zip"
+            source.write_bytes(dataset([SQUARE, [[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]]))
+            with patch("verdflow.geospatial_worker.polygon_import.MAX_VERTICES", 9):
+                with self.assertRaises(ShapefileImportError) as caught:
+                    import_polygon_shapefile(source)
+                self.assertEqual(caught.exception.code, "shp_vertex_limit")
+        with patch("verdflow.dts_adapter.live.DTS_LIVE_MAX_VERTICES", 6):
+            with self.assertRaises(DtsLiveSelectionLimitError):
+                normalize_live_regions(REGIONS)
+
+    def test_import_http_preserves_semantic_error_code_and_public_message(self) -> None:
+        manager = DtsLiveConnectorManager(_resolve)
+        bootstrap = manager.create_session()
+        def reject():
+            raise RegionImportError("shp_vertex_limit", "顶点超过实时上限，请改用工作台 SHP＋TIF")
+        with DtsLiveConnectorServer(manager, import_regions=reject) as server:
+            _, _, headers = _request(server.base_url + "/api/v1/bootstrap/exchange", document={
+                "connector_session_id": bootstrap.connector_session_id, "bootstrap_nonce": bootstrap.bootstrap_nonce,
+            }, origin=server.base_url)
+            status, result, _ = _request(server.base_url + "/api/v1/selections/import-shp", document={},
+                                        cookie=headers["Set-Cookie"].split(";", 1)[0], origin=server.base_url)
+            self.assertEqual(status, 400)
+            self.assertEqual(result["error"]["code"], "shp_vertex_limit")
+            self.assertIn("工作台", result["error"]["message"])
 
     def test_service_cancel_new_ids_and_shared_dialog_lock(self) -> None:
         self.assertFalse(RegionExchangeService(import_picker=lambda _: None).import_regions().imported)

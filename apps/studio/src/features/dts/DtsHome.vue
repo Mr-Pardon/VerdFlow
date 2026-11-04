@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DismissibleNotice from "../../components/DismissibleNotice.vue";
 import { ArrowRight, FileBox, MousePointer2 } from "@lucide/vue";
 import { computed, onMounted, ref } from "vue";
 import { useRouter } from "vue-router";
@@ -67,7 +68,7 @@ onMounted(() => {
       </div>
     </header>
 
-    <div
+    <DismissibleNotice
       v-if="
         entryError &&
         !sourceDialogOpen &&
@@ -75,13 +76,13 @@ onMounted(() => {
         !geospatialCreation.dialogOpen.value
       "
       class="inline-alert"
-      role="alert"
+      :message="entryError"
     >
       <div>
         <strong>DTS 入口暂时不可用</strong>
         <p>{{ entryError }}</p>
       </div>
-    </div>
+    </DismissibleNotice>
 
     <div class="workflow-grid" data-guide-anchor="workbench">
       <article class="workflow-card">
@@ -160,6 +161,7 @@ onMounted(() => {
       :can-submit="creation.canSubmit.value"
       :stage="creation.stage.value"
       :error-message="creation.errorMessage.value"
+      @dismiss-error="creation.errorMessage.value = null"
       @close="creation.closeDialog"
       @choose-location="creation.chooseProjectLocation"
       @submit="creation.submit"
@@ -180,6 +182,7 @@ onMounted(() => {
       :can-submit="geospatialCreation.canSubmit.value"
       :stage="geospatialCreation.stage.value"
       :error-message="geospatialCreation.errorMessage.value"
+      @dismiss-error="geospatialCreation.errorMessage.value = null"
       @close="geospatialCreation.closeDialog"
       @choose-vector="geospatialCreation.chooseVectorSource"
       @choose-elevation="geospatialCreation.chooseElevationSource"

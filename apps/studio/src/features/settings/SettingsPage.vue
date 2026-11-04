@@ -12,6 +12,7 @@ import {
 import { onMounted } from "vue";
 
 import type { ExternalRuntimeInfo } from "../../api";
+import DismissibleNotice from "../../components/DismissibleNotice.vue";
 import { useExternalRuntimes } from "./useExternalRuntimes";
 import ApplicationUpdates from "./ApplicationUpdates.vue";
 import GuideSettings from "../onboarding/GuideSettings.vue";
@@ -67,16 +68,16 @@ const detailLabel = (runtime: ExternalRuntimeInfo) => {
       </button>
     </header>
 
-    <div v-if="settings.errorMessage.value" class="inline-alert settings-alert" role="alert">
+    <DismissibleNotice :message="settings.errorMessage.value" class="inline-alert settings-alert" @dismiss="settings.errorMessage.value = null">
       <div>
         <strong>设置未保存</strong>
         <p>{{ settings.errorMessage.value }}</p>
       </div>
-      <button type="button" @click="settings.refresh">重新读取</button>
-    </div>
-    <div v-else-if="settings.notice.value" class="model-services-notice" role="status">
+      <template #actions><button type="button" @click="settings.refresh">重新读取</button></template>
+    </DismissibleNotice>
+    <DismissibleNotice v-if="!settings.errorMessage.value" :message="settings.notice.value" class="model-services-notice" status @dismiss="settings.notice.value = null">
       <CheckCircle2 :size="16" />{{ settings.notice.value }}
-    </div>
+    </DismissibleNotice>
 
     <div class="settings-summary" aria-label="外部运行环境概览">
       <span><small>外部运行环境</small><strong>{{ settings.runtimes.value.length }}</strong></span>
@@ -123,15 +124,18 @@ const detailLabel = (runtime: ExternalRuntimeInfo) => {
         </div>
 
         <label class="runtime-path-field">
-          <span>{{ runtime.path_kind === "file" ? "可执行文件" : "Explorer 根目录" }}</span>
+          <span>{{ runtime.path_kind === "file" ? "可执行文件" : "Explorer 安装文件夹" }}</span>
           <input
             v-model="settings.drafts[runtime.runtime_id]"
             type="text"
-            :placeholder="runtime.resolved_path || '尚未配置'"
+            :placeholder="runtime.resolved_path || (runtime.runtime_id === 'dts-explorer' ? '选择 Explorer 7.1 安装文件夹' : '尚未配置')"
             :disabled="isBusy(runtime.runtime_id)"
           />
           <small v-if="runtime.resolved_path">当前：{{ runtime.resolved_path }}</small>
-          <small v-else-if="runtime.required_names.length">
+          <small v-if="runtime.runtime_id === 'dts-explorer'" class="runtime-path-field__hint">
+            请选择同时包含 SDK 和 AirCityExplorer 的文件夹
+          </small>
+          <small v-else-if="!runtime.resolved_path && runtime.required_names.length">
             需要：{{ runtime.required_names.join("、") }}
           </small>
         </label>
@@ -172,7 +176,7 @@ const detailLabel = (runtime: ExternalRuntimeInfo) => {
             @click="settings.browse(runtime)"
           >
             <LoaderCircle v-if="isBusy(runtime.runtime_id)" :size="16" class="spinning" />
-            <FolderOpen v-else :size="16" />选择
+            <FolderOpen v-else :size="16" />{{ runtime.path_kind === "file" ? "选择程序" : "选择文件夹" }}
           </button>
         </div>
       </article>

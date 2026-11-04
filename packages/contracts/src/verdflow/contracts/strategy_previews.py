@@ -10,6 +10,8 @@ class StrategyPreviewSample:
     display_name: str
     boundary_xy: tuple[tuple[float, float], ...]
     fixed_seed: int = 17
+    input_geometry: str = "polygon"
+    path_xy: tuple[tuple[float, float], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,6 +36,7 @@ class StrategyPreviewResult:
     role_keys: tuple[str, ...]
     points: tuple[tuple[float, float, int], ...]
     point_ids: tuple[str, ...] = ()
+    evaluated_path_xy: tuple[tuple[float, float], ...] | None = None
     schema: str = "verdflow.strategy-example-preview"
     version: str = "1"
 

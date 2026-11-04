@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DismissibleNotice from "../../components/DismissibleNotice.vue";
 import { Clock3, LoaderCircle, Square } from "@lucide/vue";
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 
@@ -55,7 +56,7 @@ onBeforeUnmount(() => { if (timer) clearInterval(timer); });
       <strong role="status">{{ statusLabel }}</strong>
       <span class="planting-task-status__elapsed" role="timer" aria-live="off"><Clock3 :size="13" />已用时 {{ elapsedLabel }}</span>
       <p v-if="longRunning && !cancellationPending" class="planting-task-status__notice">计算耗时较长，任务仍在执行，可继续等待或取消。</p>
-      <p v-if="cancellationError" class="planting-task-status__error" role="alert">{{ cancellationError }}</p>
+      <DismissibleNotice class="planting-task-status__error" :message="cancellationError" :notice-key="execution.execution_id" />
     </div>
     <button type="button" class="secondary-button" :disabled="cancellationPending" @click="emit('cancel')">
       <Square :size="15" />{{ cancellationPending ? "正在取消" : "取消种植" }}

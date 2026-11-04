@@ -31,8 +31,8 @@ class RegionExchangeBusyError(RuntimeError):
 
 
 class RegionImportError(ValueError):
-    def __init__(self, code: str) -> None:
-        super().__init__(code)
+    def __init__(self, code: str, message: str | None = None) -> None:
+        super().__init__(message or code)
         self.code = code
 
 
@@ -53,7 +53,7 @@ class RegionExchangeService:
             raise RegionExchangeBusyError("A selection file dialog is already open")
         try:
             payload = export_polygon_shapefile(tuple(
-                ShapefilePolygon(region.region_id, region.name, region.coordinates)
+                ShapefilePolygon(region.region_id, region.name, region.coordinates, region.holes)
                 for region in regions
             ))
             destination = self._picker(self._last_directory)
@@ -91,18 +91,18 @@ class RegionExchangeService:
             try:
                 polygons = import_polygon_shapefile(Path(source))
             except ShapefileImportError as error:
-                raise RegionImportError(error.code) from error
+                raise RegionImportError(error.code, str(error)) from error
             try:
                 regions = normalize_live_regions([
                     {"region_id": f"live_{uuid4()}", "name": polygon.name,
-                     "coordinates": polygon.coordinates}
+                     "coordinates": polygon.coordinates, "holes": polygon.holes}
                     for polygon in polygons
                 ])
             except ValueError as error:
                 raise RegionImportError("shp_invalid_geometry") from error
             # Keep imported drafts within the existing JSON selection transport.
             if len(json.dumps([asdict(r) for r in regions]).encode("utf-8")) > 30 * 1024 * 1024:
-                raise RegionImportError("shp_too_large")
+                raise RegionImportError("shp_draft_limit", "解析后的选区数据超过实时路径 30 MiB 上限；本次未导入任何面。请改用工作台的 SHP＋TIF 路径。")
             self._last_directory = Path(source).parent
             return RegionImportResult(True, Path(source).name, regions)
         finally:

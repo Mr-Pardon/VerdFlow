@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DismissibleNotice from "../../components/DismissibleNotice.vue";
 import {
   ChevronDown,
   ChevronRight,
@@ -382,7 +383,7 @@ onMounted(() => void review.initialize());
         <span>点位预览</span>
         <h2>种植批次与植被</h2>
       </header>
-      <div v-if="review.errorMessage.value" class="region-error" role="alert">
+      <DismissibleNotice class="region-error" :message="review.errorMessage.value">
         <p>{{ review.errorMessage.value }}</p>
         <button
           type="button"
@@ -393,9 +394,9 @@ onMounted(() => void review.initialize());
           <RefreshCw :size="15" />
           重试
         </button>
-      </div>
-      <p v-if="selectionError" class="region-error" role="alert">{{ selectionError }}</p>
-      <p v-if="commitError" class="region-error" role="alert">{{ commitError }}</p>
+      </DismissibleNotice>
+      <DismissibleNotice class="region-error" :message="selectionError" />
+      <DismissibleNotice class="region-error" :message="commitError" />
       <dl class="point-review-stats">
         <div>
           <dt>提取面</dt>

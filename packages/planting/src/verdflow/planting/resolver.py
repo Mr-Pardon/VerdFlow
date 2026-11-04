@@ -16,7 +16,7 @@ from .validation import (
     validate_assignment_set,
     validate_effective_binding_snapshot,
     validate_persisted_point_set_summary,
-    validate_point_set_v2,
+    validate_point_set,
     with_semantic_hash,
 )
 
@@ -122,7 +122,7 @@ def resolve_asset_assignments(
 ) -> dict[str, Any]:
     """Resolve every point without relying on process-global random state."""
 
-    point_set = validate_point_set_v2(point_set)
+    point_set = validate_point_set(point_set)
     snapshot = validate_effective_binding_snapshot(effective_binding_snapshot)
     return _resolve_validated_asset_assignments(
         point_set,

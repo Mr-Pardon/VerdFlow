@@ -18,6 +18,7 @@ from verdflow.planting import (
     catalog_binding_candidate,
     PlantingDocumentError,
     strategy_preview_sample,
+    strategy_input_kind,
 )
 from verdflow.library_store import LibraryStore
 from verdflow.strategy_worker import inspect_strategy_package
@@ -46,6 +47,7 @@ def strategy_summary(
     decision = store.get_strategy_trust(strategy.package_hash)
     state = decision.state.value if decision is not None else None
     return StrategyLibrarySummary(
+        input_geometry=strategy_input_kind(inspect_strategy_package(store.strategy_package_root(strategy.package_hash)).strategy),
         library_entry_id=strategy.library_entry_id,
         strategy_id=strategy.package_id,
         strategy_version=strategy.package_version,

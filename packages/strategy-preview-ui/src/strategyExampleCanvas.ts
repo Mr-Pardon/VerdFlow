@@ -36,15 +36,20 @@ export function drawStrategyExample(
   ctx.setTransform(canvas.width / width, 0, 0, canvas.height / height, 0, 0);
   ctx.fillStyle = palette.background;
   ctx.fillRect(0, 0, width, height);
-  const xs = sample.boundary_xy.map((point) => point[0]),
-    ys = sample.boundary_xy.map((point) => point[1]);
+  const isPath = sample.input_geometry === "polyline";
+  const outline = isPath ? (sample.path_xy ?? []) : sample.boundary_xy;
+  if (outline.length < 2) return;
+  const evaluated = isPath ? result?.evaluated_path_xy : null;
+  const extent = evaluated ? [...outline, ...evaluated] : outline;
+  const xs = extent.map((point) => point[0]),
+    ys = extent.map((point) => point[1]);
   const minX = Math.min(...xs),
     maxX = Math.max(...xs),
     minY = Math.min(...ys),
     maxY = Math.max(...ys);
   const scale = Math.min(
-    (width - 50) / (maxX - minX),
-    (height - 62) / (maxY - minY),
+    (width - 50) / Math.max(1, maxX - minX),
+    (height - 62) / Math.max(1, maxY - minY),
   );
   const left = (width - (maxX - minX) * scale) / 2,
     bottom = (height - (maxY - minY) * scale) / 2;
@@ -78,17 +83,30 @@ export function drawStrategyExample(
     ctx.lineTo(width - 18, y(value));
     ctx.stroke();
   }
-  ctx.beginPath();
-  sample.boundary_xy.forEach((point, index) =>
-    index
-      ? ctx.lineTo(x(point[0]), y(point[1]))
-      : ctx.moveTo(x(point[0]), y(point[1])),
-  );
-  ctx.closePath();
-  ctx.fillStyle = palette.region;
-  ctx.fill();
+  const trace = (points: readonly [number, number][]) => {
+    ctx.beginPath();
+    points.forEach(([px, py], index) =>
+      index ? ctx.lineTo(x(px), y(py)) : ctx.moveTo(x(px), y(py)),
+    );
+  };
+  if (evaluated) {
+    ctx.save();
+    ctx.globalAlpha = 0.45;
+    ctx.setLineDash([5, 4]);
+    ctx.strokeStyle = palette.boundary;
+    ctx.lineWidth = 1;
+    trace(outline);
+    ctx.stroke();
+    ctx.restore();
+  }
+  trace(evaluated ?? outline);
+  if (!isPath) {
+    ctx.closePath();
+    ctx.fillStyle = palette.region;
+    ctx.fill();
+  }
   ctx.strokeStyle = palette.boundary;
-  ctx.lineWidth = 1.2;
+  ctx.lineWidth = evaluated ? 1.8 : 1.2;
   ctx.stroke();
   if (result) {
     const hidden = new Set(display.hiddenRoleKeys ?? []);

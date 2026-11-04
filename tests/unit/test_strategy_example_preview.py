@@ -75,6 +75,7 @@ class StrategyExampleTests(unittest.TestCase):
                     "layered-ecological-community-v2",
                     "lawn-feature-groups",
                     "universal-street-tree",
+                    "path-paired-placement",
                 ):
                     package = inspect_strategy_package(ROOT / "strategy-packs" / name)
                     _install(store, package)
@@ -82,9 +83,22 @@ class StrategyExampleTests(unittest.TestCase):
                         StrategyExecutionAuthorizer(store, store)
                     )
                     roles = [role["role_key"] for role in package.strategy["roles"]]
-                    for excluded in ((), (roles[0],)):
+                    optional_role = next(
+                        (
+                            role["role_key"]
+                            for role in package.strategy["roles"]
+                            if not role.get("required", False)
+                        ),
+                        roles[0],
+                    )
+                    for excluded in ((), (optional_role,)):
+                        rounded = name == "path-paired-placement" and not excluded
                         prepared = service.prepare(
-                            StrategyPreviewRequest(package.package_hash, {}, excluded),
+                            StrategyPreviewRequest(
+                                package.package_hash,
+                                {"corner_radius_m": 5} if rounded else {},
+                                excluded,
+                            ),
                             package.strategy,
                         )
                         worker = StrategyPreviewWorker(package, root)
@@ -96,6 +110,14 @@ class StrategyExampleTests(unittest.TestCase):
                         )
                         self.assertEqual(first, second)
                         sample = prepared.sample
+                        if name == "universal-street-tree" and not excluded:
+                            self.assertEqual({roles[index] for _, _, index in first.points}, set(roles))
+                        if rounded:
+                            self.assertGreater(len(first.evaluated_path_xy), len(sample.path_xy))
+                            self.assertEqual(first.evaluated_path_xy[0], sample.path_xy[0])
+                            self.assertEqual(first.evaluated_path_xy[-1], sample.path_xy[-1])
+                        else:
+                            self.assertIsNone(first.evaluated_path_xy)
                         context = {
                             "strategy": package.strategy,
                             "seed": sample.fixed_seed,
@@ -119,6 +141,16 @@ class StrategyExampleTests(unittest.TestCase):
                             },
                             "excluded_role_keys": list(excluded),
                         }
+                        if sample.input_geometry == "polyline":
+                            context.pop("selected_regions")
+                            context["selected_paths"] = [
+                                {
+                                    "id": "strategy_example",
+                                    "coordinates": [
+                                        [x, y, 0] for x, y in sample.path_xy
+                                    ],
+                                }
+                            ]
                         formal = StrategyWorker({package.package_hash}).run(
                             package, context
                         )
@@ -208,7 +240,7 @@ class StrategyExampleTests(unittest.TestCase):
             empty = replace(
                 prepared,
                 excluded_role_keys=tuple(
-                    key for key in prepared.role_keys if key != "narrow_center_shrub"
+                    key for key in prepared.role_keys
                 ),
             )
             self.assertEqual(

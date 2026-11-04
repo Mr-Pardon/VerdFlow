@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 from typing import Any
 
 from verdflow.contracts import (
@@ -12,8 +13,13 @@ from verdflow.contracts import (
     PLANTING_GENERATE_POINTS_COMMAND,
     PLANTING_GENERATION_COMMAND_SCHEMA,
     PLANTING_GENERATION_COMMAND_VERSION,
+    PlantingInputRef,
 )
-from verdflow.planting import canonical_json_bytes, semantic_hash
+from verdflow.planting import (
+    canonical_json_bytes,
+    semantic_hash,
+    validate_path_document,
+)
 from verdflow.project_store import ProjectStore
 
 from .job_runtime import JobRuntime
@@ -23,12 +29,13 @@ from .strategy_access import StrategyExecutionAuthorizer
 @dataclass(frozen=True, slots=True)
 class PlantingGenerationRequest:
     scene_revision_id: str
-    region_set_id: str
+    region_set_id: str | None
     selected_region_ids: tuple[str, ...]
     strategy_package_hash: str
     random_seed: int
     args: dict[str, Any] = field(default_factory=dict)
     excluded_role_keys: tuple[str, ...] = ()
+    input_ref: PlantingInputRef | None = None
 
 
 class PlantingGenerationService:
@@ -53,11 +60,24 @@ class PlantingGenerationService:
         scene = self._store.get_scene_revision(
             self._required_text(request.scene_revision_id, "scene_revision_id")
         )
-        region_set = self._store.get_region_set(
-            self._required_text(request.region_set_id, "region_set_id")
-        )
+        reference = request.input_ref
+        if reference is not None and reference.kind == "polyline":
+            if request.region_set_id is not None or request.selected_region_ids:
+                raise ValueError("路径输入不能同时携带区域引用")
+            region_set = self._store.get_path_set(reference.set_id)
+        else:
+            if reference is not None:
+                if (
+                    reference.kind != "polygon"
+                    or reference.set_id != request.region_set_id
+                    or reference.selected_ids != request.selected_region_ids
+                ):
+                    raise ValueError("种植输入引用与区域选择不一致")
+            region_set = self._store.get_region_set(
+                self._required_text(request.region_set_id, "region_set_id")
+            )
         if region_set.scene_revision_id != scene.scene_revision_id:
-            raise ValueError("Planting RegionSet differs from SceneRevision")
+            raise ValueError("Planting input set differs from SceneRevision")
         if (
             not isinstance(request.random_seed, int)
             or isinstance(request.random_seed, bool)
@@ -74,29 +94,41 @@ class PlantingGenerationService:
         if len(set(request.excluded_role_keys)) != len(request.excluded_role_keys):
             raise ValueError("excluded_role_keys cannot contain duplicates")
 
+        path_input = reference is not None and reference.kind == "polyline"
         requested = tuple(
             self._required_text(value, "selected_region_id")
-            for value in request.selected_region_ids
+            for value in (
+                reference.selected_ids if path_input else request.selected_region_ids
+            )
         )
         if not requested:
             raise ValueError("selected_region_ids cannot be empty")
         if len(set(requested)) != len(requested):
             raise ValueError("selected_region_ids cannot contain duplicates")
-        regions = self._store.list_regions(region_set.region_set_id)
-        by_id = {region.region_id: region for region in regions}
+        if path_input:
+            with self._store.open_artifact(region_set.geometry_artifact_id) as stream:
+                paths = validate_path_document(json.load(stream))["paths"]
+            by_id = {path["id"]: ordinal for ordinal, path in enumerate(paths)}
+        else:
+            regions = self._store.list_regions(region_set.region_set_id)
+            by_id = {region.region_id: region for region in regions}
         unknown = sorted(set(requested) - set(by_id))
         if unknown:
             raise ValueError(
-                "Selected Regions are outside the RegionSet: "
+                "Selected geometries are outside the planting input set: "
                 + ", ".join(unknown[:3])
             )
-        ordered_region_ids = [
-            region.region_id
-            for region in sorted(
-                (by_id[region_id] for region_id in requested),
-                key=lambda region: (region.ordinal, region.region_id),
-            )
-        ]
+        ordered_region_ids = (
+            sorted(requested, key=lambda key: by_id[key])
+            if path_input
+            else [
+                region.region_id
+                for region in sorted(
+                    (by_id[region_id] for region_id in requested),
+                    key=lambda region: (region.ordinal, region.region_id),
+                )
+            ]
+        )
 
         authorization = self._authorizer.authorize(
             self._required_text(
@@ -110,8 +142,6 @@ class PlantingGenerationService:
             "version": PLANTING_GENERATION_COMMAND_VERSION,
             "operation": "generate_points",
             "scene_revision_id": scene.scene_revision_id,
-            "region_set_id": region_set.region_set_id,
-            "selected_region_ids": ordered_region_ids,
             "strategy": {
                 "id": strategy.package_id,
                 "version": strategy.package_version,
@@ -121,6 +151,17 @@ class PlantingGenerationService:
             "args": request.args,
             "excluded_role_keys": sorted(set(request.excluded_role_keys)),
         }
+        if path_input:
+            command["input"] = {
+                "kind": "polyline",
+                "set_id": reference.set_id,
+                "selected_ids": ordered_region_ids,
+            }
+        else:
+            command.update(
+                region_set_id=region_set.region_set_id,
+                selected_region_ids=ordered_region_ids,
+            )
         content = canonical_json_bytes(command)
         artifact = self._store.put_bytes(
             content,

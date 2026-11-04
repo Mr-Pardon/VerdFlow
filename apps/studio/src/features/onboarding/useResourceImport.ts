@@ -2,8 +2,9 @@ import { computed, onScopeDispose, ref, shallowRef } from "vue";
 import { LocalApiClient } from "../../api";
 import { platformBridge } from "../../platform";
 import type { StarterImportOperation } from "../../api/starterResources";
+import type { ResourceSelection } from "../../api/resourceCenter";
 
-export function useResourceImport(paths: readonly string[], client = new LocalApiClient(platformBridge())) {
+export function useResourceImport(paths: readonly string[], client = new LocalApiClient(platformBridge()), selection?: ResourceSelection) {
   const operation = shallowRef<StarterImportOperation>();
   const error = ref("");
   const submitting = ref(false);
@@ -41,7 +42,9 @@ export function useResourceImport(paths: readonly string[], client = new LocalAp
       localStrategies = strategies;
       optionalIds.value = [];
       overwriteIds.value = [];
-      await accept(await client.prepareResourceImport(paths, paths.length === 0, strategies));
+      await accept(await (selection
+        ? client.prepareResourceImport(paths, false, strategies, selection)
+        : client.prepareResourceImport(paths, paths.length === 0, strategies)));
     } catch (reason) { if (!disposed) error.value = message(reason); }
     finally { if (!disposed) submitting.value = false; }
   };

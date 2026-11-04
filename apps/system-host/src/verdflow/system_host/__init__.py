@@ -1,6 +1,7 @@
 """Public entry points for the VerdFlow System Host."""
 
 from .asset_search import AssetSearchRequest, AssetSearchPage, parse_asset_search_request
+from .resource_index import ResourceSelection
 
 from verdflow.core import (
     MaterialAnalysisRequest,
@@ -22,6 +23,7 @@ from .host import (
     SystemHost,
     SystemHostAlreadyRunningError,
     SystemHostError,
+    SystemHostDataError,
 )
 from .instance import (
     SYSTEM_API_PROTOCOL_VERSION,
@@ -132,6 +134,7 @@ from .secret_store import (
 )
 
 __all__ = [
+    "ResourceSelection",
     "AssetSearchRequest",
     "AssetSearchPage",
     "parse_asset_search_request",
@@ -224,6 +227,7 @@ __all__ = [
     "SystemHostAlreadyRunningError",
     "SystemHostConfig",
     "SystemHostError",
+    "SystemHostDataError",
     "SystemHostState",
     "SystemHostStatus",
     "StrategyLibraryDetail",

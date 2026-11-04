@@ -75,7 +75,7 @@ class ExternalRuntimeConfigStore:
             ),
             DTS_EXPLORER_RUNTIME_ID: _RuntimeDefinition(
                 runtime_id=DTS_EXPLORER_RUNTIME_ID,
-                display_name="DTS Explorer",
+                display_name="DTS Explorer 7.1",
                 path_kind="directory",
                 validator=_validate_dts_explorer,
                 discover=_discover_dts_explorer,
@@ -128,8 +128,15 @@ class ExternalRuntimeConfigStore:
                     f"External runtime is not supported: {normalized}"
                 ) from error
             path = _normalized_path(raw_path)
+            if normalized == DTS_EXPLORER_RUNTIME_ID:
+                path = _normalize_dts_explorer_locator(path)
             detail = definition.validator(path)
             if detail is not None:
+                if normalized == DTS_EXPLORER_RUNTIME_ID:
+                    raise ValueError(
+                        "未找到完整的 Explorer 7.1 安装目录。"
+                        "请选择同时包含 SDK 和 AirCityExplorer 的文件夹。"
+                    )
                 raise ValueError(
                     f"External runtime path is invalid for {normalized}: {detail}"
                 )
@@ -275,11 +282,33 @@ def _normalized_path(value: object) -> Path:
         raise ValueError("path is required")
     if "\0" in value or len(value) > MAX_RUNTIME_PATH_LENGTH:
         raise ValueError("path is invalid")
-    return Path(value.strip()).expanduser().resolve()
+    text = value.strip()
+    if len(text) >= 2 and text[0] == text[-1] == '"':
+        text = text[1:-1].strip()
+    if not text:
+        raise ValueError("path is required")
+    return Path(text).expanduser().resolve()
 
 
 def _validate_blender(path: Path) -> str | None:
     return None if path.is_file() else "file_not_found"
+
+
+def _normalize_dts_explorer_locator(path: Path) -> Path:
+    if _validate_dts_explorer(path) is None:
+        return path
+    is_file = path.is_file()
+    if is_file and path.name.casefold() != _DTS_EXPLORER_EXECUTABLE_RELATIVE_PATH.name.casefold():
+        return path
+    if not is_file and not path.is_dir():
+        return path
+    base = path.parent if is_file else path
+    # Only inspect nearby ancestors; never search sibling installations or launch files.
+    for candidate in (base, *base.parents[:3]):
+        if _validate_dts_explorer(candidate) is None:
+            if not is_file or (candidate / _DTS_EXPLORER_EXECUTABLE_RELATIVE_PATH).resolve() == path:
+                return candidate
+    return path
 
 
 def resolve_dts_explorer_installation(

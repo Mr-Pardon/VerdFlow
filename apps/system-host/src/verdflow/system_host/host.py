@@ -229,6 +229,8 @@ from .runtime import LibraryRuntime, ProjectRuntime
 from .strategy_previews import StrategyPreviewRuntime
 from .resource_downloads import StarterManifest, StarterResource
 from .starter_resources import StarterImportOperation
+from .resource_center import ResourceCenterService, CenterCatalog, CenterDetail, StrategyUpdates
+from .resource_index import ResourceSelection
 from .plan_imports import PlanImportService
 from .plan_import_library import PlanImportLibrary
 from .secret_store import SecretStore, SecretStoreError, platform_secret_store
@@ -236,6 +238,14 @@ from .secret_store import SecretStore, SecretStoreError, platform_secret_store
 
 class SystemHostError(RuntimeError):
     """Raised when the system-scoped runtime cannot satisfy a request."""
+
+
+class SystemHostDataError(SystemHostError):
+    """Public input failure without exposing an Adapter exception to transports."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class SystemHostAlreadyRunningError(SystemHostError):
@@ -284,6 +294,8 @@ class SystemHost:
         self._starter_resources = PlanImportService(self._import_starter_resource,
             PlanImportLibrary(self._library_runtime, self.config.project_call_timeout_seconds),
             lambda package: self._install_inspected_strategy(package)[1])
+        self._resource_center = ResourceCenterService(
+            PlanImportLibrary(self._library_runtime, self.config.project_call_timeout_seconds).inventory)
         self._asset_search = AssetSearchService()
         self._projects: dict[str, ProjectRuntime] = {}
         self._sessions_by_path: dict[str, str] = {}
@@ -806,9 +818,22 @@ class SystemHost:
         return self._starter_resources.manifest()
 
     def prepare_resource_import(self, paths: tuple[str, ...], *, recommended: bool = False,
-                                strategy_paths: tuple[str, ...] = ()) -> StarterImportOperation:
+                                strategy_paths: tuple[str, ...] = (),
+                                selection: ResourceSelection | None = None) -> StarterImportOperation:
         self._require_running()
-        return self._starter_resources.prepare(paths, recommended=recommended, strategy_paths=strategy_paths)
+        return self._starter_resources.prepare(paths, recommended=recommended, strategy_paths=strategy_paths, selection=selection)
+
+    def resource_center_catalog(self, *, refresh: bool = False) -> CenterCatalog:
+        self._require_running()
+        return self._resource_center.catalog(refresh)
+
+    def resource_center_detail(self, resource_id: str, version: str = "") -> CenterDetail:
+        self._require_running()
+        return self._resource_center.detail(resource_id, version)
+
+    def strategy_resource_updates(self, *, refresh: bool = False) -> StrategyUpdates:
+        self._require_running()
+        return self._resource_center.updates(refresh)
 
     def confirm_resource_import(self, operation_id: str, *, optional_ids: tuple[str, ...] = (),
                                 overwrite_ids: tuple[str, ...] = ()) -> StarterImportOperation:
@@ -2094,10 +2119,15 @@ class SystemHost:
                     "Project source is fixed; create another project for a new source"
                 )
             if kind is SourceKind.SHAPEFILE:
-                from verdflow.geospatial_worker import package_shapefile
-
+                from verdflow.geospatial_worker import package_shapefile, GeospatialDataError
+                try:
+                    payload = package_shapefile(source_path)
+                except GeospatialDataError as error:
+                    raise SystemHostDataError(error.code, str(error)) from error
+                except OSError as error:
+                    raise SystemHostDataError("geo_file_unreadable", "无法读取 SHP 及其配套文件，请检查文件是否完整、目录是否可访问；项目已保留。") from error
                 return host.add_source_bytes(
-                    package_shapefile(source_path),
+                    payload,
                     original_name=f"{source_path.stem}.shapefile.zip",
                     kind=kind,
                     media_type=(

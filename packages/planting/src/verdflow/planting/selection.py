@@ -11,7 +11,7 @@ from .validation import (
     validate_assignment_set,
     validate_persisted_assignment_set_summary,
     validate_persisted_point_set_summary,
-    validate_point_set_v2,
+    validate_point_set,
     with_semantic_hash,
 )
 
@@ -36,7 +36,7 @@ def normalize_asset_selection(value: object) -> tuple[str, ...] | None:
 
 
 def filter_point_roles(point_set: dict[str, Any], excluded_roles: tuple[str, ...]) -> dict[str, Any]:
-    validate_point_set_v2(point_set)
+    validate_point_set(point_set)
     if not excluded_roles:
         return point_set
     excluded = set(excluded_roles)
@@ -56,7 +56,7 @@ def select_output_assets(
     selected = normalize_asset_selection(selected_asset_ids)
     if selected is None and not require_terrain_hit:
         return point_set, assignment_set
-    validate_point_set_v2(point_set)
+    validate_point_set(point_set)
     validate_assignment_set(assignment_set)
     return _select_output_assets(point_set, assignment_set, selected, require_terrain_hit)
 

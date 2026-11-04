@@ -349,6 +349,8 @@ def sample_path(path: list[dict[str, float]], distance: float) -> dict[str, floa
 
 
 def station_distances(length: float, spacing: float, edge_margin: float, *, ensure_one: bool = False) -> list[float]:
+    if not math.isfinite(spacing) or spacing <= 0 or not math.isfinite(edge_margin) or edge_margin < 0:
+        raise ValueError("Station spacing and end margin must be finite and valid")
     start = edge_margin
     end = length - edge_margin
     if end < start:
@@ -416,6 +418,9 @@ def generate_region_points(
     single_edge_clearance = float(params.get("single_edge_clearance_m", 0.0))
     width_smoothing_window = float(params.get("width_smoothing_window_m", 8.0))
     triple_offsets = [float(v) for v in params.get("triple_row_offsets_m", [-1.55, 0.0, 1.55])]
+    row_spacing = float(params["triple_row_spacing_m"]) if "triple_row_spacing_m" in params else None
+    if row_spacing is not None and (not math.isfinite(row_spacing) or row_spacing <= 0):
+        raise ValueError("Triple-row spacing must be finite and positive")
     edge_clearance = float(params.get("edge_clearance_m", 0.45))
     centerline_jitter = float(params.get("centerline_jitter_m", 0.25))
 
@@ -459,7 +464,14 @@ def generate_region_points(
         width_samples.append(local_width)
         near_tree = any(math.hypot(station["x"] - tree_x, station["y"] - tree_y) <= tree_clear_radius for tree_x, tree_y in accepted_tree_positions)
         if local_width >= triple_row_min_width:
-            offsets_and_roles = [(triple_offsets[0], "outer_shrub"), (triple_offsets[1], "middle_shrub"), (triple_offsets[2], "outer_shrub")]
+            if row_spacing is not None:
+                available = max(0.0, local_half_width - edge_clearance)
+                lateral = min(row_spacing, available)
+                offsets_and_roles = [(0.0, "middle_shrub")]
+                if lateral > 1e-9:
+                    offsets_and_roles = [(-lateral, "outer_shrub"), *offsets_and_roles, (lateral, "outer_shrub")]
+            else:
+                offsets_and_roles = list(zip(triple_offsets[:3], ("outer_shrub", "middle_shrub", "outer_shrub")))
             mode = "triple"
         elif local_width <= single_row_max_width:
             offsets_and_roles = [(0.0, "narrow_center_shrub")]

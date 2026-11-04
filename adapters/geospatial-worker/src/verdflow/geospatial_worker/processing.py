@@ -7,6 +7,7 @@ import math
 from pathlib import Path
 import zipfile
 from typing import Any, Iterable
+from .errors import GeospatialDataError, invalid_polygon_message
 
 
 IDENTITY_MATRIX = (
@@ -68,12 +69,12 @@ def prepare_regions(command: dict[str, Any], workdir: Path) -> dict[str, Any]:
                 }
             )
     if not regions:
-        raise ValueError("Vector source contains no Polygon geometry")
+        raise GeospatialDataError("geo_empty_vector", "区域数据中没有面要素，请检查是否选择了空图层；项目已保留。")
 
     raster_metadata = _raster_metadata(Path(raster["source_path"]))
     vector_bounds = _combined_bounds(regions)
     if not _bounds_intersect(vector_bounds, raster_metadata["bounds"]):
-        raise ValueError("Vector and GeoTIFF bounds do not intersect")
+        raise GeospatialDataError("geo_bounds_mismatch", "SHP/GeoJSON 与 TIF 的范围不相交，无法采样高程。请在 GIS 中检查覆盖范围、米制坐标及二者的对齐关系；VerdFlow 不会自动重投影或移动数据。")
     source_id = _required_text(command, "source_id")
     return {
         "source_manifest": {
@@ -139,9 +140,9 @@ def sample_elevation(command: dict[str, Any]) -> dict[str, Any]:
         import rasterio
     except ImportError as error:
         raise RuntimeError("rasterio is required by geospatial-worker") from error
-    with rasterio.open(Path(raster["source_path"])) as dataset:
+    with _open_raster(Path(raster["source_path"])) as dataset:
         if band > dataset.count:
-            raise ValueError(f"GeoTIFF does not contain band {band}")
+            raise GeospatialDataError("geo_band_missing", f"TIF 不存在第 {band} 波段（文件仅有 {dataset.count} 个波段），请选择有效的高程波段。")
         nodata = dataset.nodatavals[band - 1]
         for index, point in enumerate(rows):
             if not isinstance(point, dict):
@@ -158,16 +159,16 @@ def sample_elevation(command: dict[str, Any]) -> dict[str, Any]:
                 dataset.bounds.left <= x <= dataset.bounds.right
                 and dataset.bounds.bottom <= y <= dataset.bounds.top
             ):
-                raise ValueError(f"Elevation point is outside GeoTIFF: {index}")
+                raise GeospatialDataError("geo_point_outside_raster", f"第 {index + 1} 个种植点超出 TIF 覆盖范围。请提供覆盖全部种植区域且坐标已对齐的高程文件；本次未输出不完整高程结果。")
             sample = next(dataset.sample([(x, y)], indexes=band, masked=True))
             value = sample[0]
             if bool(getattr(value, "mask", False)):
-                raise ValueError(f"Elevation point is NoData: {index}")
+                raise GeospatialDataError("geo_raster_nodata", f"第 {index + 1} 个种植点落在 TIF 的 NoData 空洞中。请补齐高程或调整种植区域；不会以零高程替代。")
             z = float(value)
             if not math.isfinite(z) or (
                 nodata is not None and math.isclose(z, float(nodata), rel_tol=0.0, abs_tol=0.0)
             ):
-                raise ValueError(f"Elevation point is NoData: {index}")
+                raise GeospatialDataError("geo_raster_nodata", f"第 {index + 1} 个种植点的高程为空或无效。请检查 TIF 的 NoData 和高程波段；不会以零高程替代。")
             resolved = [x, y, z]
             point["terrain_sample"] = {
                 "hit": True,
@@ -191,11 +192,11 @@ def _source_pair(
     vectors = [item for item in sources if isinstance(item, dict) and item.get("kind") in {"shapefile", "geojson"}]
     rasters = [item for item in sources if isinstance(item, dict) and item.get("kind") == "geotiff"]
     if len(vectors) != 1 or len(rasters) != 1 or len(sources) != 2:
-        raise ValueError("Geospatial input requires one vector source and one GeoTIFF")
+        raise GeospatialDataError("geo_source_pair_required", "此工作流需要一份 SHP/GeoJSON 面数据和一份已对齐的高程 TIF，请检查项目数据源。")
     for item in (*vectors, *rasters):
         matrix = item.get("source_to_scene_matrix_row_major")
         if not isinstance(matrix, list) or tuple(float(value) for value in matrix) != IDENTITY_MATRIX:
-            raise ValueError("Geospatial source members must use identity transforms")
+            raise GeospatialDataError("geo_alignment_required", "地理数据工作流不支持运行时移动或缩放数据，请先在 GIS 中统一坐标和单位，再使用已对齐的 SHP＋TIF。")
         _required_text(item, "source_member_id")
         _required_text(item, "source_path")
     return vectors[0], rasters[0]
@@ -234,7 +235,7 @@ def _read_geojson(
             raise ValueError(f"GeoJSON feature {index} lacks geometry")
         geometry = shape(feature["geometry"])
         if geometry.geom_type not in {"Polygon", "MultiPolygon"}:
-            raise ValueError(f"GeoJSON feature {index} is not Polygon/MultiPolygon")
+            raise GeospatialDataError("geo_polygon_required", f"GeoJSON 第 {index + 1} 条要素不是面，请选择 Polygon/MultiPolygon 图层。")
         properties = feature.get("properties") or {}
         if not isinstance(properties, dict):
             raise ValueError(f"GeoJSON feature {index} properties must be an object")
@@ -260,22 +261,22 @@ def _read_shapefile(
     with zipfile.ZipFile(archive_path) as archive:
         names = archive.namelist()
         if any(Path(name).is_absolute() or ".." in Path(name).parts for name in names):
-            raise ValueError("Shapefile archive contains an unsafe path")
+            raise GeospatialDataError("geo_invalid_archive", "SHP 压缩包包含不安全路径，未解压数据。请重新打包一套 SHP 及其配套文件。")
         archive.extractall(destination)
     shp_files = list(destination.rglob("*.shp"))
     if len(shp_files) != 1:
-        raise ValueError("Shapefile archive must contain exactly one .shp")
+        raise GeospatialDataError("geo_single_dataset_required", "压缩包中应只有一套 SHP 数据，请分别导入多个图层。")
     shp_path = shp_files[0]
     for suffix in (".shx", ".dbf"):
         if not shp_path.with_suffix(suffix).is_file():
-            raise ValueError(f"Shapefile archive is missing {suffix}")
+            raise GeospatialDataError("geo_companions_missing", f"SHP 缺少同名 {suffix} 配套文件，请补齐后重新导入。")
     reader = shapefile.Reader(str(shp_path))
     features = []
     try:
         for shape_record in reader.iterShapeRecords():
             geometry = shape(shape_record.shape.__geo_interface__)
             if geometry.geom_type not in {"Polygon", "MultiPolygon"}:
-                raise ValueError("Shapefile contains non-polygon geometry")
+                raise GeospatialDataError("geo_polygon_required", f"SHP 第 {len(features) + 1} 条要素不是面，请选择 Polygon/MultiPolygon 图层。")
             features.append((geometry, dict(shape_record.record.as_dict())))
     finally:
         reader.close()
@@ -290,15 +291,14 @@ def _read_shapefile(
 
 
 def _validate_polygon(polygon: Any, feature_index: int, part_index: int) -> None:
-    label = f"feature {feature_index}, part {part_index}"
     if polygon.is_empty or not polygon.is_valid or polygon.area <= 0:
-        raise ValueError(f"Polygon is invalid or empty: {label}")
+        raise GeospatialDataError("geo_invalid_geometry", invalid_polygon_message(polygon, feature_index + 1))
     for ring in (polygon.exterior, *polygon.interiors):
         if not all(
             math.isfinite(float(coordinate[0])) and math.isfinite(float(coordinate[1]))
             for coordinate in ring.coords
         ):
-            raise ValueError(f"Polygon contains non-finite coordinates: {label}")
+            raise GeospatialDataError("geo_invalid_coordinates", f"第 {feature_index + 1} 条面要素含有无效坐标，请在 GIS 中检查并修复；未自动丢弃顶点。")
 
 
 def _ring_xyz(coordinates: Iterable[Any]) -> list[list[float]]:
@@ -313,7 +313,7 @@ def _raster_metadata(path: Path) -> dict[str, Any]:
         import rasterio
     except ImportError as error:
         raise RuntimeError("rasterio is required by geospatial-worker") from error
-    with rasterio.open(path) as dataset:
+    with _open_raster(path) as dataset:
         return {
             "format": "geotiff",
             "width": dataset.width,
@@ -329,6 +329,15 @@ def _raster_metadata(path: Path) -> dict[str, Any]:
             "nodata": dataset.nodata,
             "observed_crs": str(dataset.crs) if dataset.crs is not None else None,
         }
+
+
+def _open_raster(path: Path):
+    import rasterio
+    from rasterio.errors import RasterioIOError
+    try:
+        return rasterio.open(path)
+    except RasterioIOError as error:
+        raise GeospatialDataError("geo_raster_unreadable", "无法读取高程 TIF，请检查文件是否完整、格式是否受支持，以及当前用户是否有读取权限。") from error
 
 
 def _combined_bounds(regions: list[dict[str, Any]]) -> list[float]:

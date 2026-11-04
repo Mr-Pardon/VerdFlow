@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DismissibleNotice from "../../components/DismissibleNotice.vue";
 import {
   ArrowLeft,
   ArrowRight,
@@ -301,6 +302,10 @@ const selectStrategy = async (packageHash: string) => {
   const strategy = planting.strategies.value.find(
     (item) => item.package_hash === packageHash,
   );
+  if (strategy?.input_geometry === "polyline") {
+    planting.errorMessage.value = "此策略需要路径输入，请使用 DTS 实时种植绘制路径；当前工作台使用区域输入。";
+    return;
+  }
   if (
     strategy?.executable &&
     planting.selectedStrategyHash.value === packageHash
@@ -477,9 +482,7 @@ const submitPreview = async () => {
       <strong>正在重新种植第 {{ replacingBatchOrdinal + 1 }} 批</strong
       ><span>旧批次保留到新点位确认提交。</span>
     </div>
-    <div v-if="planting.errorMessage.value" class="planting-error" role="alert">
-      {{ planting.errorMessage.value }}
-    </div>
+    <DismissibleNotice class="planting-error" :message="planting.errorMessage.value" @dismiss="planting.errorMessage.value = null" />
     <div v-if="planting.loading.value" class="planting-loading">
       <LoaderCircle :size="22" class="spinning" />正在读取种植配置
     </div>
@@ -527,9 +530,9 @@ const submitPreview = async () => {
           :selected="
             planting.selectedProfile.value?.profile_id === plan.profile_id
           "
-          :disabled="busy"
+          :disabled="busy || plans.strategyFor(plan)?.input_geometry === 'polyline'"
           :unavailable="
-            plan.strategy_resolution_issue || (!plans.strategyFor(plan)
+            plans.strategyFor(plan)?.input_geometry === 'polyline' ? '需要路径输入，请使用 DTS 实时种植' : plan.strategy_resolution_issue || (!plans.strategyFor(plan)
               ? '对应策略尚未安装'
               : !plans.strategyFor(plan)?.executable
                 ? '使用前需信任策略'
@@ -616,7 +619,8 @@ const submitPreview = async () => {
                 role="radio"
                 :aria-checked="strategyGroupActive(group)"
                 :class="{ selected: strategyGroupActive(group) }"
-                :disabled="busy"
+                :disabled="busy || displayedStrategyVersion(group).input_geometry === 'polyline'"
+                :title="displayedStrategyVersion(group).input_geometry === 'polyline' ? '需要路径输入，请使用 DTS 实时种植绘制路径' : undefined"
                 @click="
                   selectStrategy(displayedStrategyVersion(group).package_hash)
                 "
@@ -645,6 +649,7 @@ const submitPreview = async () => {
                     >需确认信任</span
                   ></span
                 >
+                <small v-if="displayedStrategyVersion(group).input_geometry === 'polyline'">需要路径输入 · DTS 实时种植</small>
               </button>
             </div>
             <p v-if="!strategyGroups.length" class="planting-empty">

@@ -34,7 +34,9 @@ from verdflow.dts_live_connector import (
 - `POST /api/v1/operations/selection` 可接收 `regions` 集合，直接冻结配置并排队。
   Session 快照暴露 `selection_regions`，多面与单面均进入同一标准 RegionSet/Plant Run。
   选择/导出请求上限 32 MiB，导入草稿上限 30 MiB；轮询可用 `include_regions=false`
-  省去轮廓序列化。文件 64 MiB/100000 顶点限制仍保留。
+  省去轮廓序列化。文件 128 MiB/200000 顶点（含内环）限制见 ADR-0021。
+  合法 `holes` 保留到标准 RegionSet，超限提示给出工作台 SHP＋TIF 的处理建议；不表示
+  工作台自动修复、对齐或具备无限处理能力。
 - `POST /api/v1/callbacks/elevation-chunk` 接受关联 ID、原点索引和最多 2000 个命中结果。
   最终 elevation 回调可携带 `chunked=true` 与失败面清单；服务端严格校验其余点完整性。
   Session `sampling_failures` 提供面 ID、名称及原因，详见 ADR-0007。

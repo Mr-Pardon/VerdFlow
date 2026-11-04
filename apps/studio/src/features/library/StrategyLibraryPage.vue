@@ -12,6 +12,8 @@ import {
   ShieldCheck,
   ShieldOff,
   Trash2,
+  ArrowUpRight,
+  X,
 } from "@lucide/vue";
 import { computed, onMounted, ref, watch } from "vue";
 
@@ -20,8 +22,13 @@ import { confirmAction } from "../../components/confirmDialog";
 import { useStrategyLibrary } from "./useStrategyLibrary";
 import { usePackageDropTarget } from "./usePackageDropTarget";
 import { useGuidePage } from "../onboarding/context";
+import { useStrategyUpdates } from "../resources/useStrategyUpdates";
 
 const library = useStrategyLibrary();
+const updates = useStrategyUpdates();
+const selectedUpdate = computed(() => updates.items.value.find(item => item.strategy_id === library.detail.value?.summary.strategy_id));
+const updateFor = (id: string) => updates.items.value.find(item => item.strategy_id === id);
+const updateTarget = (id: string, version: string) => ({ path: `/resources/${encodeURIComponent(id)}`, query: { version } });
 useGuidePage("strategies", () => ({
   ready: library.strategies.value.some(item => item.trust_state === "trusted"),
   status: `已导入 ${library.strategies.value.length} 个策略版本，已信任 ${library.strategies.value.filter(item => item.trust_state === "trusted").length} 个`,
@@ -147,7 +154,9 @@ const uninstall = async () => {
   await library.uninstall();
 };
 
-onMounted(() => void library.initialize());
+onMounted(async () => { await library.initialize(); void updates.check(); });
+
+watch(() => library.strategies.value.map(item => item.package_hash).sort().join(","), () => void updates.check());
 
 watch(
   () => library.selectedHash.value,
@@ -243,6 +252,11 @@ const trustLabel = (state: string | null) =>
           <span>本地策略</span>
           <strong>{{ library.groups.value.length }}</strong>
         </header>
+        <div class="strategy-update-check">
+          <span>{{ updates.checking.value ? '正在检查资源中心' : updates.items.value.length ? `${updates.items.value.length} 个策略有新版` : '资源中心版本' }}</span>
+          <button class="icon-button" title="检查策略新版" aria-label="检查策略新版" :disabled="updates.checking.value" @click="updates.check(true)"><RefreshCw :size="14" :class="{ spinning: updates.checking.value }" /></button>
+        </div>
+        <div v-if="updates.warning.value" class="strategy-update-warning" role="status"><span>{{ updates.warning.value }}</span><button class="icon-button" title="关闭提示" aria-label="关闭提示" @click="updates.warning.value = ''"><X :size="14" /></button></div>
         <div v-if="library.loading.value && !library.strategies.value.length" class="library-loading">
           <LoaderCircle :size="18" class="spinning" />正在读取
         </div>
@@ -276,6 +290,10 @@ const trustLabel = (state: string | null) =>
               />
               <Check v-else-if="selectedVersionForGroup(group)" :size="15" />
             </button>
+
+            <RouterLink v-if="updateFor(group.strategyId)" class="strategy-update-link" :to="updateTarget(updateFor(group.strategyId)!.resource_id, updateFor(group.strategyId)!.version)">
+              <Download :size="13" />有新版 · v{{ updateFor(group.strategyId)!.version }}<ArrowUpRight :size="13" />
+            </RouterLink>
 
             <div v-if="group.versions.length > 1 && isGroupExpanded(group.strategyId)" class="strategy-version-list">
               <button
@@ -325,6 +343,10 @@ const trustLabel = (state: string | null) =>
             </div>
           </header>
 
+          <RouterLink v-if="selectedUpdate" class="strategy-update-banner" :to="updateTarget(selectedUpdate.resource_id, selectedUpdate.version)">
+            <Download :size="19" /><span><strong>资源中心有新版 v{{ selectedUpdate.version }}</strong><small>{{ selectedUpdate.major_change ? '跨主版本更新，已有方案不会自动改用此版本。' : '查看本版更新与资源说明，再决定是否导入。' }}</small></span><span class="strategy-update-banner__action">查看更新<ChevronRight :size="16" /></span>
+          </RouterLink>
+
           <div class="library-detail__meta">
             <span><small>策略 ID</small><strong>{{ library.detail.value.summary.strategy_id }}</strong></span>
             <span><small>版本</small><strong>{{ library.detail.value.summary.strategy_version }}</strong></span>
@@ -365,3 +387,18 @@ const trustLabel = (state: string | null) =>
     </div>
   </section>
 </template>
+
+<style scoped>
+.strategy-update-check { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--color-border); font-size: 11px; color: var(--color-text-muted); }
+.strategy-update-check .icon-button, .strategy-update-warning .icon-button { width: 26px; height: 26px; min-width: 26px; }
+.strategy-update-warning { display: flex; align-items: flex-start; gap: 8px; padding: 12px 16px; font-size: 12px; line-height: 1.6; color: #9c713b; }
+.strategy-update-warning span { flex: 1; }
+.strategy-update-link { display: flex; align-items: center; gap: 5px; width: fit-content; color: var(--color-accent); font-size: 11px; text-decoration: none; margin: 0 16px 12px; }
+.strategy-update-link:hover { text-decoration: underline; }
+.strategy-update-banner { display: flex; align-items: center; gap: 12px; padding: 16px 22px; background: var(--color-accent-soft); border-bottom: 1px solid var(--color-border); color: var(--color-accent); text-decoration: none; }
+.strategy-update-banner > span:first-of-type { flex: 1; min-width: 0; }
+.strategy-update-banner strong { display: block; font-size: 14px; }
+.strategy-update-banner small { display: block; font-size: 12px; line-height: 1.6; color: var(--color-text-muted); margin-top: 5px; }
+.strategy-update-banner__action { display: flex; align-items: center; font-size: 12px; gap: 6px; }
+@media (max-width: 600px) { .strategy-update-banner { flex-wrap: wrap; } }
+</style>

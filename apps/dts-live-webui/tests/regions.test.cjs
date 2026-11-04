@@ -11,10 +11,11 @@ function region(id) {
 
 function fixture({ manualYield = false } = {}) {
   const disposed = [], yields = [];
-  const calls = { shown: [], hidden: [], drawing: 0, cancelled: 0 };
+  const calls = { shown: [], hidden: [], removed: [], drawing: 0, cancelled: 0 };
   const sdk = {
-    showRegion: item => calls.shown.push(item.region_id),
+    showRegion: item => calls.shown.push(item.path_id ?? item.region_id),
     hideRegion: id => calls.hidden.push(id),
+    removeRegion: id => calls.removed.push(id),
     beginDrawing: () => calls.drawing++,
     cancelDrawing: () => calls.cancelled++,
   };
@@ -31,6 +32,7 @@ function fixture({ manualYield = false } = {}) {
     samplingFailures: vue.ref([]), panelCollapsed: vue.ref(false),
     operationActive: vue.ref(false), submitting: vue.ref(false),
     errorMessage: vue.ref(null), sdkReady: vue.ref(true), sdk,
+    inputGeometry: vue.ref('polygon'),
   };
   const scope = vue.effectScope();
   const { useRegionDrafts } = load(path.resolve(__dirname, '../src/features/useRegionDrafts.ts'));
@@ -55,6 +57,32 @@ test('Completed drawing appends a selected region without changing previous sele
     assert.deepEqual(Array.from(f.model.regions.value, item => item.enabled), [true, false, true, true]);
     f.model.selectAllRegions();
     assert.equal(f.model.enabledRegionCount.value, 4);
+  } finally { f.dispose(); }
+});
+
+test('input kind changes preserve incompatible drafts without selecting, clearing or exporting them', async () => {
+  const f = fixture();
+  try {
+    f.model.addDrawnRegion(region('area'));
+    f.state.inputGeometry.value = 'polyline';
+    await vue.nextTick();
+    assert.equal(f.model.regions.value.length, 0);
+    assert.deepEqual(f.calls.hidden, ['area']);
+    f.model.addDrawnRegion({path_id:'route',name:'Route',coordinates:[[0,0,0],[10,0,0]],bbox:[0,0,0,10,0,0]});
+    assert.equal(f.model.enabledRegionCount.value, 1);
+    assert.equal(f.model.regions.value[0].path_id, 'route');
+    await f.model.importRegions();
+    assert.equal(f.model.regions.value.length, 1);
+    f.state.inputGeometry.value = 'polygon';
+    await vue.nextTick();
+    assert.equal(f.model.regions.value[0].region_id, 'area');
+    assert.equal(f.model.regions.value[0].enabled, true);
+    assert.deepEqual(f.calls.removed, []);
+    f.model.completeRegions();
+    assert.equal(f.model.enabledRegionCount.value, 0);
+    f.state.inputGeometry.value = 'polyline';
+    await vue.nextTick();
+    assert.equal(f.model.enabledRegionCount.value, 1);
   } finally { f.dispose(); }
 });
 
@@ -122,6 +150,41 @@ test('SHP import retains its existing append-and-select behavior', async () => {
     assert.deepEqual(Array.from(f.model.regions.value, item => item.enabled), [true, true]);
     assert.deepEqual(f.calls.shown, ['imported']);
     assert.equal(f.model.importingRegions.value, false);
+  } finally { f.dispose(); }
+});
+
+test('imported holes are retained and cumulative vertex overflow leaves existing drafts and previews untouched', async () => {
+  const f = fixture();
+  try {
+    const imported = region('holes');
+    imported.holes = [[[2,2,0],[3,2,0],[3,3,0],[2,3,0]]];
+    f.api.importRegionsShapefile = async () => ({imported:true, regions:[imported]});
+    await f.model.importRegions();
+    assert.equal(f.model.regions.value[0].holes.length, 1);
+    const enormous = region('too-large');
+    enormous.holes = [Array.from({length:200000}, () => [1,1,0])];
+    f.api.importRegionsShapefile = async () => ({imported:true, regions:[enormous]});
+    await f.model.importRegions();
+    assert.equal(f.model.regions.value.length, 1);
+    assert.deepEqual(f.calls.shown, ['holes']);
+    assert.match(f.state.errorMessage.value, /顶点.*200,000.*工作台/);
+    assert.equal(f.model.importingRegions.value, false);
+  } finally { f.dispose(); }
+});
+
+test('clearing or removing drafts deletes native previews, while a visibility toggle only hides them', async () => {
+  const f = fixture();
+  try {
+    f.model.restoreRegions([region('a'),region('b')]);
+    f.model.regions.value.forEach(item => { item.visible = true; });
+    f.model.toggleRegionPreview(f.model.regions.value[0]);
+    assert.deepEqual(f.calls.hidden, ['a']);
+    assert.deepEqual(f.calls.removed, []);
+    f.model.removeRegion(f.model.regions.value[0]);
+    assert.deepEqual(f.calls.removed, ['a']);
+    await f.model.clearRegions();
+    assert.deepEqual(f.calls.removed, ['a','b']);
+    assert.equal(f.model.regions.value.length, 0);
   } finally { f.dispose(); }
 });
 

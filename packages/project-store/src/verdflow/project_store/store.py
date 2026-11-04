@@ -85,6 +85,8 @@ from .points import PointRepository
 from .processes import ProcessInspector, SystemProcessInspector
 from .projects import ProjectRepository
 from .regions import RegionRepository
+from .paths import PathRepository
+from verdflow.contracts import PathSetInfo
 from .retention import RetentionRepository
 from .scenes import SceneRepository
 from .scenes import normalize_affine_matrix
@@ -125,6 +127,7 @@ class ProjectStore:
         self._projects = ProjectRepository(self._database)
         self._scenes = SceneRepository(self._database)
         self._regions = RegionRepository(self._database)
+        self._paths = PathRepository(self._database)
         self._retention = RetentionRepository(self._database)
         self._points = PointRepository(self._database)
         self._snapshots = ProjectSnapshotRepository(self._database)
@@ -569,6 +572,19 @@ class ProjectStore:
             self._now_text(),
         )
 
+    def create_path_set(self, *, scene_revision_id: str, producer_job_id: str,
+                        input_hash: str, coordinate_frame_id: str,
+                        geometry_artifact_id: str, path_count: int) -> PathSetInfo:
+        return self._paths.create(scene_revision_id=scene_revision_id, producer_job_id=producer_job_id,
+            input_hash=input_hash, coordinate_frame_id=coordinate_frame_id,
+            geometry_artifact_id=geometry_artifact_id, path_count=path_count, created_at=self._now_text())
+
+    def get_path_set(self, path_set_id: str) -> PathSetInfo:
+        return self._paths.get(path_set_id)
+
+    def get_path_set_by_job(self, producer_job_id: str) -> PathSetInfo | None:
+        return self._paths.by_job(producer_job_id)
+
     def create_region_set(
         self,
         *,
@@ -614,7 +630,7 @@ class ProjectStore:
         self,
         *,
         scene_revision_id: str,
-        region_set_id: str,
+        region_set_id: str | None,
         producer_job_id: str,
         strategy_id: str,
         strategy_version: str,
@@ -628,10 +644,12 @@ class ProjectStore:
         point_count: int,
         bounds: tuple[float, float, float, float, float, float] | None,
         roles: tuple[PointRoleSummary, ...],
+        path_set_id: str | None = None,
     ) -> tuple[PlantingRunInfo, PointSetInfo]:
         return self._points.create_generated_point_set(
             scene_revision_id=scene_revision_id,
             region_set_id=region_set_id,
+            path_set_id=path_set_id,
             producer_job_id=producer_job_id,
             strategy_id=strategy_id,
             strategy_version=strategy_version,

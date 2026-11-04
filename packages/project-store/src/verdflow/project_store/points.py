@@ -31,7 +31,7 @@ class PointRepository:
         self,
         *,
         scene_revision_id: str,
-        region_set_id: str,
+        region_set_id: str | None,
         producer_job_id: str,
         strategy_id: str,
         strategy_version: str,
@@ -46,6 +46,7 @@ class PointRepository:
         bounds: tuple[float, float, float, float, float, float] | None,
         roles: tuple[PointRoleSummary, ...],
         created_at: str,
+        path_set_id: str | None = None,
     ) -> tuple[PlantingRunInfo, PointSetInfo]:
         values = self._required_values(
             strategy_id=strategy_id,
@@ -68,7 +69,7 @@ class PointRepository:
         with self.database.transaction() as connection:
             existing_run = connection.execute(
                 """
-                SELECT planting_run_id, scene_revision_id, region_set_id,
+                SELECT planting_run_id, scene_revision_id, region_set_id, path_set_id,
                        producer_job_id, strategy_id, strategy_version,
                        strategy_package_hash, generator_id,
                        generator_version, random_seed, input_hash, created_at
@@ -102,11 +103,10 @@ class PointRepository:
                     point_set,
                     scene_revision_id=scene_revision_id,
                     region_set_id=region_set_id,
+                    path_set_id=path_set_id,
                     strategy_id=values["strategy_id"],
                     strategy_version=values["strategy_version"],
-                    strategy_package_hash=values[
-                        "strategy_package_hash"
-                    ],
+                    strategy_package_hash=values["strategy_package_hash"],
                     generator_id=values["generator_id"],
                     generator_version=values["generator_version"],
                     random_seed=random_seed,
@@ -129,15 +129,22 @@ class PointRepository:
             ).fetchone()
             if scene is None:
                 raise SceneRevisionNotFoundError(scene_revision_id)
+            if (region_set_id is None) == (path_set_id is None):
+                raise ValueError(
+                    "PlantingRun requires exactly one polygon or path input"
+                )
+            table, key, identifier = (
+                ("path_sets", "path_set_id", path_set_id)
+                if path_set_id
+                else ("region_sets", "region_set_id", region_set_id)
+            )
             region_set = connection.execute(
-                """
-                SELECT scene_revision_id, coordinate_frame_id
-                FROM region_sets
-                WHERE region_set_id = ?
-                """,
-                (region_set_id,),
+                f"SELECT scene_revision_id, coordinate_frame_id FROM {table} WHERE {key}=?",
+                (identifier,),
             ).fetchone()
             if region_set is None:
+                if path_set_id is not None:
+                    raise ValueError("Planting PathSet was not found")
                 raise RegionSetNotFoundError(region_set_id)
             if region_set["scene_revision_id"] != scene_revision_id:
                 raise PointSetConflictError(
@@ -158,6 +165,7 @@ class PointRepository:
                 planting_run_id=f"planting_{uuid.uuid4().hex}",
                 scene_revision_id=scene_revision_id,
                 region_set_id=region_set_id,
+                path_set_id=path_set_id,
                 producer_job_id=producer_job_id,
                 strategy_id=values["strategy_id"],
                 strategy_version=values["strategy_version"],
@@ -189,16 +197,17 @@ class PointRepository:
             connection.execute(
                 """
                 INSERT INTO planting_runs(
-                    planting_run_id, scene_revision_id, region_set_id,
+                    planting_run_id, scene_revision_id, region_set_id, path_set_id,
                     producer_job_id, strategy_id, strategy_version,
                     strategy_package_hash, generator_id,
                     generator_version, random_seed, input_hash, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.planting_run_id,
                     run.scene_revision_id,
                     run.region_set_id,
+                    run.path_set_id,
                     run.producer_job_id,
                     run.strategy_id,
                     run.strategy_version,
@@ -360,7 +369,7 @@ class PointRepository:
     def get_planting_run(self, planting_run_id: str) -> PlantingRunInfo:
         row = self.database.connection.execute(
             """
-            SELECT planting_run_id, scene_revision_id, region_set_id,
+            SELECT planting_run_id, scene_revision_id, region_set_id, path_set_id,
                    producer_job_id, strategy_id, strategy_version,
                    strategy_package_hash, generator_id, generator_version,
                    random_seed, input_hash, created_at
@@ -379,7 +388,7 @@ class PointRepository:
     ) -> PlantingRunInfo | None:
         row = self.database.connection.execute(
             """
-            SELECT planting_run_id, scene_revision_id, region_set_id,
+            SELECT planting_run_id, scene_revision_id, region_set_id, path_set_id,
                    producer_job_id, strategy_id, strategy_version,
                    strategy_package_hash, generator_id, generator_version,
                    random_seed, input_hash, created_at
@@ -472,7 +481,8 @@ class PointRepository:
         point_set: PointSetInfo,
         *,
         scene_revision_id: str,
-        region_set_id: str,
+        region_set_id: str | None,
+        path_set_id: str | None,
         strategy_id: str,
         strategy_version: str,
         strategy_package_hash: str,
@@ -489,6 +499,7 @@ class PointRepository:
         expected = (
             scene_revision_id,
             region_set_id,
+            path_set_id,
             strategy_id,
             strategy_version,
             strategy_package_hash,
@@ -515,6 +526,7 @@ class PointRepository:
         actual = (
             run.scene_revision_id,
             run.region_set_id,
+            run.path_set_id,
             run.strategy_id,
             run.strategy_version,
             run.strategy_package_hash,
@@ -749,6 +761,7 @@ def _planting_run_from_row(row: object) -> PlantingRunInfo:
         planting_run_id=row["planting_run_id"],
         scene_revision_id=row["scene_revision_id"],
         region_set_id=row["region_set_id"],
+        path_set_id=row["path_set_id"],
         producer_job_id=row["producer_job_id"],
         strategy_id=row["strategy_id"],
         strategy_version=row["strategy_version"],

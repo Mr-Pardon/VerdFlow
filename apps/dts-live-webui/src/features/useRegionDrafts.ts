@@ -1,10 +1,11 @@
 import { ref, computed, nextTick, watch, onBeforeUnmount } from "vue";
-import { type LiveRegion } from "../types";
+import { type LiveRegion, type LiveGeometry } from "../types";
 import { exportRegionsShapefile, importRegionsShapefile } from "../api";
 import type { Ref } from "vue";
 import type { DtsSdkBridge } from "../sdk/DtsSdkBridge";
 import { readableError } from "../shared/presentation";
 import type { SessionSnapshot } from "../types";
+import { assertRegionBudget, regionPayload, geometryId, geometryKind, selectionId } from "../shared/regionLimits";
 
 export function useRegionDrafts(context: {
   samplingFailures: Ref<NonNullable<SessionSnapshot["sampling_failures"]>>;
@@ -13,7 +14,8 @@ export function useRegionDrafts(context: {
   submitting: Ref<boolean>;
   errorMessage: Ref<string | null>;
   sdk: DtsSdkBridge;
-  sdkReady: Ref<boolean>
+  sdkReady: Ref<boolean>;
+  inputGeometry?: Ref<"polygon" | "polyline">;
 }) {
   const { samplingFailures, panelCollapsed, operationActive, submitting, errorMessage, sdk, sdkReady } = context;
   let stopped = false;
@@ -33,7 +35,10 @@ export function useRegionDrafts(context: {
 
   const regionExportPath = ref<string | null>(null);
 
-  const regions = ref<(LiveRegion & { enabled: boolean; visible: boolean })[]>([]);
+  const regions = ref<(LiveGeometry & { enabled: boolean; visible: boolean })[]>([]);
+  const inputGeometry = computed(() => context.inputGeometry?.value ?? "polygon");
+  const pathMode = computed(() => inputGeometry.value === "polyline");
+  const activeRegions = computed(() => regions.value.filter(region => geometryKind(region) === inputGeometry.value));
 
   const regionSearch = ref("");
 
@@ -45,17 +50,17 @@ export function useRegionDrafts(context: {
 
   const filteredRegions = computed(() => {
     const query = regionSearch.value.trim().toLocaleLowerCase();
-    return regions.value.filter((region, i) => !query || region.name.toLocaleLowerCase().includes(query) || String(i + 1) === query);
+    return activeRegions.value.filter((region, i) => !query || region.name.toLocaleLowerCase().includes(query) || String(i + 1) === query);
   });
 
   const regionPageCount = computed(() => Math.max(1, Math.ceil(filteredRegions.value.length / REGION_PAGE_SIZE)));
 
   const visibleRegions = computed(() => filteredRegions.value.slice(regionPage.value * REGION_PAGE_SIZE, (regionPage.value + 1) * REGION_PAGE_SIZE));
 
-  const failureByRegion = computed(() => new Map(samplingFailures.value.map(item => [item.region_id, item.reason])));
+  const failureByRegion = computed(() => new Map(samplingFailures.value.map(item => [selectionId(item), item.reason])));
 
   const revealRegion = async (regionId: string) => {
-    const index = regions.value.findIndex(region => region.region_id === regionId);
+    const index = activeRegions.value.findIndex(region => geometryId(region) === regionId);
     if (index < 0) return;
     panelCollapsed.value = false;
     regionSearch.value = "";
@@ -68,20 +73,20 @@ export function useRegionDrafts(context: {
 
   const selectFailedRegions = () => {
     if (selectionLocked.value) return;
-    for (const region of regions.value) region.enabled = failureByRegion.value.has(region.region_id);
+    for (const region of activeRegions.value) region.enabled = failureByRegion.value.has(geometryId(region));
     const first = samplingFailures.value[0];
-    if (first) void revealRegion(first.region_id);
+    if (first) void revealRegion(selectionId(first));
   };
 
   const selectionLocked = computed(() => operationActive.value || submitting.value || exportingRegions.value || importingRegions.value || clearingRegions.value || updatingRegionVisibility.value);
 
-  const enabledRegionCount = computed(() => regions.value.filter(region => region.enabled).length);
+  const enabledRegionCount = computed(() => activeRegions.value.filter(region => region.enabled).length);
 
-  const hasVisibleRegions = computed(() => regions.value.some(region => region.visible));
+  const hasVisibleRegions = computed(() => activeRegions.value.some(region => region.visible));
 
   const selectAllRegions = (invert = false) => {
     if (selectionLocked.value || drawing.value) return;
-    for (const region of regions.value) region.enabled = invert ? !region.enabled : true;
+    for (const region of activeRegions.value) region.enabled = invert ? !region.enabled : true;
   };
 
   const requestClearRegions = () => {
@@ -98,13 +103,13 @@ export function useRegionDrafts(context: {
     regionExportPath.value = null;
     const remaining: typeof regions.value = [];
     try {
-      for (let i = 0; i < regions.value.length; i++) {
-        const region = regions.value[i]!;
-        try { sdk.hideRegion(region.region_id); }
+      for (let i = 0; i < activeRegions.value.length; i++) {
+        const region = activeRegions.value[i]!;
+        try { sdk.removeRegion(geometryId(region)); }
         catch { remaining.push(region); }
         if (i % 20 === 19) await new Promise(resolve => window.setTimeout(resolve, 0));
       }
-      regions.value = remaining;
+      regions.value = [...regions.value.filter(region => geometryKind(region) !== inputGeometry.value), ...remaining];
       regionSearch.value = "";
       regionPage.value = 0;
       focusedRegionId.value = "";
@@ -115,15 +120,14 @@ export function useRegionDrafts(context: {
   };
 
   const exportRegions = async () => {
+    if (pathMode.value) return;
     if (selectionLocked.value || drawing.value || !enabledRegionCount.value) return;
     exportingRegions.value = true;
     regionExportNotice.value = "";
     regionExportPath.value = null;
     errorMessage.value = null;
     try {
-      const result = await exportRegionsShapefile(regions.value.filter(region => region.enabled).map(
-        ({ region_id, name, coordinates, bbox }) => ({ region_id, name, coordinates, bbox }),
-      ));
+      const result = await exportRegionsShapefile(activeRegions.value.filter(region => region.enabled).map(region => regionPayload(region as LiveRegion)));
       regionExportNotice.value = result.saved ? `已导出 ${result.region_count} 个面` : "已取消导出";
       regionExportPath.value = result.path;
     } catch (error) {
@@ -134,6 +138,7 @@ export function useRegionDrafts(context: {
   };
 
   const importRegions = async () => {
+    if (pathMode.value) return;
     if (!sdkReady.value || selectionLocked.value || drawing.value) return;
     importingRegions.value = true;
     regionExportNotice.value = "";
@@ -145,12 +150,7 @@ export function useRegionDrafts(context: {
         regionExportNotice.value = "已取消导入";
         return;
       }
-      const combined = [...regions.value, ...result.regions].map(
-        ({ region_id, name, coordinates, bbox }) => ({ region_id, name, coordinates, bbox }),
-      );
-      if (new TextEncoder().encode(JSON.stringify(combined)).byteLength > 30 * 1024 * 1024) {
-        throw new Error("合并后的选区数据过大，请减少现有选区或简化导入轮廓；本次未追加选区");
-      }
+      assertRegionBudget([...regions.value, ...result.regions]);
       const added = result.regions.map(region => ({ ...region, enabled: true, visible: false }));
       regions.value.push(...added);
       let previewFailed = false;
@@ -169,7 +169,7 @@ export function useRegionDrafts(context: {
       }
       regionExportNotice.value = `已导入 ${added.length} 个面`;
       regionExportPath.value = result.source_name;
-      if (added[0]) void revealRegion(added[0].region_id);
+      if (added[0]) void revealRegion(geometryId(added[0]));
       if (previewFailed) errorMessage.value = "选区已导入，部分贴地预览未能显示，可点击选区的显示按钮重试";
     } catch (error) {
       errorMessage.value = readableError(error);
@@ -181,13 +181,13 @@ export function useRegionDrafts(context: {
   const startDrawing = () => {
     if (!sdkReady.value || selectionLocked.value || drawing.value) return;
     errorMessage.value = null;
-    try { sdk.beginDrawing(); drawing.value = true; }
+    try { sdk.beginDrawing(inputGeometry.value); drawing.value = true; }
     catch (error) { errorMessage.value = readableError(error); }
   };
 
   const toggleRegionPreview = (region: typeof regions.value[number]) => {
     try {
-      if (region.visible) sdk.hideRegion(region.region_id);
+      if (region.visible) sdk.hideRegion(geometryId(region));
       else sdk.showRegion(region);
       region.visible = !region.visible;
     } catch (error) { errorMessage.value = readableError(error); }
@@ -200,13 +200,13 @@ export function useRegionDrafts(context: {
     errorMessage.value = null;
     let failures = 0;
     try {
-      for (let i = 0; i < regions.value.length; i++) {
+      for (let i = 0; i < activeRegions.value.length; i++) {
         if (stopped) break;
-        const region = regions.value[i]!;
+        const region = activeRegions.value[i]!;
         if (region.visible !== visible) {
           try {
             if (visible) sdk.showRegion(region);
-            else sdk.hideRegion(region.region_id);
+            else sdk.hideRegion(geometryId(region));
             region.visible = visible;
           } catch { failures++; }
         }
@@ -218,39 +218,52 @@ export function useRegionDrafts(context: {
     }
   };
 
-  const locateRegion = (region: LiveRegion) => {
+  const locateRegion = (region: LiveGeometry) => {
     try { sdk.focusRegion(region); }
     catch (error) { errorMessage.value = readableError(error); }
   };
 
-  const removeRegion = (region: LiveRegion) => {
+  const removeRegion = (region: LiveGeometry) => {
     if (selectionLocked.value) return;
     try {
-      sdk.hideRegion(region.region_id);
-      regions.value = regions.value.filter(item => item.region_id !== region.region_id);
+      sdk.removeRegion(geometryId(region));
+      regions.value = regions.value.filter(item => geometryId(item) !== geometryId(region));
     } catch (error) { errorMessage.value = readableError(error); }
   };
-  const addDrawnRegion = (region: LiveRegion) => {
+  const addDrawnRegion = (region: LiveGeometry) => {
+    try { assertRegionBudget([...regions.value, region]); }
+    catch (error) { errorMessage.value = readableError(error); return; }
     regions.value.push({ ...region, enabled: true, visible: false });
     toggleRegionPreview(regions.value.at(-1)!);
-    void revealRegion(region.region_id);
+    void revealRegion(geometryId(region));
   };
-  const restoreRegions = (value: LiveRegion[]) => {
+  const restoreRegions = (value: LiveGeometry[]) => {
     regions.value = value.map(region => ({ ...region, enabled: true, visible: false }));
   };
   const completeRegions = () => {
     let failures = 0;
-    for (const region of regions.value) {
-      if (!region.enabled || failureByRegion.value.has(region.region_id)) continue;
+    for (const region of activeRegions.value) {
+      if (!region.enabled || failureByRegion.value.has(geometryId(region))) continue;
       region.enabled = false;
       try {
-        sdk.hideRegion(region.region_id);
+        sdk.hideRegion(geometryId(region));
         region.visible = false;
       } catch { failures++; }
     }
     if (failures) errorMessage.value = `${failures} 个已完成选区的预览未能隐藏，已取消勾选，可手动隐藏`;
   };
   watch(regionSearch, () => { regionPage.value = 0; });
+  watch(inputGeometry, () => {
+    if (drawing.value) { sdk.cancelDrawing(); drawing.value = false; }
+    regionSearch.value = "";
+    regionPage.value = 0;
+    for (const region of regions.value) {
+      if (geometryKind(region) !== inputGeometry.value && region.visible) {
+        try { sdk.hideRegion(geometryId(region)); region.visible = false; }
+        catch (error) { errorMessage.value = readableError(error); }
+      }
+    }
+  });
   watch(regionPageCount, count => { regionPage.value = Math.min(regionPage.value, count - 1); });
   onBeforeUnmount(() => { stopped = true; });
   const cancelDrawing = () => sdk.cancelDrawing();
@@ -268,7 +281,8 @@ export function useRegionDrafts(context: {
     clearRegionsDialog,
     regionExportNotice,
     regionExportPath,
-    regions,
+    regions: activeRegions,
+    pathMode,
     regionSearch,
     regionPage,
     focusedRegionId,

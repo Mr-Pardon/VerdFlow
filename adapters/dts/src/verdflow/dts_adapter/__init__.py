@@ -8,6 +8,10 @@ from .worker import (
 )
 from .xml import DtsXmlDocument, render_dts_xml, render_dts_xml_composition
 from .live import (
+    DtsLivePath,
+    DtsLiveGeometryInputError,
+    normalize_live_paths,
+    DtsLiveSelectionLimitError,
     DTS_LIVE_CONNECTOR_VERSION,
     DTS_LIVE_ELEVATION_PROVIDER_ID,
     DtsElevationSample,
@@ -26,6 +30,7 @@ from .live import (
     DtsLiveSessionSnapshot,
 )
 from .live_worker import (
+    DTS_LIVE_PATH_SELECTION_COMMAND,
     DTS_LIVE_ADAPTER_ID,
     DTS_LIVE_ADAPTER_VERSION,
     DTS_LIVE_ELEVATION_COMMAND,
@@ -37,6 +42,7 @@ from .live_worker import (
 )
 
 __all__ = [
+    "DtsLiveSelectionLimitError",
     "DTS_ADAPTER_ID",
     "DTS_ADAPTER_VERSION",
     "DTS_XML_EXPORT_COMMAND",

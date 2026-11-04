@@ -11,6 +11,7 @@ from verdflow.contracts import (
     ExportRecordInfo,
     JobInfo,
     PointSetInfo,
+    PlantingInputRef,
 )
 from verdflow.core import (
     AssetAssignmentRequest,
@@ -49,7 +50,7 @@ class GenerateAndAssignRequest:
     """Generate target-neutral points, then resolve target assets."""
 
     scene_revision_id: str
-    region_set_id: str
+    region_set_id: str | None
     selected_region_ids: tuple[str, ...]
     strategy_package_hash: str
     random_seed: int
@@ -59,6 +60,7 @@ class GenerateAndAssignRequest:
     assignment_random_seed: int | None = None
     generation_args: dict[str, Any] = field(default_factory=dict)
     binding_overrides: dict[str, Any] = field(default_factory=dict)
+    input_ref: PlantingInputRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -252,6 +254,7 @@ class PlantRunCoordinator:
                 random_seed=request.random_seed,
                 args=self._stages.freeze_generation_args(request.profile_id, request.generation_args),
                 excluded_role_keys=tuple(sorted(key for key, value in bindings.items() if value.get("enabled", True) is False)),
+                input_ref=request.input_ref,
             ),
             timeout_seconds=limits.generation_seconds,
         )

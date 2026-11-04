@@ -102,7 +102,7 @@ class MultiCatalogBindingTests(unittest.TestCase):
                 connection.execute("UPDATE projects SET schema_version = 22")
                 connection.commit()
             with ProjectStore.open(path) as store:
-                self.assertEqual(store.project_info().schema_version, 23)
+                self.assertEqual(store.project_info().schema_version, 24)
                 preserved = store.get_effective_binding_snapshot(original.effective_binding.effective_binding_snapshot_id)
                 self.assertEqual(preserved.semantic_hash, original.effective_binding.semantic_hash)
                 source = catalog("temporary", "Model")

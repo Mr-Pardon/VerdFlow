@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DismissibleNotice from "../../components/DismissibleNotice.vue";
 import {
   Check,
   FileDown,
@@ -267,8 +268,8 @@ const readableError = (error: unknown) => {
       </div>
     </header>
 
-    <div v-if="errorMessage" class="output-error" role="alert">{{ errorMessage }}</div>
-    <div v-if="selectionError" class="output-error" role="alert">{{ selectionError }}</div>
+    <DismissibleNotice class="output-error" :message="errorMessage" @dismiss="errorMessage = null" />
+    <DismissibleNotice class="output-error" :message="selectionError" />
 
     <div class="output-content">
       <p>输出植被：{{ selectedAssetIds === null ? '全部' : `${selectedAssetIds.length} 类` }}</p>

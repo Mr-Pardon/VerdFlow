@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import DismissibleNotice from "../../components/DismissibleNotice.vue";
 import {
   ArrowLeft,
   Check,
@@ -726,7 +727,7 @@ const taskStatusLabel = (task: ProjectTaskInfo) =>
       </button>
     </header>
 
-    <div v-if="workspace.errorMessage.value" class="inline-alert" role="alert">
+    <DismissibleNotice v-if="workspace.errorMessage.value" class="inline-alert" :message="workspace.errorMessage.value">
       <div>
         <strong>工作台暂时无法更新</strong>
         <p>{{ workspace.errorMessage.value }}</p>
@@ -734,18 +735,19 @@ const taskStatusLabel = (task: ProjectTaskInfo) =>
       <button type="button" @click="workspace.refresh({ refreshRegistry: true })">
         重试
       </button>
-    </div>
+    </DismissibleNotice>
 
-    <div
+    <DismissibleNotice
       v-else-if="workspace.materialFactsWarning.value"
       class="inline-alert inline-alert--warning"
-      role="status"
+      :message="workspace.materialFactsWarning.value"
+      status
     >
       <div>
         <strong>部分历史详情不可用</strong>
         <p>{{ workspace.materialFactsWarning.value }}</p>
       </div>
-    </div>
+    </DismissibleNotice>
 
     <div v-if="workspace.project.value" class="dts-workbench">
       <aside class="workbench-rail">

@@ -3,6 +3,7 @@
 from typing import Any
 
 from .archive import package_shapefile
+from .errors import GeospatialDataError
 from .polygon_export import ShapefilePolygon, export_polygon_shapefile
 from .polygon_import import ShapefileImportError, import_polygon_shapefile
 from .protocol import (
@@ -14,6 +15,7 @@ from .protocol import (
 )
 
 __all__ = [
+    "GeospatialDataError",
     "GEOSPATIAL_ADAPTER_ID",
     "GEOSPATIAL_PREPARE_REGIONS_COMMAND",
     "GEOSPATIAL_SAMPLE_ELEVATION_COMMAND",

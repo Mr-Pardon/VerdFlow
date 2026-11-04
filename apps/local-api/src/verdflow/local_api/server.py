@@ -34,6 +34,8 @@ from verdflow.system_host import (
     SYSTEM_API_PROTOCOL_VERSION,
     SystemHost,
     SystemHostError,
+    SystemHostDataError,
+    ResourceSelection,
     ProjectWorkspace,
 )
 from verdflow.studio_service import StudioQueryService, StudioResourceNotFoundError
@@ -172,6 +174,20 @@ class LocalApiServer:
                     if path == "/api/v1/starter-resources":
                         self._require_management()
                         self._send_json(HTTPStatus.OK, asdict(system_host.starter_resource_manifest()))
+                        return
+                    if path in {"/api/v1/resource-center", "/api/v1/resource-center/detail", "/api/v1/resource-center/strategy-updates"}:
+                        self._require_management()
+                        query = parse_qs(target.query, keep_blank_values=True)
+                        refresh = query.get("refresh") == ["1"]
+                        if path.endswith("/detail"):
+                            result = system_host.resource_center_detail(
+                                request_values.query_required_text(query, "id"),
+                                query.get("version", [""])[0])
+                        elif path.endswith("/strategy-updates"):
+                            result = system_host.strategy_resource_updates(refresh=refresh)
+                        else:
+                            result = system_host.resource_center_catalog(refresh=refresh)
+                        self._send_json(HTTPStatus.OK, asdict(result))
                         return
                     if path == "/api/v1/starter-resources/import":
                         self._require_management()
@@ -711,10 +727,17 @@ class LocalApiServer:
                     if path == "/api/v1/resource-imports/prepare":
                         self._require_management()
                         document = self._read_json()
+                        selection = document.get("selection")
+                        if selection is not None:
+                            if not isinstance(selection, dict) or set(selection) != {"resource_id", "version", "revision"}:
+                                raise ValueError("资源选择无效，请重新选择。")
+                            selection = ResourceSelection(*(request_values.required_text(selection, key)
+                                for key in ("resource_id", "version", "revision")))
                         result = system_host.prepare_resource_import(
                             request_values.bounded_text_list(document, "paths", limit=32),
                             recommended=request_values.optional_boolean(document, "recommended", default=False),
                             strategy_paths=request_values.bounded_text_list(document, "strategy_paths", limit=8),
+                            selection=selection,
                         )
                         self._send_json(HTTPStatus.ACCEPTED, asdict(result))
                         return
@@ -1805,6 +1828,9 @@ class LocalApiServer:
                 return document
 
             def _handle_error(self, error: Exception) -> None:
+                if isinstance(error, SystemHostDataError):
+                    self._send_error(HTTPStatus.BAD_REQUEST, error.code, str(error))
+                    return
                 if isinstance(error, StrategyAccessError):
                     self._send_error(HTTPStatus.FORBIDDEN, error.code, str(error))
                     return

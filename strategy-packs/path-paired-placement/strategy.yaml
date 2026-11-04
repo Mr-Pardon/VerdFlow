@@ -1,0 +1,58 @@
+schema: verdflow.strategy
+version: '2'
+strategy_id: path_paired_placement
+strategy_version: 1.0.0
+display_name: 沿线树池种植
+description: 沿开放折线连续等距布置植被与可选树池，各角色独立映射资产和缩放。
+input_geometry: polyline
+generator:
+  id: path_paired_placement
+  version: '2'
+  entry: generator.py:generate
+roles:
+  - role_key: vegetation
+    display_name: 植被
+    description: 沿路径等距布置的乔木或灌木，水平朝向在 0–360° 内随机。
+    required: true
+    assignment_policy: weighted_pool
+  - role_key: planter
+    display_name: 树池
+    description: 与植被共位置放置的树池，模型本地 +Y 轴沿路径切线对齐，建议使用固定缩放。
+    required: false
+    assignment_policy: weighted_pool
+parameters:
+  spacing_m: 8
+  start_offset_m: 0
+  corner_radius_m: 0
+extensions:
+  parameter_preview:
+    version: '2'
+    display_name: 沿路组合
+    fixed_seed: 17
+    path_xy: [[0, 0], [48, 0], [70, 22], [70, 50]]
+  role_presentation:
+    version: '1'
+    roles:
+      vegetation:
+        suggested_assets: [乔木, 观赏灌木]
+        note: 水平朝向独立随机，可另外配置随机缩放。
+      planter:
+        suggested_assets: [树池, 树池围框]
+        note: 与植被共位置放置，建议选择固定缩放。
+    groups:
+      - id: paired
+        order: 0
+        name: 沿线组合
+        description: 同一布置位置分别放置植被与树池，资产和缩放互不影响。
+        role_keys: [vegetation, planter]
+        diagram:
+          - {role_key: planter, kind: shrub, x: 20, y: 32, size: 22}
+          - {role_key: planter, kind: shrub, x: 50, y: 32, size: 22}
+          - {role_key: planter, kind: shrub, x: 80, y: 32, size: 22}
+          - {role_key: vegetation, kind: tree, x: 20, y: 32, size: 16}
+          - {role_key: vegetation, kind: tree, x: 50, y: 32, size: 16}
+          - {role_key: vegetation, kind: tree, x: 80, y: 32, size: 16}
+generation_parameters:
+  - {key: spacing_m, value_type: number, default: 8, min: 0.5, max: 50, step: 0.5, group: quick, display_name: '沿线间距（m）', effect: 沿整条路径累计计距，转角处不重新开始。}
+  - {key: start_offset_m, value_type: number, default: 0, min: 0, max: 50, step: 0.5, group: quick, display_name: '起点留距（m）', effect: 从路径起点向前留出距离后开始布置，不强行补齐终点。}
+  - {key: corner_radius_m, value_type: number, default: 0, min: 0, max: 50, step: 0.5, group: quick, display_name: '转角圆滑半径（m）', effect: 设为 0 保留折角。增大可让布点沿圆弧过渡；短线段会限制实际半径。}

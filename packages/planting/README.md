@@ -111,6 +111,6 @@ python -m unittest discover -s tests\unit -v
   9 位小数 half-even 固化。其他语言实现前必须增加共享 golden vectors。
 - 不实现物理尺寸到目标模型倍率的校准。
 - Asset Collection 只在构建 Snapshot 时展开，不作为 Assignment 运行时依赖。
-- PointSet v2 是唯一受支持的点位格式；本包不提供旧格式导入。
+- 面策略输出 PointSet v2；单一 polyline 输入策略输出带 `path_id` 的 PointSet v3。`validate_point_set` 验证两者，`validate_point_set_v2` 保持严格 v2。`validate_path_document` 验证未偏移开放折线，不提供旧格式或面线转换。
 - Catalog/Profile 已进入 LibraryStore；Project Snapshot 已进入 ProjectStore v10，
   candidate retention sweeper 已实现；Viewer 分块和 Agent 候选确认尚未实现。

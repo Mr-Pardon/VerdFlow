@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createRequire } from "node:module";
-import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -12,7 +12,8 @@ import { launchPortableUpdate } from "../src/update-runner.mjs";
 import { PortableUpdater } from "../src/portable-updater.mjs";
 
 for (const [runtime, accept, rollback = false] of [["node", true], ["electron", true], ["electron-app", true], ["node", false], ["node", true, true]]) test(`Windows ${runtime} update: acceptance=${accept}, rollback=${rollback}`, { skip: process.platform !== "win32", timeout: 30000 }, async () => {
-  const root = await mkdtemp(path.join(os.tmpdir(), "verdflow-swap-test-"));
+  const temp = await realpath(os.tmpdir());
+  const root = await mkdtemp(path.join(temp, "verdflow-swap-test-"));
   const id = "b".repeat(32), install = path.join(root, "application"), stage = path.join(root, `.verdflow-update-${id}`);
   const data = path.join(root, "data"), repository = "example/verdflow-test";
   const job = runtime === "electron-app" ? path.join(data, "Updates", id) : path.join(root, "job ' \u6d4b\u8bd5");
@@ -115,7 +116,7 @@ for (const [runtime, accept, rollback = false] of [["node", true], ["electron", 
   } finally {
     if (parent && parent.exitCode === null && parent.signalCode === null) { const stopped = once(parent, "exit"); parent.kill(); await stopped; }
     if (handedOff) await until(async () => Boolean(await readFile(path.join(job, "result.json"), "utf8")));
-    if (path.dirname(root) === os.tmpdir() && path.basename(root).startsWith("verdflow-swap-test-")) await rm(root, { recursive: true, maxRetries: 20, retryDelay: 100 });
+    if (path.dirname(root) === temp && path.basename(root).startsWith("verdflow-swap-test-")) await rm(root, { recursive: true, maxRetries: 20, retryDelay: 100 });
   }
 });
 

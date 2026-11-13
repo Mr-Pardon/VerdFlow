@@ -364,7 +364,7 @@
     "apps/studio-electron-probe/tests/manual-link.test.mjs": "a7aeb26fe39964fbb0a2cd1ebed16825071889bebc2ef5350bd7c5d28793146a",
     "apps/studio-electron-probe/tests/policy.test.mjs": "4273d28cdd81f0ceb08552b92ad1e4ccbfd2268b034ccbc790a1e6b81f0fc720",
     "apps/studio-electron-probe/tests/portable-runtime.test.mjs": "4eef2b607121f47d0f7a0aacda979bb801f14aceb8b7cf18fe0fb2ce7f795312",
-    "apps/studio-electron-probe/tests/portable-swap.test.mjs": "bce45f7576ff141975c33e6b70e0f1d75ab2b1f7aad615cc6d9e4ceca7f24b64",
+    "apps/studio-electron-probe/tests/portable-swap.test.mjs": "863856ddb262b6413d62de3ef380ac100feca8fc6d1eed893a530f8f57d077f2",
     "apps/studio-electron-probe/tests/portable-updater.test.mjs": "f3cdc315f78c764dbafbfcf7ec133a8631b19e97628f56dc041e0df4f88e3e06",
     "apps/studio-electron-probe/tests/update-ipc.test.mjs": "b4002d382d94a9bbf9ecdaaebd4f57ef819649aa386d6d63c245e05122c1c293",
     "apps/studio-electron-probe/tests/update-source.test.mjs": "ef4c109cf9a6a1fb40fee928a035452aca7cf88e50b11f2f2a0270504f7bc75b",

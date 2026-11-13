@@ -33,6 +33,8 @@ from verdflow.contracts import (
     RegionSummary,
     ScenePreparationInfo,
     SceneRevisionInfo,
+    SourceAssemblyMemberInfo,
+    SourceInfo,
     TargetAssetUseSnapshotInfo,
 )
 
@@ -171,12 +173,14 @@ class ProjectQueryStore:
         self,
         *,
         statuses: tuple[JobStatus, ...] = (),
+        command_types: tuple[str, ...] = (),
         before: JobListCursor | None = None,
         limit: int = 50,
     ) -> JobListPage:
         with self._database.snapshot():
             return self._jobs.list_page(
                 statuses=statuses,
+                command_types=command_types,
                 before=before,
                 limit=limit,
             )
@@ -202,6 +206,22 @@ class ProjectQueryStore:
     def get_artifact(self, artifact_id: str) -> ArtifactRef:
         with self._database.snapshot():
             return self._artifacts.get(artifact_id)
+
+    def local_artifact_path(self, artifact_id: str) -> Path:
+        """Locate an immutable artifact for a trusted, seekable local reader."""
+        artifact = self.get_artifact(artifact_id)
+        path = self._objects.path_for(artifact.content_hash).resolve(strict=True)
+        if not path.is_relative_to(self._layout.objects) or not path.is_file() or path.stat().st_size != artifact.byte_size:
+            raise ValueError("Project artifact differs from its recorded size")
+        return path
+
+    def get_source(self, source_id: str) -> SourceInfo:
+        with self._database.snapshot():
+            return self._scenes.get_source(source_id)
+
+    def list_source_assembly_members(self, source_id: str) -> tuple[SourceAssemblyMemberInfo, ...]:
+        with self._database.snapshot():
+            return self._scenes.list_source_assembly_members(source_id)
 
     def get_export_record(self, export_id: str) -> ExportRecordInfo:
         with self._database.snapshot():
@@ -285,6 +305,10 @@ class ProjectQueryStore:
     def list_regions(self, region_set_id: str) -> tuple[RegionSummary, ...]:
         with self._database.snapshot():
             return self._regions.list_regions(region_set_id)
+
+    def iter_region_ids(self, region_set_id: str) -> Iterator[str]:
+        with self._database.snapshot():
+            yield from self._regions.iter_region_ids(region_set_id)
 
     def get_point_set(self, point_set_id: str) -> PointSetInfo:
         with self._database.snapshot():

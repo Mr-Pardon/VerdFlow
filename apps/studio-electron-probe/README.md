@@ -41,10 +41,12 @@ Windows x64 便携构建输出在 `dist/portable/`。更新源默认来自桌面
 指向 `Mr-Pardon/VerdFlow`：
 
 ```powershell
-python tools/build_portable_release.py --smoke-test
+python tools/build_portable_release.py --imagery-model <verified-onnx-file> --smoke-test
 ```
 
-可用 `--update-repository owner/repository` 覆盖，或用 `--no-updates` 关闭联网更新。
+可通过 `VERDFLOW_IMAGERY_MODEL_PATH` 提供构建用模型。正式免安装包内置影像模型和 CPU 推理环境，
+用户无需安装额外运行库或设置环境变量。模型来源见 `tools/portable-imagery-notice.md`。
+可用 `--update-repository owner/repository` 覆盖更新源，或用 `--no-updates` 关闭联网更新。
 暂无公开 Release 时保持正常状态；更新附件缺失仍报错。该构建获取固定版本和哈希的 Electron、Python 与 wheel，
 生成 ZIP、SHA-256、逐文件清单及 `VerdFlow-update-win-x64.json`。
 `tools/portable_licenses.py` 同时收集项目许可、运行依赖原文及版本索引，缺失声明时失败；

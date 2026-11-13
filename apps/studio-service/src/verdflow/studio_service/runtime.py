@@ -5,7 +5,7 @@ from __future__ import annotations
 from concurrent.futures import Future
 from pathlib import Path
 from queue import Queue
-from threading import RLock, Thread
+from threading import Event, RLock, Thread
 from typing import Callable, TypeVar, cast
 from uuid import uuid4
 
@@ -19,6 +19,8 @@ from verdflow.project_store import (
 from .models import (
     PointReviewManifest,
     PointViewportChunk,
+    RegionOverview,
+    RegionSelectionPage,
     RegionViewerManifest,
     RegionViewportChunk,
 )
@@ -43,6 +45,8 @@ class StudioProjectQueryRuntime:
         self.project_path = project_path.resolve()
         self._queue: Queue[object] = Queue()
         self._ready: Future[None] = Future()
+        self._closing = Event()
+        self._lifecycle_lock = RLock()
         self._thread = Thread(
             target=self._run,
             name=f"verdflow-studio-query-{uuid4().hex[:8]}",
@@ -60,7 +64,10 @@ class StudioProjectQueryRuntime:
         timeout_seconds: float,
     ) -> ResultT:
         future: Future[object] = Future()
-        self._queue.put((callback, future))
+        with self._lifecycle_lock:
+            if self._closing.is_set():
+                raise RuntimeError("Studio project query runtime is closing")
+            self._queue.put((callback, future))
         try:
             return cast(ResultT, future.result(timeout=timeout_seconds))
         except TimeoutError:
@@ -70,7 +77,10 @@ class StudioProjectQueryRuntime:
     def close(self, timeout_seconds: float) -> None:
         if not self._thread.is_alive():
             return
-        self._queue.put(_STOP)
+        with self._lifecycle_lock:
+            if not self._closing.is_set():
+                self._closing.set()
+                self._queue.put(_STOP)
         self._thread.join(timeout_seconds)
         if self._thread.is_alive():
             raise TimeoutError("Studio project query thread did not stop in time")
@@ -78,24 +88,31 @@ class StudioProjectQueryRuntime:
     def _run(self) -> None:
         try:
             with ProjectQueryStore.open(self.project_path) as store:
-                queries = ProjectViewerQueries(store)
-                self._ready.set_result(None)
-                while True:
-                    item = self._queue.get()
-                    if item is _STOP:
-                        return
-                    callback, future = cast(
-                        tuple[
-                            Callable[[ProjectViewerQueries], object],
-                            Future[object],
-                        ],
-                        item,
-                    )
-                    if future.set_running_or_notify_cancel():
-                        try:
-                            future.set_result(callback(queries))
-                        except BaseException as error:
-                            future.set_exception(error)
+                queries = ProjectViewerQueries(
+                    store, cache_root=self.project_path / "cache", cancelled=self._closing.is_set,
+                )
+                try:
+                    self._ready.set_result(None)
+                    while True:
+                        item = self._queue.get()
+                        if item is _STOP:
+                            return
+                        callback, future = cast(
+                            tuple[
+                                Callable[[ProjectViewerQueries], object],
+                                Future[object],
+                            ],
+                            item,
+                        )
+                        if future.set_running_or_notify_cancel():
+                            try:
+                                if self._closing.is_set():
+                                    raise RuntimeError("Studio project query runtime is closing")
+                                future.set_result(callback(queries))
+                            except BaseException as error:
+                                future.set_exception(error)
+                finally:
+                    queries.close()
         except BaseException as error:
             if not self._ready.done():
                 self._ready.set_exception(error)
@@ -155,6 +172,7 @@ class StudioQueryService:
         after_ordinal: int = -1,
         limit: int = 1000,
         simplification_tolerance: float = 0.0,
+        overview_threshold: int = 0,
     ) -> RegionViewportChunk:
         try:
             return self._runtime(project_key, project_path).call(
@@ -168,6 +186,7 @@ class StudioQueryService:
                     after_ordinal=after_ordinal,
                     limit=limit,
                     simplification_tolerance=simplification_tolerance,
+                    overview_threshold=overview_threshold,
                 ),
                 timeout_seconds=self._timeout_seconds,
             )
@@ -176,6 +195,45 @@ class StudioQueryService:
                 "RegionSet",
                 region_set_id,
             ) from error
+
+    def get_region_overview(
+        self, project_key: str, project_path: Path, region_set_id: str, *,
+        min_x: float, min_y: float, max_x: float, max_y: float,
+        classifications: tuple[str, ...] = (),
+    ) -> RegionOverview:
+        try:
+            return self._runtime(project_key, project_path).call(
+                lambda queries: queries.region_overview(
+                    region_set_id, min_x=min_x, min_y=min_y, max_x=max_x, max_y=max_y,
+                    classifications=classifications,
+                ),
+                timeout_seconds=self._timeout_seconds,
+            )
+        except RegionSetNotFoundError as error:
+            raise StudioResourceNotFoundError("RegionSet", region_set_id) from error
+
+    def get_region_selection(
+        self,
+        project_key: str,
+        project_path: Path,
+        region_set_id: str,
+        *,
+        corners: tuple[tuple[float, float], ...],
+        classifications: tuple[str, ...] = (),
+        after_ordinal: int = -1,
+    ) -> RegionSelectionPage:
+        try:
+            return self._runtime(project_key, project_path).call(
+                lambda queries: queries.region_selection(
+                    region_set_id,
+                    corners=corners,
+                    classifications=classifications,
+                    after_ordinal=after_ordinal,
+                ),
+                timeout_seconds=self._timeout_seconds,
+            )
+        except RegionSetNotFoundError as error:
+            raise StudioResourceNotFoundError("RegionSet", region_set_id) from error
 
     def get_point_manifest(
         self,

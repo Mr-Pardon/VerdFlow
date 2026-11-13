@@ -14,7 +14,7 @@ defineProps<{
   managementAvailable: boolean;
   busy: boolean;
   canSubmit: boolean;
-  stage: "idle" | "creating_project" | "importing_source" | "starting_inspection";
+  stage: "idle" | "creating_project" | "submitting_intake";
   errorMessage: string | null;
 }>();
 
@@ -32,8 +32,7 @@ const emit = defineEmits<{
 const stageLabel = {
   idle: "创建并开始分析",
   creating_project: "正在创建项目",
-  importing_source: "正在导入 FBX",
-  starting_inspection: "正在提交模型检查",
+  submitting_intake: "正在提交源文件登记",
 };
 </script>
 

@@ -45,7 +45,7 @@ from verdflow.contracts import (  # noqa: E402
     PlantRunReviewPolicy,
 )
 from verdflow.dts_adapter import DTS_ADAPTER_ID  # noqa: E402
-from verdflow.core import PlantRunExecutionRequest, PlantRunExecutionService  # noqa: E402
+from verdflow.core import PlantRunContinuationRequest, PlantRunExecutionRequest, PlantRunExecutionService  # noqa: E402
 from verdflow.planting import canonical_json_bytes, semantic_hash  # noqa: E402
 from verdflow.local_api import LocalApiServer  # noqa: E402
 from verdflow.system_host import (  # noqa: E402
@@ -66,10 +66,6 @@ from verdflow.system_host import (  # noqa: E402
     SystemHost,
     SystemHostConfig,
     SystemHostError,
-)
-from verdflow.system_host.planting_routes import (  # noqa: E402
-    resolve_plant_output_route,
-    resolve_region_extraction_provider,
 )
 
 
@@ -157,40 +153,6 @@ class PlantPreviewProductTests(unittest.TestCase):
         self.assertEqual(restored.generation_args, request.generation_args)
         self.assertEqual(restored.binding_overrides, request.binding_overrides)
 
-    def test_output_route_comes_from_scene_lineage_and_assignment_target(
-        self,
-    ) -> None:
-        route = resolve_plant_output_route(
-            scene_importer_id=BLENDER_WORKER_ADAPTER_ID,
-            target_type="dts",
-        )
-        self.assertEqual(route.elevation_provider_id, BLENDER_WORKER_ADAPTER_ID)
-        self.assertEqual(route.export_provider_id, DTS_ADAPTER_ID)
-        geospatial = resolve_plant_output_route(
-            scene_importer_id="verdflow.geospatial",
-            target_type="dts",
-        )
-        self.assertEqual(
-            geospatial.elevation_provider_id,
-            "verdflow.geospatial",
-        )
-        self.assertEqual(geospatial.export_provider_id, DTS_ADAPTER_ID)
-        with self.assertRaisesRegex(ValueError, "scene importer"):
-            resolve_plant_output_route(
-                scene_importer_id="unknown",
-                target_type="dts",
-            )
-
-    def test_region_extraction_route_comes_from_scene_lineage(self) -> None:
-        provider_id = resolve_region_extraction_provider(
-            scene_importer_id=BLENDER_WORKER_ADAPTER_ID,
-        )
-        self.assertEqual(provider_id, BLENDER_WORKER_ADAPTER_ID)
-        with self.assertRaisesRegex(ValueError, "scene importer"):
-            resolve_region_extraction_provider(
-                scene_importer_id="unknown",
-            )
-
     def test_batch_commit_freezes_regions_and_continues_existing_run(
         self,
     ) -> None:
@@ -201,7 +163,7 @@ class PlantPreviewProductTests(unittest.TestCase):
         store = SimpleNamespace(
             commit_current_planting_batch=Mock(),
             get_scene_revision=lambda _scene_id: SimpleNamespace(
-                importer_id=BLENDER_WORKER_ADAPTER_ID
+                importer_id=BLENDER_WORKER_ADAPTER_ID, scene_revision_id=_scene_id
             ),
         )
         core = SimpleNamespace(
@@ -379,7 +341,7 @@ class PlantPreviewProductTests(unittest.TestCase):
             current_planting_composition=lambda: composition,
             list_planting_batches=lambda: batches,
             get_scene_revision=lambda _scene_id: SimpleNamespace(
-                importer_id=BLENDER_WORKER_ADAPTER_ID
+                importer_id=BLENDER_WORKER_ADAPTER_ID, scene_revision_id=_scene_id
             ),
             get_asset_assignment_set=lambda _assignment_id: SimpleNamespace(
                 target_type="dts"
@@ -397,6 +359,7 @@ class PlantPreviewProductTests(unittest.TestCase):
         )
         core = SimpleNamespace(
             store=store,
+            workflows=_WorkflowProjection(),
             submit_composition_output_execution=Mock(return_value=operation),
         )
         runtime = _QueryRuntime(core)
@@ -1207,6 +1170,11 @@ class _CompositionOutputStore:
 class _PreviewStore:
     def __init__(self, execution: PlantRunExecutionInfo) -> None:
         self.execution = execution
+        self.store = self
+        self.workflows = _WorkflowProjection()
+        self.plant_run_executions = SimpleNamespace(get_output_parameters=lambda _: PlantRunContinuationRequest(
+            BLENDER_WORKER_ADAPTER_ID, DTS_ADAPTER_ID, (1., 2., 3.),
+        ))
 
     def get_plant_run_execution(self, execution_id: str):
         return self.execution
@@ -1218,16 +1186,28 @@ class _PreviewStore:
         return SimpleNamespace(scene_revision_id="scene_1")
 
     def get_scene_revision(self, scene_revision_id: str):
-        return SimpleNamespace(importer_id=BLENDER_WORKER_ADAPTER_ID)
+        return SimpleNamespace(importer_id=BLENDER_WORKER_ADAPTER_ID, scene_revision_id=scene_revision_id)
 
     def get_assignment_set(self, assignment_set_id: str):
         return SimpleNamespace(target_type="dts")
+
+    get_asset_assignment_set = get_assignment_set
+
+
+class _WorkflowProjection:
+    def resolve(self, store, **kwargs):
+        return SimpleNamespace(elevation_provider_id=BLENDER_WORKER_ADAPTER_ID, export_provider_id=DTS_ADAPTER_ID)
+
+    def output_for_target(self, target):
+        from verdflow.contracts import CapabilityRef
+        return CapabilityRef("output", DTS_ADAPTER_ID, "1", "verdflow.dts.export-xml", "1")
 
 
 class _ReexportHost:
     def __init__(self, execution: PlantRunExecutionInfo) -> None:
         self.execution = execution
         self.store = self
+        self.workflows = _WorkflowProjection()
         self.job = SimpleNamespace(
             job_id="job_reexport",
             command=SimpleNamespace(artifact_id="command"),

@@ -2,6 +2,7 @@
 
 from .asset_search import AssetSearchRequest, AssetSearchPage, parse_asset_search_request
 from .resource_index import ResourceSelection
+from .source_intake import SourceIntakeRequest
 
 from verdflow.core import (
     MaterialAnalysisRequest,
@@ -17,6 +18,7 @@ from verdflow.core_host import (
 )
 
 from .host import (
+    AssetPackageOverwriteRequired,
     LibraryResourceNotFoundError,
     ProjectSessionNotFoundError,
     ProjectResourceNotFoundError,
@@ -134,12 +136,14 @@ from .secret_store import (
 )
 
 __all__ = [
+    "SourceIntakeRequest",
     "ResourceSelection",
     "AssetSearchRequest",
     "AssetSearchPage",
     "parse_asset_search_request",
     "AssetPackageExportInfo",
     "AssetPackageImportInfo",
+    "AssetPackageOverwriteRequired",
     "CompositionExportOperationInfo",
     "AuthoringKitExportInfo",
     "AssetCatalogAssetInfo",

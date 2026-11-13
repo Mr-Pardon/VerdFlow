@@ -77,6 +77,9 @@ from verdflow.studio_service import (  # noqa: E402
     PointReviewManifest,
     PointViewportChunk,
     RegionClassificationSummary,
+    RegionOverview,
+    RegionOverviewItem,
+    RegionSelectionPage,
     RegionViewerItem,
     RegionViewerManifest,
     RegionViewportChunk,
@@ -346,6 +349,10 @@ class LocalApiTests(unittest.TestCase):
             studio_queries = Mock(spec=StudioQueryService)
             studio_queries.get_region_manifest.return_value = region_manifest
             studio_queries.get_region_chunk.return_value = region_chunk
+            studio_queries.get_region_overview.return_value = RegionOverview(
+                bounds, 2, 2, "test", (RegionOverviewItem("region_1", "general_green", 1.0),),
+            )
+            studio_queries.get_region_selection.return_value = RegionSelectionPage(("region_1",), None)
             studio_queries.get_point_manifest.return_value = point_manifest
             studio_queries.get_point_chunk.return_value = point_chunk
             with SystemHost(
@@ -377,6 +384,7 @@ class LocalApiTests(unittest.TestCase):
                         + "?min_x=0&min_y=0&max_x=10&max_y=10"
                         + "&classification=general_green,street_tree&limit=50"
                         + "&simplification_tolerance=0.5"
+                        + "&overview_threshold=20000"
                     )
                     self.assertEqual(status, 200)
                     self.assertEqual(regions["items"][0]["region_id"], "region_1")
@@ -392,6 +400,26 @@ class LocalApiTests(unittest.TestCase):
                         ],
                         0.5,
                     )
+                    self.assertEqual(studio_queries.get_region_chunk.call_args.kwargs["overview_threshold"], 20_000)
+
+                    status, overview = request_json(
+                        prefix + "/region-sets/regions_1/overview?min_x=0&min_y=0&max_x=10&max_y=10"
+                        + "&classification=general_green"
+                    )
+                    self.assertEqual(status, 200)
+                    self.assertEqual(overview["items"][0], ["region_1", "general_green", 1.0])
+                    self.assertEqual(studio_queries.get_region_overview.call_args.kwargs["classifications"], ("general_green",))
+
+                    selection_url = prefix + "/region-sets/regions_1/selection"
+                    status, selection = request_json(selection_url + "?corner=0,0&corner=1,0&corner=1,1&corner=0,1")
+                    self.assertEqual(status, 200)
+                    self.assertEqual(selection, {"region_ids": ["region_1"], "next_after_ordinal": None})
+                    self.assertEqual(
+                        studio_queries.get_region_selection.call_args.kwargs["corners"],
+                        ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)),
+                    )
+                    status, _ = request_json(selection_url + "?corner=NaN,0")
+                    self.assertEqual(status, 400)
 
                     status, review = request_json(
                         prefix
@@ -1357,6 +1385,69 @@ class LocalApiTests(unittest.TestCase):
                     self.assertEqual(status, 200)
                     self.assertEqual((len(page["items"]), page["total_count"], page["next_offset"]), (5, 12, 5))
                     self.assertEqual([item.generation for item in system.list_asset_catalogs("dts")], [1, 1])
+
+    def test_asset_package_overwrite_requires_confirmation_of_exact_versions(self) -> None:
+        from tests.unit.test_asset_search import catalog
+        from verdflow.asset_package import write_asset_catalog_package
+        from verdflow.planting import prepare_asset_catalog_document
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            token = "vfa-overwrite-management-test-token"
+            headers = {"Authorization": f"Bearer {token}"}
+
+            def write(path, name, count=1):
+                document = prepare_asset_catalog_document({**catalog("trees", count), "display_name": name})
+                write_asset_catalog_package(document, (), path)
+
+            original, incoming = root / "old.vfa", root / "new.vfa"
+            write(original, "Old")
+            write(incoming, "New", 2)
+            with SystemHost(SystemHostConfig(library_path=root / "library")) as system, LocalApiServer(
+                system, LocalApiConfig(management_token=token),
+            ) as server:
+                url = server.base_url + "/api/v1/asset-catalog-packages/import"
+
+                def submit(path, **options):
+                    return request_json(url, method="POST", headers=headers,
+                                        document={"source_path": str(path), **options})
+
+                def conflict(path):
+                    status, response = submit(path)
+                    self.assertEqual(status, 409)
+                    self.assertEqual(response["error"]["code"], "asset_catalog_overwrite_required")
+                    return response["error"]["details"]
+
+                def confirmed(details):
+                    return {key: value for key, value in details.items() if key.startswith("expected_")}
+
+                status, first = submit(original)
+                self.assertEqual(status, 201)
+                status, duplicate = submit(original)
+                self.assertEqual(status, 201)
+                self.assertTrue(duplicate["already_installed"])
+                self.assertFalse(duplicate["replaced"])
+
+                choice = conflict(incoming)
+                self.assertEqual((choice["catalog_id"], choice["existing_name"], choice["incoming_name"],
+                                  choice["expected_generation"]), ("trees", "Old", "New", 1))
+                self.assertEqual(system.list_asset_catalogs("dts")[0].display_name, "Old")
+
+                write(incoming, "Changed file", 2)
+                self.assertEqual(submit(incoming, replace_existing=True, **confirmed(choice))[0], 409)
+                choice = conflict(incoming)
+                write(original, "Edited locally")
+                self.assertEqual(submit(original, replace_existing=True, **confirmed(conflict(original)))[0], 201)
+                self.assertEqual(submit(incoming, replace_existing=True, **confirmed(choice))[0], 409)
+                self.assertEqual(system.list_asset_catalogs("dts")[0].display_name, "Edited locally")
+
+                status, updated = submit(incoming, replace_existing=True, **confirmed(conflict(incoming)))
+                self.assertEqual(status, 201)
+                self.assertTrue(updated["replaced"])
+                self.assertFalse(updated["already_installed"])
+                self.assertEqual(updated["catalog"]["catalog_entry_id"], first["catalog"]["catalog_entry_id"])
+                self.assertEqual((updated["catalog"]["generation"], updated["catalog"]["display_name"]), (3, "Changed file"))
+                self.assertEqual(len(system.list_asset_catalogs("dts")), 1)
 
     def test_empty_catalog_can_be_created_edited_and_deleted(self) -> None:
         from verdflow.local_api import LocalApiConfig

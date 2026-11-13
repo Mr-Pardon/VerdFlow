@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import asdict, replace
+from errno import ENOSPC
 import hashlib
 import io
 import json
@@ -18,17 +20,21 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(path) for parent in (ROOT / "packages", ROOT / "apps", ROOT / "adapters") for path in parent.glob("*/src")]
 
 from verdflow.local_api import LocalApiConfig, LocalApiServer
+from verdflow.asset_package.archive import MAX_PACKAGE_BYTES as MAX_VFA_BYTES
 from verdflow.planting import load_catalog_yaml
+from verdflow.profile_package.archive import MAX_PACKAGE_BYTES as MAX_VFP_BYTES
 from verdflow.strategy_worker import inspect_strategy_package, write_strategy_package_archive
+from verdflow.strategy_worker.package_archive import MAX_ARCHIVE_BYTES as MAX_VFS_BYTES
 from verdflow.system_host import AssetCatalogSaveRequest, SystemHost, SystemHostConfig
 from verdflow.system_host.resource_downloads import (
-    DownloadCancelled, StarterManifest, StarterResource, download_package, parse_manifest, require_url,
+    DownloadCancelled, StarterManifest, StarterResource, download_package, parse_manifest, parse_resource, require_url,
 )
 from verdflow.system_host.starter_resources import StarterResourceService
 
 
 def resource(id="sample", payload=b"package", kind="strategies", identity="sample", version="1.0.0"):
-    filename = f"{id}.{'vfa' if kind == 'assets' else 'vfs'}"
+    suffix = {"assets": "vfa", "strategies": "vfs", "plans": "vfp"}[kind]
+    filename = f"{id}.{suffix}"
     return StarterResource(id, id, kind, version, identity, filename, len(payload), hashlib.sha256(payload).hexdigest(),
         f"https://github.com/Mr-Pardon/verdflow-resources/releases/download/sample-v1/{filename}",
         f"https://mr-pardon.github.io/verdflow-resources/?id={id}")
@@ -58,6 +64,14 @@ class StarterDownloadTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse([item, item])
 
+    def test_manifest_uses_local_archive_budget_for_each_kind(self):
+        for kind, limit in (("assets", MAX_VFA_BYTES), ("strategies", MAX_VFS_BYTES), ("plans", MAX_VFP_BYTES)):
+            with self.subTest(kind=kind):
+                item = asdict(replace(resource(kind=kind), bytes=limit))
+                self.assertEqual(parse_resource(item, allow_plans=True).bytes, limit)
+                with self.assertRaisesRegex(ValueError, "size exceeds"):
+                    parse_resource({**item, "bytes": limit + 1}, allow_plans=True)
+
     def test_redirects_are_https_and_only_fixed_repository_or_github_cdn(self):
         for url in ("http://release-assets.githubusercontent.com/a", "https://127.0.0.1/a", "https://evil.test/a",
                     "https://user@release-assets.githubusercontent.com/a", "https://github.com/Mr-Pardon/verdflow-resources/releases/latest/download/sample.vfs"):
@@ -66,8 +80,10 @@ class StarterDownloadTests(unittest.TestCase):
         require_url("https://release-assets.githubusercontent.com/a?signature=value", redirect=True)
 
     def test_download_checks_size_hash_and_cancel_before_import(self):
-        for payload, expected, cancel in [(b"package", None, False), (b"truncated", ValueError, False),
-                                          (b"PACKAGE", ValueError, False), (b"package", DownloadCancelled, True)]:
+        for payload, expected, cancel in (
+            (b"package", None, False), (b"truncated", ValueError, False), (b"pack", ValueError, False),
+            (b"PACKAGE", ValueError, False), (b"package", DownloadCancelled, True),
+        ):
             with self.subTest(payload=payload, cancel=cancel), tempfile.TemporaryDirectory() as temporary:
                 event = Event()
                 if cancel:
@@ -79,9 +95,60 @@ class StarterDownloadTests(unittest.TestCase):
                     if expected:
                         with self.assertRaises(expected):
                             download_package(resource(), path, event, lambda _: None)
+                        self.assertFalse(path.exists())
                     else:
                         download_package(resource(), path, event, lambda _: None)
                         self.assertEqual(path.read_bytes(), payload)
+
+    def test_disk_budget_and_invalid_size_are_rejected_before_request(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "download.vfs"
+            item = resource()
+            with (patch("verdflow.system_host.resource_downloads.build_opener") as opener,
+                  patch("verdflow.system_host.resource_downloads.disk_usage", return_value=Mock(free=item.bytes))):
+                with self.assertRaisesRegex(ValueError, "磁盘空间不足"):
+                    download_package(item, path, Event(), lambda _: None)
+                with self.assertRaisesRegex(ValueError, "size exceeds"):
+                    download_package(replace(item, bytes=MAX_VFS_BYTES + 1), path, Event(), lambda _: None)
+                opener.assert_not_called()
+                self.assertFalse(path.exists())
+
+    def test_partial_download_is_removed_if_cancelled_or_disk_fills(self):
+        for disk_full in (False, True):
+            with self.subTest(disk_full=disk_full), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "download.vfa"
+                event = Event()
+
+                def on_progress(size):
+                    self.assertEqual(size, 7)
+                    if disk_full:
+                        raise OSError(ENOSPC, "disk is full")
+                    event.set()
+
+                with patch("verdflow.system_host.resource_downloads.build_opener") as opener:
+                    opener.return_value.open.return_value = io.BytesIO(b"package")
+                    expected = (self.assertRaisesRegex(ValueError, "磁盘空间不足") if disk_full
+                                else self.assertRaises(DownloadCancelled))
+                    with expected:
+                        download_package(resource(kind="assets"), path, event, on_progress)
+                    self.assertFalse(path.exists())
+
+    def test_network_timeout_cleans_partial_download_without_replacing_existing_file(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "download.vfa"
+            response = Mock()
+            response.read1.side_effect = [b"pack", TimeoutError("read stalled")]
+            with patch("verdflow.system_host.resource_downloads.build_opener") as opener:
+                opener.return_value.open.return_value = nullcontext(response)
+                with self.assertRaises(ValueError) as stalled:
+                    download_package(resource(kind="assets"), path, Event(), lambda _: None)
+                self.assertIsInstance(stalled.exception.__cause__, TimeoutError)
+                self.assertFalse(path.exists())
+                path.write_bytes(b"original")
+                with self.assertRaises(ValueError) as existing:
+                    download_package(resource(kind="assets"), path, Event(), lambda _: None)
+                self.assertIsInstance(existing.exception.__cause__, FileExistsError)
+                self.assertEqual(path.read_bytes(), b"original")
 
 
 class StarterServiceTests(unittest.TestCase):

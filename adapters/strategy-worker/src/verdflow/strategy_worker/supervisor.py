@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import shutil
+import tempfile
 import threading
 import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Callable, Protocol
+from typing import Any, Callable, Generator, Protocol
 
 from verdflow.contracts import (
     JobErrorInfo,
@@ -19,6 +21,7 @@ from verdflow.contracts import (
     WorkerProcessStatus,
 )
 from verdflow.core import JobRuntime, StrategyAccessError, StrategyExecutionAuthorizer
+from verdflow.core.workers import WorkerJobPoller
 from verdflow.planting import canonical_json_bytes
 from verdflow.project_store import JobLeaseConflictError, ProcessStatus, SystemProcessInspector
 from verdflow.worker_runtime import terminate_process_by_pid
@@ -33,7 +36,7 @@ from .protocol import (
     STRATEGY_WORKER_ADAPTER_ID,
     StrategyWorkerSupervisorConfig,
 )
-from .runner import StrategyWorker
+from .runner import StrategyWorker, _check_disk_budget
 
 
 class StrategyPackageResolver(Protocol):
@@ -62,6 +65,7 @@ class StrategyWorkerSupervisor:
         self._process_started = process_started
         self._cancel_requests: set[str] = set()
         self._cancel_lock = threading.Lock()
+        self.poller = WorkerJobPoller(self._run_next)
         self.config.runtime_root.mkdir(parents=True, exist_ok=True)
 
     def request_cancel(self, job_id: str) -> None:
@@ -69,6 +73,9 @@ class StrategyWorkerSupervisor:
             self._cancel_requests.add(job_id)
 
     def run_once(self) -> JobInfo | None:
+        return self.poller.run_once(self.config.worker.poll_interval_seconds)
+
+    def _run_next(self) -> Generator[None, None, JobInfo | None]:
         claimed = self.runtime.claim_next(
             self.worker_id,
             command_types=STRATEGY_SUPPORTED_COMMANDS,
@@ -77,9 +84,10 @@ class StrategyWorkerSupervisor:
             return None
         lease = claimed.lease
         process_registered = False
+        child_running = False
 
         def register_process(pid: int) -> None:
-            nonlocal process_registered
+            nonlocal process_registered, child_running
             identity = self._child_identity(pid)
             record = WorkerProcessInfo(
                 job_id=lease.job_id,
@@ -96,10 +104,13 @@ class StrategyWorkerSupervisor:
             )
             self.runtime.store.register_worker_process(record)
             process_registered = True
+            child_running = True
             if self._process_started is not None:
                 self._process_started(record)
 
         def finish_process(exit_code: int | None, terminated: bool) -> None:
+            nonlocal child_running
+            child_running = False
             if not process_registered:
                 return
             self.runtime.store.finish_worker_process(
@@ -159,17 +170,27 @@ class StrategyWorkerSupervisor:
                 stage="running_strategy",
             )
             last_heartbeat = time.monotonic()
+            interval = min(
+                self.config.heartbeat_interval_seconds,
+                self.runtime.lease_duration.total_seconds() / 3,
+            )
+            persisting = False
 
             def heartbeat() -> None:
                 nonlocal last_heartbeat
+                if self._is_cancelled(lease.job_id):
+                    raise StrategyExecutionCancelled("Strategy worker was cancelled")
                 now = time.monotonic()
-                if now - last_heartbeat >= self.config.heartbeat_interval_seconds:
+                if now - last_heartbeat >= interval:
                     self.runtime.heartbeat(
                         lease,
-                        progress=0.5,
-                        stage="running_strategy",
+                        progress=0.9 if persisting else (0.8 if process_registered and not child_running else 0.5),
+                        stage="persisting_strategy_result" if persisting else (
+                            "validating_strategy_result" if process_registered and not child_running
+                            else "running_strategy"
+                        ),
                     )
-                    if process_registered:
+                    if child_running:
                         self.runtime.store.heartbeat_worker_process(
                             lease.job_id,
                             lease.attempt_count,
@@ -177,40 +198,43 @@ class StrategyWorkerSupervisor:
                         )
                     last_heartbeat = now
 
-            points = StrategyWorker(
-                {package.package_hash},
-                self.config.worker,
-            ).run(
-                package,
-                {
-                    "strategy": package.strategy,
-                    (
-                        "selected_paths" if path_input else "selected_regions"
-                    ): selected_geometry,
-                    "seed": command["random_seed"],
-                    "args": command["args"],
-                    "excluded_role_keys": command.get("excluded_role_keys", []),
-                },
-                heartbeat=heartbeat,
-                cancellation_requested=lambda: self._is_cancelled(lease.job_id),
-                process_started=register_process,
-                process_finished=finish_process,
-                workdir_parent=self.config.runtime_root,
-                workdir_prefix=(f"{lease.job_id}-{lease.attempt_count}-"),
-            )
-            if self._is_cancelled(lease.job_id):
-                return self._acknowledge_cancel(lease)
-            self.runtime.heartbeat(
-                lease,
-                progress=0.9,
-                stage="persisting_strategy_result",
-            )
-            point_artifact = self.runtime.store.put_bytes(
-                canonical_json_bytes(points),
-                media_type="application/vnd.verdflow.points+json",
-                schema_id="verdflow.points",
-                schema_version=str(points["version"]),
-            )
+            with tempfile.TemporaryDirectory(
+                prefix=f"{lease.job_id}-{lease.attempt_count}-",
+                dir=self.config.runtime_root,
+            ) as temporary:
+                workdir = Path(temporary)
+                normalized = workdir / "validated-points.json"
+                version = yield from StrategyWorker(
+                    {package.package_hash}, self.config.worker,
+                ).run_steps(
+                    package,
+                    {
+                        "strategy": package.strategy,
+                        ("selected_paths" if path_input else "selected_regions"): selected_geometry,
+                        "seed": command["random_seed"],
+                        "args": command["args"],
+                        "excluded_role_keys": command.get("excluded_role_keys", []),
+                    },
+                    heartbeat=heartbeat,
+                    cancellation_requested=lambda: self._is_cancelled(lease.job_id),
+                    process_started=register_process,
+                    process_finished=finish_process,
+                    workdir_parent=workdir,
+                    normalized_output=normalized,
+                )
+                if self._is_cancelled(lease.job_id):
+                    return self._acknowledge_cancel(lease)
+                persisting = True
+                self.runtime.heartbeat(lease, progress=0.9, stage="persisting_strategy_result")
+                last_heartbeat = time.monotonic()
+                _check_disk_budget(self.runtime.store.root, additional_bytes=normalized.stat().st_size)
+                point_artifact = self.runtime.store.put_file(
+                    normalized,
+                    media_type="application/vnd.verdflow.points+json",
+                    schema_id="verdflow.points",
+                    schema_version=str(version),
+                    on_chunk=heartbeat,
+                )
             package_artifact = self.runtime.store.put_bytes(
                 package_archive,
                 media_type="application/vnd.verdflow.strategy-package+zip",
@@ -239,6 +263,8 @@ class StrategyWorkerSupervisor:
                 schema_id="verdflow.strategy-worker.result",
                 schema_version="1",
             )
+            if self._is_cancelled(lease.job_id):
+                return self._acknowledge_cancel(lease)
             return self.runtime.succeed(
                 lease,
                 result_artifact_id=result_artifact.artifact_id,
@@ -246,19 +272,23 @@ class StrategyWorkerSupervisor:
         except StrategyExecutionCancelled:
             return self._acknowledge_cancel(lease)
         except StrategyAccessError as error:
-            return self.runtime.fail(
+            return self._fail(
                 lease,
                 JobErrorInfo(error.code, str(error), retryable=False),
             )
         except (StrategyWorkerError, ValueError, KeyError, OSError) as error:
-            return self.runtime.fail(
+            disk_full = isinstance(error, OSError) and error.errno == errno.ENOSPC
+            return self._fail(
                 lease,
                 JobErrorInfo(
-                    "STRATEGY_EXECUTION_FAILED",
-                    str(error),
-                    retryable=False,
+                    "STRATEGY_DISK_FULL" if disk_full else "STRATEGY_EXECUTION_FAILED",
+                    "项目磁盘空间不足，未发布新的点位。请释放空间后重试。" if disk_full else str(error),
+                    retryable=disk_full,
                 ),
             )
+        except JobLeaseConflictError:
+            # A stale worker cannot publish, but must not take down the project owner.
+            return None
         finally:
             with self._cancel_lock:
                 self._cancel_requests.discard(lease.job_id)
@@ -408,6 +438,14 @@ class StrategyWorkerSupervisor:
     def _is_cancelled(self, job_id: str) -> bool:
         with self._cancel_lock:
             return job_id in self._cancel_requests
+
+    def _fail(self, lease: JobLease, error: JobErrorInfo) -> JobInfo | None:
+        if self._is_cancelled(lease.job_id):
+            return self._acknowledge_cancel(lease)
+        try:
+            return self.runtime.fail(lease, error)
+        except JobLeaseConflictError:
+            return None
 
     def _acknowledge_cancel(self, lease: JobLease) -> JobInfo | None:
         # The control signal can arrive before the owner mailbox persists intent.

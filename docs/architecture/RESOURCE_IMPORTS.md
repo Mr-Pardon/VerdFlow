@@ -32,6 +32,8 @@ Operation fields are operation_id, status, items, choices, warnings and error. S
 
 Plan commits check the generation observed during preflight. Concurrent changes require another confirmation. Strategy trust remains independent. Missing source catalogs do not block a plan, and a catalog created after confirmation is not overwritten.
 
+Direct local VFA import in the Asset Library reuses identical content. Different content with the same target and catalog ID requires an explicit overwrite; Studio pins the package hash, current catalog hash, and generation when confirming. A provider change cannot be overwritten. Existing plan snapshots are not modified.
+
 ## Discovery
 
 The fixed resource root is https://mr-pardon.github.io/verdflow-resources/. Downloads use that repository's versioned Release attachments and approved GitHub CDN redirects. Plans cannot supply arbitrary download URLs.

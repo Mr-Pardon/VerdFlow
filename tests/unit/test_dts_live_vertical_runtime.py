@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 from contextlib import closing
+import io
+import json
 import sqlite3
 import math
 import xml.etree.ElementTree as ET
@@ -35,6 +37,7 @@ from verdflow.dts_adapter import (  # noqa: E402
     DtsLiveCommandKind,
     DtsLiveOperationStage,
 )
+from verdflow.dts_adapter.live_worker import _write_elevation_json  # noqa: E402
 from verdflow.dts_live_connector import DtsLiveConnectorApplication  # noqa: E402
 from verdflow.library_store import LibraryStore  # noqa: E402
 from verdflow.planting import (  # noqa: E402
@@ -119,6 +122,27 @@ class DtsLiveVerticalRuntimeTests(unittest.TestCase):
     ) -> None:
         self._run_regions(multi=True, path_input=True, partial=True)
 
+    def test_overlapping_paths_do_not_share_failures_and_write_staged_elevation(self) -> None:
+        with patch("verdflow.dts_adapter.live_worker._ELEVATION_STREAM_ROWS", 0):
+            self._run_regions(multi=True, path_input=True, partial=True, overlapping=True)
+
+    def test_staged_elevation_preserves_compact_pointset_bytes_across_batches(self) -> None:
+        for version in ("2", "3"):
+            with self.subTest(version=version):
+                document = {
+                    "schema": "verdflow.points", "version": version, "kind": "elevation_resolved",
+                    "points": [{"id": f"e\u0301:{index}", "generated_position": [0.0, -0.0, 1e-20]}
+                               for index in range(2050)],
+                    "resolution_policy": "sample_hit_else_generated",
+                }
+                stream = io.BytesIO()
+                checkpoints = []
+                _write_elevation_json(stream, document, lambda: checkpoints.append(stream.tell()))
+                self.assertEqual(stream.getvalue(), json.dumps(
+                    document, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+                ).encode("utf-8"))
+                self.assertEqual(len(checkpoints), 3)
+
     def test_all_failed_paths_create_no_xml(self) -> None:
         self._run_regions(multi=True, path_input=True, all_failed=True)
 
@@ -154,6 +178,7 @@ class DtsLiveVerticalRuntimeTests(unittest.TestCase):
         multi_catalog: bool = False,
         with_hole: bool = False,
         path_input: bool = False,
+        overlapping: bool = False,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -254,7 +279,8 @@ class DtsLiveVerticalRuntimeTests(unittest.TestCase):
                             {
                                 "path_id": "route-b",
                                 "name": "Route B",
-                                "coordinates": [[1000, 1000, 0], [1060, 1080, 0]],
+                                "coordinates": ([[0, 0, 0], [100, 0, 0], [100, 100, 0]] if overlapping
+                                                else [[1000, 1000, 0], [1060, 1080, 0]]),
                             },
                         ]
                         if path_input
@@ -294,13 +320,22 @@ class DtsLiveVerticalRuntimeTests(unittest.TestCase):
                             batches = command.payload["batches"]
                             self.assertEqual(len(batches), 2 if multi else 1)
                             self.assertEqual(sum(batch["count"] for batch in batches), len(lines))
+                            if path_input:
+                                expected_xml_count = len(lines) * 2
+                                if overlapping:
+                                    self.assertEqual(batches[0]["count"], batches[1]["count"])
+                                    first_count = batches[0]["count"]
+                                    self.assertEqual(lines[:first_count], lines[first_count:])
                             if with_hole:
                                 first = batches[0]
                                 self.assertGreater(first["count"], 0)
                                 self.assertFalse(any(20 < line["start"][0] < 80 and 20 < line["start"][1] < 80
                                                      for line in lines[first["start"]:first["start"] + first["count"]]))
                             for batch in batches:
-                                for line in lines[batch["start"]:batch["start"] + batch["count"]]:
+                                batch_lines = lines[batch["start"]:batch["start"] + batch["count"]]
+                                if path_input:
+                                    self.assertEqual(len({tuple(line["start"]) for line in batch_lines}), len(batch_lines))
+                                for line in batch_lines:
                                     self.assertGreaterEqual(line["start"][0], batch["bbox"][0])
                                     self.assertLessEqual(line["start"][0], batch["bbox"][3])
                             if all_failed:
@@ -326,7 +361,7 @@ class DtsLiveVerticalRuntimeTests(unittest.TestCase):
                             if partial:
                                 failed, good = batches
                                 indices = list(range(good["start"], good["start"] + good["count"]))
-                                expected_xml_count = good["count"]
+                                expected_xml_count = good["count"] * (2 if path_input else 1)
                                 # An earlier successful window of the failed face must also be excluded.
                                 indices.append(failed["start"])
                                 for start in range(0, len(indices), 2000):
@@ -410,6 +445,7 @@ class DtsLiveVerticalRuntimeTests(unittest.TestCase):
                                 )
                                 vegetation_scales = []
                                 for row in ET.fromstring(xml):
+                                    self.assertEqual(float(row.findtext("LocationZ")), 0.0)
                                     matrix = [
                                         float(value)
                                         for value in row.findtext("Matrix3").split(",")
@@ -441,8 +477,9 @@ class DtsLiveVerticalRuntimeTests(unittest.TestCase):
                                 )
                                 self.assertFalse(runtime_path.exists())
                                 return
-                            if partial:
+                            if expected_xml_count is not None:
                                 self.assertEqual(xml_path.read_text("utf-8").count("<ModelPoint>"), expected_xml_count)
+                            if partial:
                                 failures = manager.snapshot(bootstrap.connector_session_id, grant.access_token).sampling_failures
                                 self.assertEqual(
                                     [

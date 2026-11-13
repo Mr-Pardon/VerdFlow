@@ -308,6 +308,12 @@ def _execute_operation(
     )
     if binding.semantic_hash != execution.effective_binding_semantic_hash:
         raise RuntimeError("DTS Live effective binding changed after selection")
+    workflow = host.workflows.resolve(
+        host.store, scene_revision_id=prepared.scene_revision_id,
+        recipe_id="verdflow.dts-live-selection", target_type=execution.target_type,
+        geometry_kind="polyline" if path_set else "polygon",
+        configuration={**context, "ray_half_range": 5000.0},
+    )
     resolved = host.resolve_elevation_and_export(
         ResolveElevationAndExportRequest(
             generated_point_set_id=(
@@ -316,11 +322,12 @@ def _execute_operation(
             asset_assignment_set_id=(
                 prepared_run.assignment.assignments.asset_assignment_set_id
             ),
-            elevation_provider_id=DTS_LIVE_ADAPTER_ID,
-            export_provider_id=DTS_ADAPTER_ID,
+            elevation_provider_id=workflow.elevation_provider_id,
+            export_provider_id=workflow.export_provider_id,
             offset=(0.0, 0.0, 0.0),
             elevation_options={**context, "ray_half_range": 5000.0},
             require_terrain_hit=True,
+            workflow=workflow,
         ),
         timeouts=PlantRunTimeouts(elevation_seconds=7 * 24 * 3600, export_seconds=3600),
     )

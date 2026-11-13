@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Generator
 from dataclasses import dataclass
 from threading import RLock
+from time import sleep
 from typing import Protocol
 
 from verdflow.contracts import JobInfo
@@ -30,6 +32,43 @@ class WorkerDriver(Protocol):
     def reconcile(self) -> int: ...
 
     def request_cancel(self, job_id: str) -> None: ...
+
+
+class WorkerJobPoller:
+    """Advance a supervised attempt without waiting on its subprocess."""
+
+    def __init__(self, start: Callable[[], Generator[None, None, JobInfo | None]]) -> None:
+        self._start = start
+        self._steps: Generator[None, None, JobInfo | None] | None = None
+
+    @property
+    def active(self) -> bool:
+        return self._steps is not None
+
+    def poll(self) -> JobInfo | None:
+        if self._steps is None:
+            self._steps = self._start()
+        try:
+            next(self._steps)
+        except StopIteration as done:
+            self._steps = None
+            return done.value
+        except BaseException:
+            self._steps = None
+            raise
+        return None
+
+    def run_once(self, interval: float) -> JobInfo | None:
+        job = self.poll()
+        while self.active:
+            sleep(interval)
+            job = self.poll()
+        return job
+
+    def close(self) -> None:
+        steps, self._steps = self._steps, None
+        if steps is not None:
+            steps.close()
 
 
 class WorkerRegistry:
@@ -95,12 +134,28 @@ class WorkerRegistry:
     def run_once(self) -> tuple[JobInfo, ...]:
         with self._lock:
             drivers = tuple(self._drivers)
+        # Preserve single-attempt scheduling per project even across polling ticks.
+        active = next((driver for driver in drivers if getattr(driver, "active", False)), None)
+        if active is not None:
+            drivers = (active,)
         completed: list[JobInfo] = []
         for driver in drivers:
             job = driver.run_once()
             if job is not None:
                 completed.append(job)
+            if getattr(driver, "active", False):
+                break
         return tuple(completed)
+
+    @property
+    def active(self) -> bool:
+        return any(getattr(driver, "active", False) for driver in self._drivers)
+
+    def close(self) -> None:
+        for driver in self._drivers:
+            close = getattr(driver, "close", None)
+            if close is not None:
+                close()
 
     def request_cancel(self, job: JobInfo) -> bool:
         with self._lock:

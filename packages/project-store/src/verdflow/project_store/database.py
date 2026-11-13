@@ -73,14 +73,25 @@ class ProjectDatabase:
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         connection = self.connection
+        if connection.in_transaction:
+            connection.execute("SAVEPOINT project_write")
+            try:
+                yield connection
+                connection.execute("RELEASE project_write")
+            except BaseException:
+                if connection.in_transaction:
+                    connection.execute("ROLLBACK TO project_write")
+                    connection.execute("RELEASE project_write")
+                raise
+            return
         connection.execute("BEGIN IMMEDIATE")
         try:
             yield connection
-        except Exception:
-            connection.execute("ROLLBACK")
-            raise
-        else:
             connection.execute("COMMIT")
+        except BaseException:
+            if connection.in_transaction:
+                connection.execute("ROLLBACK")
+            raise
 
 
 class ReadOnlyProjectDatabase:

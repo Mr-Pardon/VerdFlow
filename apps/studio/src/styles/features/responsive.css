@@ -389,13 +389,13 @@
   }
 
   .filter-bar {
-    grid-template-columns: repeat(5, minmax(72px, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     align-self: stretch;
-    overflow-x: auto;
   }
 
   .filter-bar button {
-    padding: 0 10px;
+    padding: 0 4px;
+    white-space: nowrap;
   }
 
   .project-grid {

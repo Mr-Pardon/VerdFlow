@@ -180,7 +180,7 @@ class PlantingGenerationService:
                 artifact_id=artifact.artifact_id,
             ),
             idempotency_key=(idempotency_key or default_key),
-            max_attempts=1,
+            max_attempts=2,
             retention_class=JobRetentionClass.RUN,
         )
 

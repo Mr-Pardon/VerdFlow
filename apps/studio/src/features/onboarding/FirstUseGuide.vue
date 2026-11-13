@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onScopeDispose, ref, watch } from "vue";
 import { useRouter } from "vue-router";
-import { ArrowLeft, ArrowRight, Check, ChevronDown, Compass, Download, Layers3, LoaderCircle, PackageOpen, Sprout, X } from "@lucide/vue";
+import { ArrowLeft, ArrowRight, BookOpen, Boxes, Check, ChevronDown, Compass, Download, LibraryBig, LoaderCircle, PackageOpen, Sprout, X } from "@lucide/vue";
 import { activeConfirmation } from "../../components/confirmDialog";
 import { guideSteps, type GuideWorkflow } from "./steps";
 import type { FirstUseGuide } from "./useFirstUseGuide";
@@ -13,12 +13,17 @@ const dialog = ref<HTMLDialogElement>();
 const starterOpen = ref(false);
 const logo = `${import.meta.env.BASE_URL}brand/logo-light.png`;
 const author = computed(() => "author" in guide.step.value ? guide.step.value.author : null);
-const canResume = computed(() => guide.progress.value.status === "paused" && guide.progress.value.visited.length > 0);
+const canResume = computed(() => guide.progress.value.status === "paused" && (guide.index.value > 0 || guide.progress.value.visited.length > 0));
 const deferWelcome = () => canResume.value ? guide.pause() : guide.dismiss();
 const needsSetup = computed(() => guide.page.value?.ready === false);
+const isLastStep = computed(() => guide.index.value === guideSteps.length - 1);
+const skipCurrent = computed(() => needsSetup.value || Boolean(guide.page.value?.error || guide.page.value?.loading));
+const nextLabel = computed(() => guide.step.value.id === "runtimes"
+  ? skipCurrent.value ? "稍后配置" : "准备资源"
+  : skipCurrent.value ? "暂时跳过" : isLastStep.value ? "完成引导" : "下一步");
 const skipped = computed(() => guideSteps.filter(step => guide.progress.value.skipped.includes(step.id)));
 const workflows: { value: GuideWorkflow; label: string }[] = [
-  { value: "live", label: "实时种植" }, { value: "fbx", label: "FBX 工作流" }, { value: "both", label: "两种都用" },
+  { value: "live", label: "DTS 实时种植" }, { value: "fbx", label: "FBX 工作台" }, { value: "both", label: "两种都用" },
 ];
 watch([dialog, guide.surface], ([element, surface]) => {
   if (!element) return;
@@ -46,26 +51,27 @@ const finish = async () => { guide.pause(); await router.push("/dts"); };
     <template v-if="guide.surface.value !== 'finish'">
       <div class="guide-welcome__body">
         <span class="guide-eyebrow">第一次使用</span>
-        <h2 id="guide-welcome-title">从准备资源，到开始种植</h2>
-        <p>一起认识 VerdFlow 的主要入口。可以边看边配置，也可以随时跳过，之后从设置继续。</p>
+        <h2 id="guide-welcome-title">准备第一次种植</h2>
+        <p>VerdFlow 用资产和策略完成种植。所需资源可从内置资源中心获取。</p>
         <ol class="guide-overview">
-          <li><PackageOpen :size="21" /><div><strong>准备资产与策略</strong><span>导入资源，了解两种 Author 创作工具</span></div></li>
-          <li><Layers3 :size="21" /><div><strong>连接你的工作环境</strong><span>按使用路径配置；模型服务可选</span></div></li>
-          <li><Sprout :size="21" /><div><strong>找到工作入口，复用种植方案</strong><span>认识工作台、项目管理和方案库</span></div></li>
+          <li><Boxes :size="21" /><div><strong>资产库</strong><span>决定能种什么，记录可用的植被模型。</span></div></li>
+          <li><BookOpen :size="21" /><div><strong>种植策略</strong><span>决定怎么种，例如成片分布或沿线排列。</span></div></li>
+          <li><Sprout :size="21" /><div><strong>种植方案 · 可选</strong><span>复用搭配与参数，不必每次从头配置。</span></div></li>
         </ol>
-        <p class="guide-note">还没有资源包？先认识界面即可，不会自动导入资源或信任策略。</p>
+        <p class="guide-note">先选工作方式，再按需准备环境和资源。可以随时暂停，从设置继续。</p>
       </div>
       <footer class="guide-welcome__footer">
         <button class="text-button" type="button" @click="deferWelcome">{{ canResume ? '稍后继续' : '暂时跳过' }}</button>
         <button v-if="canResume" class="text-button" type="button" :disabled="guide.busy.value" @click="guide.start(true)">从头了解</button>
-        <button class="primary-button" type="button" autofocus :disabled="guide.busy.value" @click="guide.start()">{{ canResume ? '继续引导' : '开始了解' }}<ArrowRight :size="17" /></button>
+        <button class="primary-button" type="button" autofocus :disabled="guide.busy.value" @click="guide.start()">{{ canResume ? '继续引导' : '选择工作方式' }}<ArrowRight :size="17" /></button>
       </footer>
     </template>
     <template v-else>
       <div class="guide-welcome__body">
         <span class="guide-eyebrow">引导结束</span>
         <h2 id="guide-finish-title">开始你的第一片绿地</h2>
-        <p>主要入口已经介绍完了。配置可以按需补齐，左上角的 Logo 随时带你前往用户手册。</p>
+        <p>接下来可以从 DTS 工作台进入种植。需要新方案或策略新版时，再回资源中心。</p>
+        <RouterLink class="text-button guide-finish-resource" to="/resources" @click="guide.pause"><LibraryBig :size="16" />资源中心<ArrowRight :size="14" /></RouterLink>
         <div v-if="skipped.length" class="guide-deferred">
           <strong>这些步骤留待之后</strong>
           <button v-for="step in skipped" :key="step.id" type="button" @click="guide.go(step.id)">{{ step.title }}<ArrowRight :size="15" /></button>
@@ -98,7 +104,7 @@ const finish = async () => { guide.pause(); await router.push("/dts"); };
         </label>
       </fieldset>
       <p class="guide-note">{{ guide.step.value.hint }}</p>
-      <button v-if="['assets', 'strategies', 'plans'].includes(guide.step.value.id)" class="primary-button" type="button" :disabled="guide.busy.value" @click="starterOpen = true"><Download :size="16" />导入推荐资源</button>
+      <button v-if="guide.step.value.id === 'resources'" class="primary-button" type="button" :disabled="guide.busy.value" @click="starterOpen = true"><Download :size="16" />一键导入推荐资源</button>
       <div v-if="author" class="guide-author">
         <strong><PackageOpen :size="16" />{{ author.name }} <small>进阶创作 · 可选</small></strong>
         <p>{{ author.description }}</p>
@@ -109,16 +115,17 @@ const finish = async () => { guide.pause(); await router.push("/dts"); };
         <Check v-else-if="guide.page.value.ready && !guide.page.value.error" :size="15" />
         <span>{{ guide.page.value.loading ? '正在读取当前状态' : guide.page.value.error ? '状态未完整读取，请查看页面提示后重试。' : guide.page.value.status }}</span>
       </div>
-      <div v-if="guide.page.value?.actions?.length" class="guide-actions">
-        <button v-for="action in guide.page.value.actions" :key="action.label" class="secondary-button" type="button" :disabled="guide.busy.value || action.disabled" @click="guide.run(action)">{{ action.label }}<ArrowRight :size="14" /></button>
+      <div v-if="guide.page.value?.actions?.length || guide.step.value.id === 'plans'" class="guide-actions">
+        <button v-for="action in guide.page.value?.actions" :key="action.label" :class="action.primary ? 'primary-button' : 'secondary-button'" type="button" :disabled="guide.busy.value || action.disabled" @click="guide.run(action)">{{ action.label }}<ArrowRight :size="14" /></button>
+        <RouterLink v-if="guide.step.value.id === 'plans'" class="primary-button" to="/resources"><LibraryBig :size="14" />前往资源中心<ArrowRight :size="14" /></RouterLink>
       </div>
       <p v-if="guide.error.value" role="alert" class="guide-error">{{ guide.error.value }}</p>
     </div>
     <footer class="guide-coach__footer">
       <button class="icon-button" type="button" aria-label="上一步" title="上一步" :disabled="guide.index.value === 0 || guide.busy.value" @click="guide.previous"><ArrowLeft :size="17" /></button>
       <span>{{ needsSetup ? '也可以稍后配置' : '随时可暂停' }}</span>
-      <button class="primary-button" type="button" :disabled="guide.busy.value" @click="guide.next(needsSetup || Boolean(guide.page.value?.error) || Boolean(guide.page.value?.loading))">{{ needsSetup || guide.page.value?.loading ? '暂时跳过' : guide.index.value === 6 ? '完成引导' : '下一步' }}<ArrowRight :size="16" /></button>
+      <button class="primary-button" type="button" :disabled="guide.busy.value" @click="guide.next(skipCurrent)">{{ nextLabel }}<ArrowRight :size="16" /></button>
     </footer>
   </aside>
-  <button v-else-if="guide.surface.value === 'collapsed' && !activeConfirmation" class="guide-resume" type="button" :disabled="guide.busy.value" :title="guide.error.value || '回到当前引导步骤'" @click="guide.go(guide.step.value.id)"><Compass :size="18" />继续引导 <small>{{ guide.index.value + 1 }} / 7</small><ArrowRight :size="15" /></button>
+  <button v-else-if="guide.surface.value === 'collapsed' && !activeConfirmation" class="guide-resume" type="button" :disabled="guide.busy.value" :title="guide.error.value || '回到当前引导步骤'" @click="guide.go(guide.step.value.id)"><Compass :size="18" />继续引导 <small>{{ guide.index.value + 1 }} / {{ guideSteps.length }}</small><ArrowRight :size="15" /></button>
 </template>

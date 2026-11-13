@@ -2,6 +2,15 @@ import type { Bounds3D } from "../../api";
 
 export type RegionBoundary = Array<Array<[number, number, number]>>;
 
+export const extentBoundary = (bounds: Bounds3D): RegionBoundary => [
+  [
+    [bounds.min_x, bounds.min_y, 0],
+    [bounds.max_x, bounds.min_y, 0],
+    [bounds.max_x, bounds.max_y, 0],
+    [bounds.min_x, bounds.max_y, 0],
+  ],
+];
+
 export const boundsContainPoint = (
   bounds: Bounds3D,
   x: number,

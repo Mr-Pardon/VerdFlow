@@ -19,6 +19,7 @@ import { PortableUpdater } from "./portable-updater.mjs";
 import { registerUpdateHandlers } from "./update-ipc.mjs";
 import { DialogPathMemory } from "./dialog-path-memory.mjs";
 import { downloadLocalApiFile } from "./local-api-download.mjs";
+import { createDtsLiveQuitGuard, dtsLiveQuitPrompt } from "./dts-live-quit.mjs";
 import { manualWindowOpenHandler, USER_MANUAL_URL } from "./manual-link.mjs";
 import { dailyCoreLogName, portableLayout } from "./portable-runtime.mjs";
 import {
@@ -65,6 +66,7 @@ let coreLogStream = null;
 let packagedShutdownStarted = false;
 let dialogPathMemory = null;
 let updateApplying = false;
+let updateRestartRequested = false;
 let pendingLocalMutations = 0;
 const updater = new PortableUpdater({
   portable, version: app.getVersion(), scriptRoot: currentDirectory,
@@ -75,11 +77,11 @@ const updater = new PortableUpdater({
   },
 });
 
-const readUpdateTaskState = async (apiPath) => {
+const readDesktopTaskState = async (apiPath, timeoutMs = 5000) => {
   const headers = { Accept: "application/json" };
   if (localApi.token) headers.Authorization = `Bearer ${localApi.token}`;
-  const response = await fetch(new URL(apiPath, localApi.baseUrl), { headers, signal: AbortSignal.timeout(5000) });
-  if (!response.ok) throw new Error("无法确认当前任务状态，请稍后更新");
+  const response = await fetch(new URL(apiPath, localApi.baseUrl), { headers, signal: AbortSignal.timeout(timeoutMs) });
+  if (!response.ok) throw new Error("无法确认当前任务状态");
   return response.json();
 };
 
@@ -105,6 +107,21 @@ const diagnostic = (message) => {
   }
 };
 
+const guardLiveQuit = createDtsLiveQuitGuard({
+  readStatus: () => readDesktopTaskState("/api/v1/dts-live/status", 1500),
+  hasRunningExplorer: () => Boolean(dtsExplorerLaunch &&
+    dtsExplorerLaunch.process.exitCode === null && dtsExplorerLaunch.process.signalCode === null),
+  confirm: async (owner) => {
+    const options = { ...dtsLiveQuitPrompt, buttons: [...dtsLiveQuitPrompt.buttons] };
+    const result = owner && !owner.isDestroyed()
+      ? await dialog.showMessageBox(owner, options)
+      : await dialog.showMessageBox(options);
+    return result.response === 1;
+  },
+  quit: () => app.quit(),
+  onError: (error) => diagnostic(`could not check DTS Live shutdown: ${readableError(error)}`),
+});
+
 const success = (value) => ({ ok: true, value });
 const failure = (reason, message) => ({ ok: false, reason, message });
 
@@ -116,6 +133,7 @@ const startPackagedLocalApi = async () => {
     mkdir(portable.logsPath, { recursive: true }),
   ]);
   await access(portable.pythonExecutablePath);
+  const hasImageryModel = (await stat(portable.imageryModelPath).catch(() => null))?.isFile();
   const managementToken = randomBytes(32).toString("hex");
   const logPath = path.join(portable.logsPath, dailyCoreLogName());
   coreLogStream = createWriteStream(logPath, { flags: "a", encoding: "utf8" });
@@ -131,6 +149,7 @@ const startPackagedLocalApi = async () => {
       "127.0.0.1",
       "--port",
       "0",
+      ...(hasImageryModel ? ["--imagery-model", portable.imageryModelPath] : []),
     ],
     {
       cwd: portable.userDataPath,
@@ -156,7 +175,10 @@ const startPackagedLocalApi = async () => {
     VERDFLOW_LOCAL_API_BASE_URL: ready.base_url,
     VERDFLOW_LOCAL_API_MANAGEMENT_TOKEN: managementToken,
   });
-  await waitForLocalApiHealth(`${localApi.baseUrl}/api/v1/health`);
+  const health = await waitForLocalApiHealth(`${localApi.baseUrl}/api/v1/health`);
+  if (process.env.VERDFLOW_PORTABLE_SMOKE_TEST === "1" && health.imagery_available !== true) {
+    throw new Error("便携包未启用影像提取");
+  }
   diagnostic(`packaged Local API ready at ${localApi.baseUrl}`);
 };
 
@@ -211,7 +233,7 @@ const waitForLocalApiHealth = async (url) => {
   while (Date.now() < deadline) {
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
-      if (response.ok) return;
+      if (response.ok) return await response.json();
       lastError = new Error(`HTTP ${response.status}`);
     } catch (error) {
       lastError = error;
@@ -261,8 +283,9 @@ const waitForChildExit = (child, timeoutMs) => {
 
 const registerHandlers = () => {
   registerUpdateHandlers({ ipcMain, BrowserWindow, dialog, updater,
-    readTaskState: readUpdateTaskState, hasPendingMutations: () => pendingLocalMutations > 0,
-    setApplying: value => { updateApplying = value; }, quit: () => app.quit(),
+    readTaskState: readDesktopTaskState, hasPendingMutations: () => pendingLocalMutations > 0,
+    setApplying: value => { updateApplying = value; },
+    quit: () => { updateRestartRequested = true; app.quit(); },
   });
   ipcMain.handle(channels.connection, () =>
     success({
@@ -589,6 +612,11 @@ const createWindow = async () => {
     },
   }));
   window.on("page-title-updated", (event) => event.preventDefault());
+  if (process.platform !== "darwin") {
+    window.on("close", (event) => {
+      if (!updateRestartRequested) guardLiveQuit(event, window);
+    });
+  }
   window.webContents.on("will-navigate", (event, target) => {
     if (target !== window.webContents.getURL()) {
       event.preventDefault();
@@ -676,6 +704,7 @@ if (!hasInstanceLock) {
   });
 
   app.on("before-quit", (event) => {
+    if (!updateRestartRequested && guardLiveQuit(event, BrowserWindow.getAllWindows()[0])) return;
     updater.dispose();
     if (
       portable === null ||

@@ -352,6 +352,7 @@ onMounted(() => void review.initialize());
         ref="canvas"
         :bounds="review.reviewBounds.value"
         :regions="review.regions.value"
+        :region-overview="review.overview.value"
         :points="visiblePoints"
         :colors="review.colors.value"
         :loading="review.loading.value || review.loadingPoints.value || review.loadingRegions.value"
@@ -369,12 +370,11 @@ onMounted(() => void review.initialize());
         </button>
       </div>
       <div
-        v-if="!review.pointDetailsVisible.value || review.pointsCapped.value || review.regionsCapped.value"
+        v-if="!review.pointDetailsVisible.value || review.pointsCapped.value"
         class="region-viewer-notice"
       >
         <template v-if="!review.pointDetailsVisible.value">种植面概览</template>
-        <template v-else-if="review.pointsCapped.value">当前画幅点位预览已限流</template>
-        <template v-else>当前画幅地形数据已达显示上限</template>
+        <template v-else>当前画幅点位预览已限流</template>
       </div>
     </div>
 

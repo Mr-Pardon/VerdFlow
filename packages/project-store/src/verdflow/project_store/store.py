@@ -9,7 +9,7 @@ import uuid
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO, Callable, Iterator
 
 from verdflow.contracts import (
     ArtifactRef,
@@ -29,6 +29,9 @@ from verdflow.contracts import (
     JobErrorInfo,
     JobEvent,
     JobInfo,
+    JobListCursor,
+    JobListPage,
+    JobStatus,
     JobLease,
     JobRetentionClass,
     JobRecoveryResult,
@@ -78,7 +81,7 @@ from .migrations import (
     cleanup_completed_migration_backups,
     migrate_to_current,
 )
-from .object_store import ContentAddressedObjectStore
+from .object_store import HASH_CHUNK_SIZE, ContentAddressedObjectStore
 from .plant_run_executions import PlantRunExecutionRepository
 from .planting_compositions import PlantingCompositionRepository
 from .points import PointRepository
@@ -387,6 +390,12 @@ class ProjectStore:
             region_set_id=region_set_id,
             updated_at=self._now_text(),
         )
+
+    @contextmanager
+    def atomic_write(self) -> Iterator[None]:
+        """Group related repository writes into one visible project transition."""
+        with self._database.transaction():
+            yield
 
     def start_plant_run_workflow(
         self,
@@ -1205,9 +1214,11 @@ class ProjectStore:
         media_type: str,
         schema_id: str | None = None,
         schema_version: str | None = None,
+        on_chunk: Callable[[], None] | None = None,
+        on_progress: Callable[[int], None] | None = None,
     ) -> ArtifactRef:
         self._validate_media_type(media_type)
-        stored_object = self._object_store.put_file(source)
+        stored_object = self._object_store.put_file(source, on_chunk=on_chunk, on_progress=on_progress)
         return self._artifacts.register(
             stored_object,
             media_type=media_type,
@@ -1217,6 +1228,23 @@ class ProjectStore:
 
     def get_artifact(self, artifact_id: str) -> ArtifactRef:
         return self._artifacts.get(artifact_id)
+
+    def write_artifact(
+        self,
+        write: Callable[[BinaryIO], None],
+        *,
+        media_type: str,
+        schema_id: str | None = None,
+        schema_version: str | None = None,
+        on_chunk: Callable[[], None] | None = None,
+    ) -> ArtifactRef:
+        self._validate_media_type(media_type)
+        return self._artifacts.register(
+            self._object_store.write_object(write, on_chunk=on_chunk),
+            media_type=media_type,
+            schema_id=schema_id,
+            schema_version=schema_version,
+        )
 
     @contextmanager
     def open_artifact(self, artifact_id: str) -> Iterator[BinaryIO]:
@@ -1233,6 +1261,8 @@ class ProjectStore:
         self,
         artifact_id: str,
         destination: Path,
+        *,
+        on_chunk: Callable[[], None] | None = None,
     ) -> Path:
         """Copy an immutable Artifact to an Adapter-owned private path."""
         destination = destination.resolve()
@@ -1243,7 +1273,12 @@ class ProjectStore:
         try:
             with self.open_artifact(artifact_id) as source:
                 with temporary.open("wb") as target:
-                    shutil.copyfileobj(source, target)
+                    if on_chunk is None:
+                        shutil.copyfileobj(source, target)
+                    else:
+                        while chunk := source.read(HASH_CHUNK_SIZE):
+                            target.write(chunk)
+                            on_chunk()
                     target.flush()
                     os.fsync(target.fileno())
             os.replace(temporary, destination)
@@ -1277,6 +1312,12 @@ class ProjectStore:
     def get_job(self, job_id: str) -> JobInfo:
         return self._jobs.get(job_id)
 
+    def list_jobs(
+        self, *, statuses: tuple[JobStatus, ...] = (), command_types: tuple[str, ...] = (),
+        before: JobListCursor | None = None, limit: int = 50,
+    ) -> JobListPage:
+        return self._jobs.list_page(statuses=statuses, command_types=command_types, before=before, limit=limit)
+
     def promote_job_retention(
         self,
         job_id: str,
@@ -1291,12 +1332,14 @@ class ProjectStore:
         now: str,
         lease_expires_at: str,
         command_types: tuple[str, ...] | None = None,
+        only_job_id: str | None = None,
     ) -> ClaimedJob | None:
         return self._jobs.claim_next(
             worker_id=worker_id,
             now=now,
             lease_expires_at=lease_expires_at,
             command_types=command_types,
+            only_job_id=only_job_id,
         )
 
     def heartbeat_job(

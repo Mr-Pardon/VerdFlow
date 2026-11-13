@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+from io import BytesIO
+import json
 from pathlib import Path
 import sys
 import unittest
@@ -16,12 +18,15 @@ from verdflow.planting import (  # noqa: E402
     PlantingDocumentError,
     build_effective_binding_from_profile,
     build_effective_binding_snapshot,
+    canonical_json_bytes,
     load_catalog_yaml,
     load_profile_yaml,
     load_strategy_yaml,
     resolve_asset_assignments,
     resolve_persisted_asset_assignments,
+    write_persisted_asset_assignments,
 )
+from verdflow.planting.canonical import canonical_row_bytes  # noqa: E402
 
 
 STRATEGY_ROOT = ROOT / "strategy-packs" / "universal-natural-grove"
@@ -85,6 +90,56 @@ def _points() -> dict:
 
 
 class PlantingResolutionTests(unittest.TestCase):
+    def test_flat_row_encoding_is_exactly_canonical(self) -> None:
+        rows = [
+            {}, _points()["points"][0],
+            {"id": "cafe\u0301", "optional": None, "value": -0.0, "scale": [-0.0, 0, 1e-25], "bool": False},
+            {"id": "\u6811", "size_intent": {"height": -0.0, "tags": ["cafe\u0301", True]}},
+            {"caf\u00e9": "non-ascii-key", "vector": [1, 2, 3, 4, 5]},
+        ]
+        for row in rows:
+            with self.subTest(row=row):
+                self.assertEqual(canonical_row_bytes(row), canonical_json_bytes(row))
+
+    def test_flat_row_encoding_keeps_validation_errors(self) -> None:
+        cycle = []
+        cycle.append(cycle)
+        rows = [
+            {"p": [0, float("nan")]}, {"scale": float("inf")}, {"p": cycle},
+            {"caf\u00e9": 1, "cafe\u0301": 2}, {"p": [1, object()]}, {1: "invalid key"},
+        ]
+        for row in rows:
+            with self.subTest(row=row):
+                with self.assertRaises(PlantingDocumentError) as original:
+                    canonical_json_bytes(row)
+                with self.assertRaises(PlantingDocumentError) as optimized:
+                    canonical_row_bytes(row)
+                self.assertEqual(str(original.exception), str(optimized.exception))
+
+    def test_streaming_assignment_has_identical_canonical_bytes(self) -> None:
+        points = _points()
+        points["version"] = "3"
+        templates = points["points"]
+        for template in templates:
+            template["path_id"] = template.pop("region_id")
+            template["group_id"] = "pair"
+        points["points"] = [{**templates[i % 2], "id": f"p_{i}"} for i in range(4100)]
+        points["point_count"] = len(points["points"])
+        snapshot = build_effective_binding_from_profile(_strategy(), _profile())
+        expected = resolve_asset_assignments(points, snapshot, random_seed=42)
+        data = json.dumps(points, indent=2).encode("utf-8")
+        output = BytesIO()
+        write_persisted_asset_assignments(
+            BytesIO(data), output, snapshot, random_seed=42,
+            expected_point_count=4100, point_kind="generated",
+        )
+        self.assertEqual(output.getvalue(), canonical_json_bytes(expected))
+        with self.assertRaises(PlantingDocumentError):
+            write_persisted_asset_assignments(
+                BytesIO(data + b"{}"), BytesIO(), snapshot, random_seed=42,
+                expected_point_count=4100, point_kind="generated",
+            )
+
     def test_persisted_point_set_path_preserves_assignment_output(self) -> None:
         points = _points()
         snapshot = build_effective_binding_from_profile(_strategy(), _profile())

@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from base64 import b64decode
 from dataclasses import replace
 from io import BytesIO
 import json
+import math
 from pathlib import Path
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
+import zlib
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,6 +45,7 @@ from verdflow.contracts import (  # noqa: E402
 )
 from verdflow.studio_service.viewer_queries import (  # noqa: E402
     ProjectViewerQueries,
+    ViewerProjectionError,
     _LruCache,
     _simplify_closed_ring,
 )
@@ -170,6 +176,16 @@ class _FixtureStore:
             ),
         }
         self.open_counts: dict[str, int] = {}
+        self.occupied: tuple[str, ...] = ()
+
+    def current_planting_composition(self):
+        return SimpleNamespace(region_set_id=self.region_set.region_set_id) if self.occupied else None
+
+    def list_planting_batches(self):
+        return (SimpleNamespace(selected_region_ids=self.occupied),)
+
+    def get_artifact(self, artifact_id: str):
+        return SimpleNamespace(byte_size=len(self.artifacts[artifact_id]))
 
     def get_region_set(self, region_set_id: str) -> RegionSetInfo:
         assert region_set_id == self.region_set.region_set_id
@@ -309,7 +325,99 @@ class _MultiBatchFixtureStore(_FixtureStore):
         return super().list_assignment_assets(self.assignment_set.asset_assignment_set_id)
 
 
+def _complete_point_documents() -> _FixtureStore:
+    from verdflow.planting import semantic_hash
+
+    store = _FixtureStore()
+    points = json.loads(store.artifacts["artifact_points"])
+    points.update(
+        coordinate_space="source_scene_world", offset_applied=False, kind="generated",
+        resolution_policy="generated_position", point_count=4,
+        strategy={"strategy_id": "fixture", "strategy_version": "1"},
+    )
+    for point in points["points"]:
+        point.update(
+            generated_position=point["resolved_position"], terrain_sample=None,
+            rotation_quaternion_xyzw=[0, 0, 0, 1],
+        )
+    assigned = json.loads(store.artifacts["artifact_assignments"])
+    assigned.update(
+        point_count=4, target_type="dts", random_seed=7, resolver={"id": "fixture", "version": "1"},
+        point_set_hash=semantic_hash(points), effective_binding_snapshot_hash="sha256:" + "0" * 64,
+    )
+    for point, mapping in zip(points["points"], assigned["assignments"], strict=True):
+        mapping["role_key"] = point["role_key"]
+    assigned["semantic_hash"] = semantic_hash(assigned)
+    store.assignment_set = replace(store.assignment_set, semantic_hash=assigned["semantic_hash"])
+    store.artifacts["artifact_points"] = store._json_bytes(points)
+    store.artifacts["artifact_assignments"] = store._json_bytes(assigned)
+    return store
+
+
 class ProjectViewerQueriesTests(unittest.TestCase):
+    def test_large_review_reuses_disk_index_and_preserves_viewport_order(self) -> None:
+        store = _complete_point_documents()
+        reference = ProjectViewerQueries(store)
+        args = ("points_1", "assignments_1")
+        view = dict(min_x=1, min_y=1, max_x=6, max_y=2, limit=1)
+        expected_manifest = reference.point_manifest(*args)
+        expected = reference.point_chunk(*args, **view)
+        expected_second = reference.point_chunk(*args, **view, after_ordinal=expected.next_after_ordinal, assets=("oak",))
+        store.open_counts.clear()
+
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "verdflow.studio_service.viewer_queries._POINT_INDEX_MEMORY_ROWS", 0,
+        ):
+            root = Path(directory) / "cache"
+            queries = ProjectViewerQueries(store, cache_root=root)
+            try:
+                self.assertEqual(queries.point_manifest(*args), expected_manifest)
+                self.assertNotIn("artifact_points", store.open_counts)
+                self.assertFalse(root.exists())
+                self.assertEqual(queries.point_chunk(*args, **view), expected)
+                self.assertEqual(
+                    queries.point_chunk(*args, **view, after_ordinal=expected.next_after_ordinal, assets=("oak",)),
+                    expected_second,
+                )
+                self.assertEqual(store.open_counts["artifact_points"], 1)
+                self.assertEqual(store.open_counts["artifact_assignments"], 2)
+                self.assertEqual(queries.point_manifest(*args), expected_manifest)
+                index, = root.glob("point-review-*/*.sqlite")
+                index.unlink()
+                self.assertEqual(queries.point_chunk(*args, **view), expected)
+                self.assertEqual(store.open_counts["artifact_points"], 2)
+            finally:
+                queries.close()
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_failed_large_projection_does_not_reuse_partial_index(self) -> None:
+        for failure in ("tail", "closed"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as directory, patch(
+                "verdflow.studio_service.viewer_queries._POINT_INDEX_MEMORY_ROWS", 0,
+            ):
+                store = _complete_point_documents()
+                if failure == "tail":
+                    store.artifacts["artifact_assignments"] += b" {}"
+                root = Path(directory) / "cache"
+                queries = ProjectViewerQueries(store, cache_root=root, cancelled=lambda: failure == "closed")
+                try:
+                    with self.assertRaises(ViewerProjectionError):
+                        queries.point_chunk("points_1", "assignments_1", min_x=0, min_y=0, max_x=21, max_y=21)
+                    self.assertEqual(list(root.glob("point-review-*/*.sqlite")), [])
+                finally:
+                    queries.close()
+
+    def test_point_response_budget_keeps_following_items_addressable(self) -> None:
+        queries = ProjectViewerQueries(_FixtureStore())
+        args = ("points_1", "assignments_1")
+        view = dict(min_x=0, min_y=0, max_x=8, max_y=4)
+        with patch("verdflow.studio_service.point_review_index._RESPONSE_BYTES", 800):
+            first = queries.point_chunk(*args, **view)
+            self.assertTrue(first.truncated)
+            self.assertEqual([item.ordinal for item in first.items], [0])
+            second = queries.point_chunk(*args, **view, after_ordinal=first.next_after_ordinal)
+            self.assertEqual([item.ordinal for item in second.items], [1])
+
     def test_three_batches_do_not_thrash_projection_caches(self) -> None:
         store = _MultiBatchFixtureStore()
         queries = ProjectViewerQueries(store)
@@ -413,6 +521,162 @@ class ProjectViewerQueriesTests(unittest.TestCase):
         self.assertFalse(second.truncated)
         self.assertEqual(second.items[0].region_id, "r2")
         self.assertEqual(store.open_counts["artifact_regions"], 1)
+
+    def test_region_disk_index_reuses_exact_geometry_and_vertex_pages(self) -> None:
+        store = _FixtureStore()
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("verdflow.studio_service.viewer_queries._REGION_INDEX_MEMORY_BYTES", 0),
+            patch("verdflow.studio_service.viewer_queries._REGION_PAGE_VERTICES", 7),
+        ):
+            cache = Path(directory)
+            queries = ProjectViewerQueries(store, cache_root=cache)  # type: ignore[arg-type]
+            try:
+                bounds = dict(min_x=-1, min_y=-1, max_x=25, max_y=25)
+                after = -1
+                ids = []
+                for _ in range(3):
+                    page = queries.region_chunk("regions_1", **bounds, after_ordinal=after)
+                    ids.extend(item.region_id for item in page.items)
+                    if page.next_after_ordinal is None:
+                        break
+                    after = page.next_after_ordinal
+                self.assertEqual(ids, ["r1", "r2", "r3"])
+                self.assertFalse(page.truncated)
+                self.assertEqual(store.open_counts["artifact_regions"], 1)
+                self.assertEqual(len(list(cache.rglob("*.sqlite"))), 1)
+            finally:
+                queries.close()
+            self.assertEqual(list(cache.iterdir()), [])
+
+    def test_region_disk_index_rejects_invalid_tail_without_retaining_partial_index(self) -> None:
+        store = _FixtureStore()
+        store.artifacts["artifact_regions"] += b"{}"
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch("verdflow.studio_service.viewer_queries._REGION_INDEX_MEMORY_BYTES", 0),
+        ):
+            cache = Path(directory)
+            queries = ProjectViewerQueries(store, cache_root=cache)  # type: ignore[arg-type]
+            try:
+                with self.assertRaisesRegex(ViewerProjectionError, "JSON"):
+                    queries.region_chunk("regions_1", min_x=-1, min_y=-1, max_x=5, max_y=5)
+                with self.assertRaisesRegex(ViewerProjectionError, "JSON"):
+                    queries.region_overview("regions_1", min_x=-1, min_y=-1, max_x=5, max_y=5)
+                self.assertEqual(list(cache.rglob("*.sqlite")), [])
+            finally:
+                queries.close()
+
+    def test_dense_view_overview_covers_all_regions_and_retains_holes(self) -> None:
+        import numpy
+
+        store = _FixtureStore()
+        original = json.loads(store.artifacts["artifact_regions"])
+        original["regions"][0]["footprint_boundary_xyz"] = [
+            [[0, 0, 0], [3, 0, 0], [3, 3, 0], [0, 3, 0], [0, 0, 0]],
+            [[1, 1, 0], [2, 1, 0], [2, 2, 0], [1, 2, 0], [1, 1, 0]],
+        ]
+        store.artifacts["artifact_regions"] = store._json_bytes(original)
+        queries = ProjectViewerQueries(store)  # type: ignore[arg-type]
+        bounds = dict(min_x=-1, min_y=-1, max_x=25, max_y=25)
+        hint = queries.region_chunk("regions_1", **bounds, overview_threshold=2)
+        self.assertTrue(hint.overview_recommended)
+        self.assertEqual(hint.items, ())
+        self.assertNotIn("artifact_regions", store.open_counts)
+        with patch("verdflow.studio_service.region_overview._BATCH_REGIONS", 1):
+            overview = queries.region_overview("regions_1", **bounds)
+        self.assertIs(queries.region_overview("regions_1", **bounds), overview)
+        self.assertEqual(store.open_counts["artifact_regions"], 1)
+        raster = numpy.frombuffer(zlib.decompress(b64decode(overview.pixels)), dtype="<u4").reshape(
+            overview.height, overview.width,
+        )
+
+        def at(x: float, y: float) -> str | None:
+            col = int((x - bounds["min_x"]) / (bounds["max_x"] - bounds["min_x"]) * overview.width)
+            row = int((bounds["max_y"] - y) / (bounds["max_y"] - bounds["min_y"]) * overview.height)
+            slot = raster[row, col]
+            return overview.items[slot - 1].region_id if slot else None
+
+        self.assertEqual({item.region_id for item in overview.items}, {"r1", "r2", "r3"})
+        self.assertEqual((at(0.5, 0.5), at(1.5, 1.5), at(6, 0.5), at(22, 21)), ("r1", None, "r2", "r3"))
+        street = queries.region_overview("regions_1", **bounds, classifications=("street_tree",))
+        self.assertEqual([item.region_id for item in street.items], ["r2"])
+        queries.close()
+        for rows in (original["regions"], list(reversed(original["regions"]))):
+            disk_store = _FixtureStore()
+            disk_store.artifacts["artifact_regions"] = disk_store._json_bytes({**original, "regions": rows})
+            with (
+                tempfile.TemporaryDirectory() as directory,
+                patch("verdflow.studio_service.viewer_queries._REGION_INDEX_MEMORY_BYTES", 0),
+            ):
+                disk_queries = ProjectViewerQueries(disk_store, cache_root=Path(directory))  # type: ignore[arg-type]
+                try:
+                    self.assertEqual(disk_queries.region_overview("regions_1", **bounds), overview)
+                    disk_queries.region_chunk("regions_1", **bounds, limit=1)
+                    self.assertEqual(disk_store.open_counts["artifact_regions"], 1)
+                finally:
+                    disk_queries.close()
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
+    def test_overview_region_selection_uses_original_holes_and_skips_committed(self) -> None:
+        store = _FixtureStore()
+        document = json.loads(store.artifacts["artifact_regions"])
+        outer = [
+            [1.5 + 1.5 * math.cos(i * math.tau / 96), 1.5 + 1.5 * math.sin(i * math.tau / 96), 0]
+            for i in range(96)
+        ]
+        hole = [[1, 1, 0], [2, 1, 0], [2, 2, 0], [1, 2, 0], [1, 1, 0]]
+        document["regions"][0]["footprint_boundary_xyz"] = [outer + [outer[0]], hole]
+        store.artifacts["artifact_regions"] = store._json_bytes(document)
+        queries = ProjectViewerQueries(store)  # type: ignore[arg-type]
+        with patch("verdflow.studio_service.viewer_queries._REGION_ITEM_VERTICES", 32):
+            page = queries.region_chunk("regions_1", min_x=0, min_y=0, max_x=10, max_y=10, limit=1)
+        self.assertEqual(page.items[0].boundary_mode, "overview")
+        self.assertEqual(len(page.items[0].footprint_boundary_xyz), 2)
+        self.assertTrue(page.truncated)
+        self.assertEqual(queries.region_selection("regions_1", corners=((1.5, 1.5),)).region_ids, ())
+        self.assertEqual(queries.region_selection("regions_1", corners=((6, 0.5),)).region_ids, ("r2",))
+        self.assertEqual(queries.region_selection(
+            "regions_1", corners=((1.1, 1.5), (1.5, 1.1), (1.9, 1.5), (1.5, 1.9)),
+        ).region_ids, ())
+        corners = ((-2.0, 0.0), (8.0, -2.0), (10.0, 5.0), (0.0, 7.0))
+        with patch("verdflow.studio_service.viewer_queries._REGION_PAGE_BYTES", 32):
+            first = queries.region_selection("regions_1", corners=corners)
+            self.assertEqual((first.region_ids, first.next_after_ordinal), (("r1",), 0))
+            second = queries.region_selection("regions_1", corners=corners, after_ordinal=0)
+            self.assertEqual((second.region_ids, second.next_after_ordinal), (("r2",), None))
+        store.occupied = ("r1",)
+        self.assertEqual(queries.region_selection("regions_1", corners=corners).region_ids, ("r2",))
+
+    def test_complex_region_near_view_reprojects_exact_rings_and_reuses_hit_geometry(self) -> None:
+        import numpy
+
+        store = _FixtureStore()
+        document = json.loads(store.artifacts["artifact_regions"])
+        document["regions"][0]["footprint_boundary_xyz"] = [
+            [[0, 0, 0], [3, 0, 0], [3, 3, 0], [2.5, 3, 0], [2.5, 2.5, 0],
+             [2, 2.5, 0], [2, 3, 0], [0, 3, 0], [0, 0, 0]],
+            [[1, 1, 0], [1.1, 1, 0], [1.1, 1.1, 0], [1, 1.1, 0], [1, 1, 0]],
+        ]
+        store.artifacts["artifact_regions"] = store._json_bytes(document)
+        queries = ProjectViewerQueries(store)  # type: ignore[arg-type]
+        close = dict(min_x=0.8, min_y=0.8, max_x=1.4, max_y=1.4)
+        with patch("verdflow.studio_service.viewer_queries._REGION_ITEM_VERTICES", 10):
+            chunk = queries.region_chunk("regions_1", **close, overview_threshold=20_000)
+            self.assertTrue(chunk.overview_recommended)
+            self.assertEqual(chunk.items, ())
+            detail = queries.region_overview("regions_1", **close)
+            further = queries.region_overview("regions_1", min_x=-1, min_y=-1, max_x=25, max_y=25)
+        self.assertLess(detail.bounds.max_x - detail.bounds.min_x, further.bounds.max_x - further.bounds.min_x)
+        pixels = numpy.frombuffer(zlib.decompress(b64decode(detail.pixels)), dtype="<u4").reshape(detail.height, detail.width)
+        col = int((1.05 - close["min_x"]) / (close["max_x"] - close["min_x"]) * detail.width)
+        row = int((close["max_y"] - 1.05) / (close["max_y"] - close["min_y"]) * detail.height)
+        self.assertEqual(pixels[row, col], 0)
+        self.assertEqual(pixels[0, 0], 1)
+        with patch("verdflow.studio_service.viewer_queries._exact_region_boundary", side_effect=AssertionError("reparsed exact rings")):
+            self.assertEqual(queries.region_selection("regions_1", corners=((1.05, 1.05),)).region_ids, ())
+            self.assertEqual(queries.region_selection("regions_1", corners=((1.3, 1.3),)).region_ids, ("r1",))
+        queries.close()
 
     def test_point_review_joins_assignment_and_reuses_spatial_cache(self) -> None:
         store = _FixtureStore()

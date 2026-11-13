@@ -21,6 +21,7 @@ sys.path[:0] = [
 
 from verdflow.contracts import (  # noqa: E402
     JobCommandRef,
+    JobErrorInfo,
     JobInfo,
     JobRetentionClass,
     JobStatus,
@@ -45,6 +46,50 @@ TEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 class PlantRunExecutionTests(unittest.TestCase):
+    def test_confirm_retries_only_interrupted_elevation_and_reuses_upstream_results(self) -> None:
+        for interruption in (False, True):
+            with self.subTest(interruption=interruption):
+                store = _MemoryExecutionStore()
+                runtime = _SucceededRuntime()
+                stages = _SucceededStages(runtime)
+                service = PlantRunExecutionService(store, runtime, stages)
+                execution = service.submit(PlantRunExecutionRequest(
+                    scene_revision_id="scene_1", region_set_id="regions_1",
+                    selected_region_ids=("region_1",), strategy_package_hash="sha256:" + "1" * 64,
+                    random_seed=10, target_type="dts", catalog_id="catalog_1",
+                    review_policy=PlantRunReviewPolicy.REQUIRED,
+                ))
+                while service.run_once():
+                    pass
+                continuation = PlantRunContinuationRequest(
+                    elevation_provider_id="elevation.fixture", export_provider_id="dts.xml",
+                    offset=(0.0, 0.0, 0.0),
+                )
+                service.confirm(execution.execution_id, continuation)
+                self.assertTrue(service.run_once())
+                sampling = service.get(execution.execution_id)
+                previous = runtime.get(sampling.elevation_job_id)
+                runtime.jobs[previous.job_id] = replace(
+                    previous, status=JobStatus.INTERRUPTED if interruption else JobStatus.FAILED,
+                    error=None if interruption else JobErrorInfo("geo_raster_nodata", "NoData", False),
+                )
+                self.assertTrue(service.run_once())
+                failed = service.get(execution.execution_id)
+                resumed = service.confirm(execution.execution_id, continuation)
+                if not interruption:
+                    self.assertEqual(resumed, failed)
+                    continue
+                self.assertIs(resumed.status, PlantRunExecutionStatus.QUEUED)
+                self.assertNotEqual(resumed.elevation_job_id, previous.job_id)
+                self.assertEqual(runtime.get(resumed.elevation_job_id).command, previous.command)
+                self.assertEqual(resumed.generated_point_set_id, sampling.generated_point_set_id)
+                self.assertEqual(resumed.asset_assignment_set_id, sampling.asset_assignment_set_id)
+                self.assertEqual(service.confirm(execution.execution_id, continuation), resumed)
+                while service.run_once():
+                    pass
+                self.assertIs(service.get(execution.execution_id).status, PlantRunExecutionStatus.SUCCEEDED)
+                self.assertEqual(stages.calls.count("generate"), 1)
+
     def test_profile_parameters_are_frozen_before_generation(self) -> None:
         store = _MemoryExecutionStore()
         runtime = _SucceededRuntime()
@@ -536,6 +581,12 @@ class _SucceededRuntime:
 
     def get(self, job_id: str) -> JobInfo:
         return self.jobs[job_id]
+
+    def submit(self, command, *, idempotency_key, max_attempts, retention_class):
+        job = replace(self.add("retry"), command=command, idempotency_key=idempotency_key,
+                      max_attempts=max_attempts, retention_class=retention_class)
+        self.jobs[job.job_id] = job
+        return job
 
     def request_cancel(self, job_id: str) -> JobInfo:
         return self.jobs[job_id]

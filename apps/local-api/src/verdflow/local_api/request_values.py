@@ -8,6 +8,19 @@ from typing import Any
 from verdflow.contracts import JobStatus
 
 
+def imagery_refinement(value: object) -> dict[str, Any]:
+    if (not isinstance(value, dict) or set(value) != {"mode", "strength", "minimum", "min_region_pixels"}
+            or value["mode"] not in ("greenness", "patches") or type(value["strength"]) is not int
+            or not 0 <= value["strength"] <= 100):
+        raise ValueError("影像细化参数无效。")
+    for key in ("minimum", "min_region_pixels"):
+        pixels = value[key]
+        if not isinstance(pixels, str) or not pixels.isascii() or not pixels.isdecimal():
+            raise ValueError("影像细化的像素数必须是非负整数。")
+        value = {**value, key: str(int(pixels))}
+    return value
+
+
 def bounded_text_list(document: dict, name: str, *, limit: int = 128) -> tuple[str, ...]:
     value = document.get(name, [])
     if not isinstance(value, list) or len(value) > limit or any(
@@ -153,6 +166,22 @@ def viewport_query(
         field: query_float(query, field)
         for field in ("min_x", "min_y", "max_x", "max_y")
     }
+
+
+def selection_corners(query: dict[str, list[str]]) -> tuple[tuple[float, float], ...]:
+    corners = query.get("corner", [])
+    if len(corners) not in {1, 4}:
+        raise ValueError("Selection requires one point or four corners")
+    result: list[tuple[float, float]] = []
+    for corner in corners:
+        try:
+            x, y = map(float, corner.split(","))
+        except ValueError as error:
+            raise ValueError("Each corner must be an x,y pair") from error
+        if not math.isfinite(x) or not math.isfinite(y):
+            raise ValueError("Each corner must be finite")
+        result.append((x, y))
+    return tuple(result)
 
 
 def query_float(

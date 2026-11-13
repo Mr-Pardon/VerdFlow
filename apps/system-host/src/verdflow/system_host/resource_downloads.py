@@ -2,23 +2,32 @@
 
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass
+from errno import ENOSPC
 import hashlib
 import json
 from pathlib import Path
 import re
+from shutil import disk_usage
 from threading import Event
-from time import monotonic
 from typing import Callable
 from urllib.parse import unquote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
+
+from verdflow.asset_package.archive import MAX_PACKAGE_BYTES as MAX_VFA_BYTES
+from verdflow.profile_package.archive import MAX_PACKAGE_BYTES as MAX_VFP_BYTES
+from verdflow.strategy_worker.package_archive import MAX_ARCHIVE_BYTES as MAX_VFS_BYTES
 
 
 MANIFEST_URL = "https://mr-pardon.github.io/verdflow-resources/starter-resources.json"
 MANIFEST_V2_URL = "https://mr-pardon.github.io/verdflow-resources/starter-resources-v2.json"
 RESOURCE_INDEX_URL = "https://mr-pardon.github.io/verdflow-resources/import-index.json"
 PACKAGE_PREFIX = "/Mr-Pardon/verdflow-resources/releases/download/"
-MAX_PACKAGE_BYTES = 256 * 1024 * 1024
+_PACKAGE_BYTE_LIMITS = {"assets": MAX_VFA_BYTES, "strategies": MAX_VFS_BYTES, "plans": MAX_VFP_BYTES}
+_FREE_DISK_RESERVE = 64 * 1024 * 1024
+_CHUNK_BYTES = 128 * 1024
+_NETWORK_TIMEOUT_SECONDS = 10
 
 
 @dataclass(frozen=True)
@@ -43,6 +52,15 @@ class StarterManifest:
 
 class DownloadCancelled(Exception):
     pass
+
+
+def package_byte_limit(kind: str) -> int:
+    return _PACKAGE_BYTE_LIMITS[kind]
+
+
+def _validate_package_size(kind: str, size: object) -> None:
+    if type(size) is not int or not 0 < size <= package_byte_limit(kind):
+        raise ValueError("Resource package size exceeds the limit")
 
 
 def require_url(url: str, *, manifest: bool = False, redirect: bool = False) -> None:
@@ -105,9 +123,7 @@ def parse_resource(item: object, *, allow_plans: bool = False) -> StarterResourc
     filename = item["filename"]
     if not suffix or not filename.endswith(suffix) or re.search(r'[\\/:\x00-\x1f]', filename) or filename in {".", ".."}:
         raise ValueError("Unsupported resource filename or kind")
-    limit = 8 * 1024 * 1024 if item["kind"] == "plans" else MAX_PACKAGE_BYTES
-    if type(item.get("bytes")) is not int or not 0 < item["bytes"] <= limit:
-        raise ValueError("Resource package size exceeds the limit")
+    _validate_package_size(item["kind"], item.get("bytes"))
     if not re.fullmatch(r"[0-9a-f]{64}", item["sha256"]):
         raise ValueError("Missing package SHA-256")
     require_url(item["url"])
@@ -143,18 +159,25 @@ def load_resource_document(url: str) -> bytes:
 
 def download_package(item: StarterResource, path: Path, cancel: Event, progress: Callable[[int], None]) -> None:
     require_url(item.url)
+    _validate_package_size(item.kind, item.bytes)
     digest = hashlib.sha256()
     size = 0
-    deadline = monotonic() + 300
+    created = verified = False
     try:
+        if cancel.is_set():
+            raise DownloadCancelled()
+        if disk_usage(path.parent).free < item.bytes + _FREE_DISK_RESERVE:
+            raise ValueError("临时目录磁盘空间不足，请释放空间后重试。")
         request = Request(item.url, headers={"User-Agent": "VerdFlow", "Accept-Encoding": "identity"})
-        with build_opener(_Redirects(False)).open(request, timeout=10) as response, path.open("xb") as output:
+        with (
+            build_opener(_Redirects(False)).open(request, timeout=_NETWORK_TIMEOUT_SECONDS) as response,
+            path.open("xb") as output,
+        ):
+            created = True
             while True:
                 if cancel.is_set():
                     raise DownloadCancelled()
-                if monotonic() > deadline:
-                    raise ValueError("下载耗时过长，请检查网络后重试。")
-                chunk = response.read1(128 * 1024)
+                chunk = response.read1(_CHUNK_BYTES)
                 if not chunk:
                     break
                 size += len(chunk)
@@ -163,9 +186,18 @@ def download_package(item: StarterResource, path: Path, cancel: Event, progress:
                 digest.update(chunk)
                 output.write(chunk)
                 progress(size)
+        if cancel.is_set():
+            raise DownloadCancelled()
         if size != item.bytes or digest.hexdigest() != item.sha256:
             raise ValueError("资源完整性校验未通过，请刷新清单后重试。")
+        verified = True
     except (ValueError, DownloadCancelled):
         raise
     except Exception as error:
+        if isinstance(error, OSError) and error.errno == ENOSPC:
+            raise ValueError("临时目录磁盘空间不足，请释放空间后重试。") from error
         raise ValueError("资源下载失败，请检查网络后重试。") from error
+    finally:
+        if created and not verified:
+            with suppress(OSError):
+                path.unlink(missing_ok=True)

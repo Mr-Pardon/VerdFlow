@@ -1,10 +1,18 @@
 """Stable data-error codes and safe, actionable messages for application edges."""
 
+import errno
+
 
 class GeospatialDataError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+def is_host_memory_error(error: Exception) -> bool:
+    return isinstance(error, MemoryError) or isinstance(error, OSError) and (
+        error.errno == errno.ENOMEM or getattr(error, "winerror", None) in {8, 14, 1455}
+    )
 
 
 def invalid_polygon_message(geometry: object, feature_number: int) -> str:

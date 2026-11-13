@@ -66,7 +66,8 @@ def stage_update(plan: dict) -> None:
             manifest_entry = paths.get(manifest_name)
             if manifest_entry is None or manifest_entry.file_size > 8 * 1024**2:
                 raise ValueError("Update manifest is missing or oversized")
-            manifest = json.loads(archive.read(manifest_entry))
+            manifest_bytes = archive.read(manifest_entry)
+            manifest = json.loads(manifest_bytes)
             if (
                 manifest.get("schema") != "verdflow.portable-files"
                 or manifest.get("version") != "1"
@@ -105,6 +106,9 @@ def stage_update(plan: dict) -> None:
                         outgoing.write(chunk)
                 if digest.hexdigest() != item["sha256"]:
                     raise ValueError("Update file checksum mismatch")
+            # Keep the archive-verified inventory for safe cleanup after a future upgrade.
+            with (stage / "update-manifest.json").open("xb") as target:
+                target.write(manifest_bytes)
             (stage / ".verdflow-update-ready.json").write_text(
                 json.dumps({"id": token, "version": plan["targetVersion"]}), encoding="utf-8",
             )

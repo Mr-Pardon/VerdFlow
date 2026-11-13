@@ -31,6 +31,8 @@ from verdflow.contracts import (  # noqa: E402
     CoordinateReferenceKind,
     JobCommandRef,
     JobStatus,
+    PlantRunExecutionStatus,
+    PlantRunReviewPolicy,
     RegionSummary,
     SourceKind,
     WorkerProcessStatus,
@@ -38,6 +40,7 @@ from verdflow.contracts import (  # noqa: E402
 from verdflow.core import (  # noqa: E402
     AssetAssignmentRequest,
     OutputExportRequest,
+    PlantRunExecutionRequest,
     PlantingGenerationRequest,
     ServiceLoopState,
 )
@@ -78,6 +81,67 @@ class ManualClock:
 
 
 class PlantingGenerationStageTests(unittest.TestCase):
+    def test_new_plant_run_retries_interrupted_generation_with_identical_inputs(self) -> None:
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP_ROOT) as temporary:
+            root = Path(temporary)
+            with LibraryStore.open(root / "library") as library:
+                package = self._install_and_trust(library)
+                catalog, profile = self._install_asset_pack(library)
+                config = CoreHostConfig(
+                    root / "project", enable_blender_worker=False,
+                    enable_project_maintenance=False,
+                )
+                with CoreHost.create(
+                    config, project_name="Retry generation", strategy_library=library,
+                ) as host:
+                    scene_id, region_set_id = self._scene_and_regions(host)
+                    request = PlantRunExecutionRequest(
+                        scene_revision_id=scene_id, region_set_id=region_set_id,
+                        selected_region_ids=("street_region",),
+                        strategy_package_hash=package.package_hash, random_seed=17,
+                        target_type="dts", catalog_id=catalog.catalog_id,
+                        profile_id=profile.profile_id, review_policy=PlantRunReviewPolicy.REQUIRED,
+                    )
+                    first = host.submit_plant_run_execution(request, idempotency_key="new-click")
+                    repeated = host.submit_plant_run_execution(request, idempotency_key="new-click")
+                    self.assertEqual(first.execution_id, repeated.execution_id)
+                    frozen = host.get_plant_run_execution_request(first.execution_id)
+                    legacy = host.application.submit_planting_generation(PlantingGenerationRequest(
+                        scene_revision_id=request.scene_revision_id,
+                        region_set_id=request.region_set_id,
+                        selected_region_ids=request.selected_region_ids,
+                        strategy_package_hash=request.strategy_package_hash,
+                        random_seed=request.random_seed,
+                        args=frozen.generation_args,
+                    ))
+                    clock = ManualClock()
+                    host.runtime.clock = clock
+                    for _ in range(legacy.max_attempts):
+                        self.assertIsNotNone(host.runtime.claim_next("legacy", only_job_id=legacy.job_id))
+                        clock.advance(host.runtime.lease_duration + timedelta(seconds=1))
+                        host.runtime.recover_expired()
+                    self.assertIs(host.runtime.get(legacy.job_id).status, JobStatus.INTERRUPTED)
+
+                    self.assertTrue(host.plant_run_executions.run_once())
+                    running = host.get_plant_run_execution(first.execution_id)
+                    job = host.runtime.get(running.generation_job_id)
+                    self.assertNotEqual(job.job_id, legacy.job_id)
+                    self.assertEqual(job.command, legacy.command)
+
+                    # If the owner is interrupted before linking the Job, replay
+                    # submits the same stage key and finds that exact Job again.
+                    host.store.update_plant_run_execution(
+                        replace(running, status=PlantRunExecutionStatus.QUEUED, generation_job_id=None),
+                        expected_revision=running.revision,
+                    )
+                    self.assertTrue(host.plant_run_executions.run_once())
+                    self.assertEqual(
+                        host.get_plant_run_execution(first.execution_id).generation_job_id, job.job_id,
+                    )
+                    completed = host.service_loop.run_until_terminal(job.job_id, timeout_seconds=15)
+                    self.assertIs(completed.status, JobStatus.SUCCEEDED)
+                    self.assertIs(host.runtime.get(legacy.job_id).status, JobStatus.INTERRUPTED)
+
     def test_assignment_control_cancel_converges_without_lease_expiry(self) -> None:
         for phase in ("before", "resolving", "after"):
             with self.subTest(phase=phase), tempfile.TemporaryDirectory(dir=TEST_TEMP_ROOT) as temporary:
@@ -105,19 +169,19 @@ class PlantingGenerationStageTests(unittest.TestCase):
                             thread.start()
                             thread.join(1.0)
                             self.assertFalse(thread.is_alive())
-                        from verdflow.core.assignment_worker import resolve_persisted_asset_assignments
+                        from verdflow.core.assignment_worker import write_persisted_asset_assignments
                         resolved = Event()
                         def resolve(*args, **kwargs):
                             if phase == "resolving":
                                 signal()
-                            result = resolve_persisted_asset_assignments(*args, **kwargs)
+                            result = write_persisted_asset_assignments(*args, **kwargs)
                             resolved.set()
                             if phase == "after":
                                 signal()
                             return result
                         if phase == "before":
                             signal()
-                        with patch("verdflow.core.assignment_worker.resolve_persisted_asset_assignments",
+                        with patch("verdflow.core.assignment_worker.write_persisted_asset_assignments",
                                    side_effect=resolve) as resolver:
                             host.service_loop.run_once()
                         cancelled = host.runtime.get(job.job_id)
@@ -261,7 +325,7 @@ class PlantingGenerationStageTests(unittest.TestCase):
                     )
 
                     from verdflow.core.assignment_worker import (
-                        resolve_persisted_asset_assignments as resolve_fast,
+                        write_persisted_asset_assignments as resolve_fast,
                     )
 
                     calls = 0
@@ -275,7 +339,7 @@ class PlantingGenerationStageTests(unittest.TestCase):
 
                     with patch(
                         "verdflow.core.assignment_worker."
-                        "resolve_persisted_asset_assignments",
+                        "write_persisted_asset_assignments",
                         side_effect=expire_first_lease,
                     ):
                         completed = host.service_loop.run_until_terminal(

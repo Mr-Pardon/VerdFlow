@@ -27,6 +27,7 @@ def _bundle_hash() -> str:
     package_root = Path(__file__).resolve().parents[1]
     files = [
         package_root / "algorithms.py",
+        package_root / "point_transport.py",
         *sorted((package_root / "capabilities").glob("*.py")),
     ]
     digest = hashlib.sha256()

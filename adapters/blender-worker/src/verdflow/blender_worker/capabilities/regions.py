@@ -14,12 +14,13 @@ import bpy
 from mathutils import Vector
 
 from ..algorithms import (
-    connected_face_islands,
-    dominant_projected_boundary_loops,
+    connected_face_islands_from_edges,
+    dominant_projected_boundary_from_areas,
     first_matching_rule,
     polygon_area_xy,
     polygon_perimeter_xy,
     sanitize_name,
+    signed_polygon_area_xy,
     validate_rule_pack,
 )
 from .scene import (
@@ -56,23 +57,21 @@ def boundary_loops_world(
         if face_indices is not None
         else [polygon.index for polygon in mesh.polygons]
     )
-    face_edges = {
-        index: list(mesh.polygons[index].edge_keys) for index in indices
-    }
+    world = obj.matrix_world
     world_vertices: dict[int, tuple[float, float, float]] = {}
-    face_points: dict[int, list[tuple[float, float, float]]] = {}
+    signed_areas: dict[int, float] = {}
     for index in indices:
         points = []
         for vertex_index in mesh.polygons[index].vertices:
             if vertex_index not in world_vertices:
                 world_vertices[vertex_index] = tuple(
-                    obj.matrix_world @ mesh.vertices[vertex_index].co
+                    world @ mesh.vertices[vertex_index].co
                 )
             points.append(world_vertices[vertex_index])
-        face_points[index] = points
-    loops = dominant_projected_boundary_loops(
-        face_edges,
-        face_points,
+        signed_areas[index] = signed_polygon_area_xy(points)
+    loops = dominant_projected_boundary_from_areas(
+        signed_areas,
+        lambda index: mesh.polygons[index].edge_keys,
         area_epsilon=XY_AREA_EPSILON,
     )
     result: list[list[list[float]]] = []
@@ -218,7 +217,7 @@ def object_geometry_metrics(
     mesh = obj.data
     world = obj.matrix_world
     area_3d = 0.0
-    normal_z_values: list[float] = []
+    triangle_count = horizontal_count = 0
     weighted_normal = Vector((0.0, 0.0, 0.0))
     for polygon in mesh.polygons:
         vertices = [world @ mesh.vertices[index].co for index in polygon.vertices]
@@ -229,12 +228,14 @@ def object_geometry_metrics(
             cross = (vertices[index] - origin).cross(
                 vertices[index + 1] - origin
             )
-            triangle_area = cross.length * 0.5
+            cross_length = cross.length
+            triangle_area = cross_length * 0.5
             area_3d += triangle_area
-            if cross.length > 1e-9:
+            if cross_length > 1e-9:
                 normal = cross.normalized()
                 weighted_normal += normal * triangle_area
-                normal_z_values.append(abs(normal.z))
+                triangle_count += 1
+                horizontal_count += abs(normal.z) >= 0.85
     loops = (
         boundary_loops
         if boundary_loops is not None
@@ -254,12 +255,7 @@ def object_geometry_metrics(
         if weighted_normal.length > 1e-9
         else Vector((0.0, 0.0, 0.0))
     )
-    horizontal_ratio = (
-        sum(value >= 0.85 for value in normal_z_values)
-        / len(normal_z_values)
-        if normal_z_values
-        else None
-    )
+    horizontal_ratio = horizontal_count / triangle_count if triangle_count else None
     return {
         "id": obj.get("region_id", obj.name),
         "name": obj.name,
@@ -355,6 +351,7 @@ def extract_regions(
         import_settings=import_settings,
         scene_cache_path=scene_cache_path,
         stage_callback=stage_callback,
+        cancel_check=cancel_check,
     )
     loaded_at = time.perf_counter()
     if cancel_check is not None:
@@ -376,6 +373,7 @@ def extract_regions(
     progress_step = max(1, object_total // 20)
     if stage_callback is not None:
         stage_callback("scanning_material_faces", 0.25)
+    next_scan_report = time.monotonic() + 1.0
     for object_index, obj in enumerate(source_objects):
         if cancel_check is not None:
             cancel_check()
@@ -396,7 +394,18 @@ def extract_regions(
             rules=rules,
             source_roots=source_roots,
         )
-        for polygon in obj.data.polygons:
+        polygons = obj.data.polygons
+        face_count = len(polygons)
+        for face_index, polygon in enumerate(polygons):
+            if face_index and face_index % 4096 == 0 and time.monotonic() >= next_scan_report:
+                if cancel_check is not None:
+                    cancel_check()
+                if stage_callback is not None:
+                    stage_callback(
+                        "scanning_material_faces",
+                        0.25 + 0.25 * (object_index + face_index / face_count) / object_total,
+                    )
+                next_scan_report = time.monotonic() + 1.0
             facts = _polygon_material_facts(polygon, slot_facts, fallback)
             if facts.rule_id is None:
                 continue
@@ -438,11 +447,8 @@ def extract_regions(
             face_indices = matches_by_rule.get(rule_id, [])
             if not face_indices:
                 continue
-            face_edges = {
-                index: list(obj.data.polygons[index].edge_keys)
-                for index in face_indices
-            }
-            for island in connected_face_islands(face_edges):
+            polygons = obj.data.polygons
+            for island in connected_face_islands_from_edges(face_indices, lambda index: polygons[index].edge_keys):
                 islands_to_build.append(
                     (
                         obj,
@@ -556,8 +562,14 @@ def extract_regions(
                     if isinstance(value, (list, dict))
                     else value
                 )
-        regions.append(region_to_dict(region_obj, boundary_loops))
-        metrics.append(object_geometry_metrics(region_obj, boundary_loops))
+        try:
+            regions.append(region_to_dict(region_obj, boundary_loops))
+            metrics.append(object_geometry_metrics(region_obj, boundary_loops))
+        finally:
+            # The Worker publishes facts, not the copied region mesh.
+            mesh = region_obj.data
+            bpy.data.objects.remove(region_obj, do_unlink=True)
+            bpy.data.meshes.remove(mesh)
         if stage_callback is not None and (
             (island_index + 1) % island_progress_step == 0
             or island_index + 1 == island_total

@@ -67,6 +67,8 @@ from verdflow.local_api import LocalApiConfig, LocalApiServer
 - `GET /api/v1/projects/{session_id}/tasks?status=...&before=...&limit=...`
 - `GET /api/v1/projects/{session_id}/region-sets/{region_set_id}/viewer`
 - `GET /api/v1/projects/{session_id}/region-sets/{region_set_id}/geometry?min_x=...&min_y=...&max_x=...&max_y=...`
+- `GET /api/v1/projects/{session_id}/region-sets/{region_set_id}/overview?min_x=...&min_y=...&max_x=...&max_y=...`
+- `GET /api/v1/projects/{session_id}/region-sets/{region_set_id}/selection?corner=x,y`
 - `GET /api/v1/projects/{session_id}/point-sets/{point_set_id}/review?assignment_set_id=...`
 - `GET /api/v1/projects/{session_id}/point-sets/{point_set_id}/points?assignment_set_id=...&min_x=...&min_y=...&max_x=...&max_y=...`
 - `GET /api/v1/projects/{session_id}/jobs/{job_id}`
@@ -75,6 +77,7 @@ from verdflow.local_api import LocalApiConfig, LocalApiServer
 - `POST /api/v1/projects/{session_id}/jobs/{job_id}/cancel`
 - `GET /api/v1/projects/{session_id}/artifacts/{artifact_id}`
 - `POST /api/v1/projects/{session_id}/sources`
+- `POST /api/v1/projects/{session_id}/source-intake`：Studio 创建项目后提交后台源文件登记。
 - `POST /api/v1/projects/{session_id}/source-assemblies`
 - `POST /api/v1/projects/{session_id}/scene-preparations`
 - `GET /api/v1/projects/{session_id}/scene-preparations/{execution_id}`
@@ -155,6 +158,17 @@ execution 是已提交状态的读取快照，可能仍为 running。客户端�
 进程身份，关闭时按 `instance_id + endpoint_id` 精确清理。独立 CLI 再次启动时会验证
 健康响应与 endpoint 身份；匹配则输出 `reused: true` 并退出，不创建第二个 SystemHost。
 
+Region Viewer 的 `geometry` 按 `next_after_ordinal` 续读。区域项的 `boundary_mode`
+区分常规视窗细节、预算内简化轮廓和仅包围框三种显示方式（`detail`、`overview`、
+`extent`）。首次详情请求可用 `overview_threshold` 获取 `overview_recommended`，
+从而跳过超密集视窗的详情请求。只读 `overview` 支持同样的类型筛选和视窗边界，
+返回行优先、从北向南的格网（`pixels` 是 zlib 压缩并以 Base64 编码的 uint32
+小端序数组）。0 为透明，其他值是 `items` 中从 1 开始的下标；条目为
+`[region_id, classification, footprint_area_xy]`，只用于显示。
+只读 `selection` 用原始边界处理一个 `corner=x,y` 的点击或重复四次的
+旋转框选，支持 `classification` 和 `after_ordinal`，返回 `region_ids` 和下一游标。
+它不保存选择，客户端应在最后一页返回后再一次性应用。
+
 ## 依赖边界
 
 - 通用业务请求 DTO 从 `verdflow-system-host` 公共门面取得；Viewer DTO 来自独立的
@@ -221,3 +235,57 @@ python -m unittest tests.unit.test_plant_preview_product -v
 ## Multi-Catalog Search
 
 `POST /api/v1/asset-search` requires the existing management authorization. The JSON request contains `target_type`, `provider_id`, `catalog_ids`, optional `query`, `collection_catalog_id` + `collection_id`, `offset`, `limit` (1-200), and `revision`. The response contains `items`, source-qualified `collections`, `total_count`, `offset`, `next_offset`, `revision`, and `unavailable_catalogs`. It never mutates catalog or plan state. A revision change resets pagination to the first page.
+## 矢量区域准备
+
+Studio 项目入口使用管理授权的 `POST /api/v1/projects/:session/source-intake`。请求包含
+`workflow`（`fbx`、`vector` 或 `imagery`）、`source_path`、`idempotency_key`；矢量及影像
+还需 `elevation_path`，FBX 可附材质选择、确认方式和模型服务。接受后返回 `202` 与 Job；
+进度通过现有 Job 和项目摘要读取。这个 Job 负责登记完整输入并启动原有模型检查、矢量
+区域准备或影像识别。`POST .../source-intake/:job/retry` 从相同文件位置重新登记失败或取消
+的任务，可复用未变化的已复制对象。取消沿用 Job 取消接口。项目命令只保存本机输入令牌，
+外部路径不写入项目。已有 `/sources`、`/source-assemblies` 及各单独准备接口保持不变。
+
+工作台矢量入口调用 `POST /api/v1/projects/:session/region-sources` 时可附
+`auto_publish: true`（需要管理授权）。返回 202 和已有 Job 标识；计算、Core 校验和
+激活由项目宿主完成，不再要求客户端补发 `/finalize`。项目 summary 的
+`vector_preparation` 表示尚未定版的运行、失败或取消。省略该字段保留显式定版流程；
+影像候选不接受自动定版。
+
+## 影像输入试用
+
+`GET /api/v1/health` 的 `imagery_available` 表示本地模型与 Worker 解释器已配置。
+既有 `POST /api/v1/projects/:session/region-sources` 在 `provider_id` 为
+`verdflow.geospatial.imagery` 时接受 Assembly `source_id`，以及 `options` 中的
+`imagery_source_id`、`elevation_source_id`，以及可选的非负整数 `min_region_pixels`
+（旧调用兼容，默认为 0；Studio 新任务不提交），不接收模型路径或后端切换参数。
+`GET /api/v1/projects/:session/region-sources/:job/imagery-preview?page=1` 分批读取多环区域，
+返回总候选数、批次数和旧任务的剔除统计。仅第一页包含有限大小的底图 PNG。新任务还返回
+全图候选序号 RGB PNG（0 为背景，RGB 从低到高编码整数）和一基顺序的 `review_index`；
+两张图共用尺寸及仿射变换。旧任务以已有分页边界生成显示用概览，不重新执行识别。
+Studio 在预览请求附 `compact_index=1`。新任务超过 32,768 项时第一页可返回
+`review_index_encoding: "ordinal-f64-u32-le/1"`，此时 `review_index` 为空。通过
+`GET .../imagery-review-index?start=0` 按零基位置续读 `start`、`count` 和 `rows_base64`，
+每次最多 32,768 行。每行小端 `Float64` 原图像素数和 `Uint32` 一基边界批次；区域 ID
+由一基序号生成（`region_00001`），与全图 RGB 概览和候选顺序一致。普通规模和旧任务
+仍走原接口，传输分块不需要用户翻页。
+第一页另附 `source_grid`（原影像尺寸、仿射和 RGB 波段）。授权后可通过同一 Job 下的
+`GET .../imagery-tile?level=0&column=0&row=0` 读取视野细节：原影像像素网格上每块
+512 像素，`level` 为 2 的降采样指数，图幅边缘块可较小。响应包含底图 PNG、仿射变换，
+以及带 1 像素边缘缓冲的 RGB 候选序号 PNG，序号按返回的 `region_ids` 从 1 索引。
+大型候选首次建立临时索引时，可返回 `{"retry_after_ms":350}`，客户端保留概览并
+在视窗仍需要该瓦片时自动重试。无法读取时可返回 `null`，不重试当前帧。请求只接受
+Job 和瓦片索引，不接收文件路径。
+`POST .../:job/finalize` 接受 `included_region_ids`，或互斥的 `excluded_region_ids`（空列表表示全保留）。
+使用分块索引的任务也可 `POST .../:job/finalize?selection=bitmap`，提交 `included_region_bits`
+及可选 `expected_region_set_id`。位图按零基候选顺序从字节低位到高位排列，Base64 编码，
+末尾补位必须为零。此授权请求仍有限制：默认最多 3 MiB，足以覆盖 PNG 的 24 位编号范围；
+不提高其他请求的体积预算。重新打开时 `confirmed_region_bits` 使用相同编码。
+Studio 的影像确认另带 `background=1`，返回 `202` 和已持久化的 Job（`job_id`、`status` 等）。
+该选项只用于已完成的影像候选，必须有管理授权。`GET .../projects/:session/jobs/:job_id`
+读取状态；预览第一页以 `pending_confirmation_job_id` 暴露仍在执行的确认。离开页面只停止读取；
+任务成功与区域版本切换一起提交，失败或取消仍保留原候选与旧版本。无 `background` 的原同步返回保持不变。
+提交、预览及带选择的确认要求现有管理授权。已确认的影像项目在 `summary.imagery_job_id`
+保留识别入口；预览第一页返回当前 `confirmed_region_set_id`、`confirmed_region_ids` 和可选的
+`selection_locked_reason`。再次提交时携带 `expected_region_set_id`，按原候选派生新的区域集，
+不覆盖旧版本或重跑模型；陈旧请求、现有种植批次或未结束的种植任务会阻止变更。未确认任务在项目
+`summary` 显示 `imagery_preparation`，完成后进入 `awaiting_region_confirmation`。

@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path[:0] = [
     str(ROOT / "packages" / "contracts" / "src"),
     str(ROOT / "packages" / "project-store" / "src"),
+    str(ROOT / "packages" / "planting" / "src"),
     str(ROOT / "apps" / "studio-service" / "src"),
 ]
 

@@ -28,10 +28,14 @@ from .models import (
 
 
 _BUSINESS_NAMES = {
+    "verdflow.studio.prepare-local-sources": "登记源文件",
     "verdflow.blender.inspect-scene": "检查模型",
     "verdflow.model-api.analyze-materials": "分析模型材质",
     "verdflow.blender.extract-regions": "提取绿地区域",
     "verdflow.geospatial.prepare-regions": "准备地理种植区域",
+    "verdflow.geospatial.prepare-imagery-regions": "识别影像绿地",
+    "verdflow.revise-region-source-selection": "调整影像提取范围",
+    "verdflow.confirm-region-source-selection": "确认提取区域",
     "verdflow.geospatial.sample-elevation": "采样 GeoTIFF 高程",
     "verdflow.planting.generate-points": "生成种植点位",
     "verdflow.core.assign-assets": "分配植被资产",

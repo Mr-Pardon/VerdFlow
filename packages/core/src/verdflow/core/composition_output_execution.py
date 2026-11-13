@@ -16,6 +16,7 @@ from verdflow.contracts import (
     JobInfo,
     JobStatus,
     PlantRunExecutionStatus,
+    ResolvedPlantWorkflow,
 )
 from verdflow.planting import (
     canonical_json_bytes,
@@ -32,6 +33,7 @@ from .plant_run_execution import (
     PlantRunContinuationRequest,
     PlantRunExecutionService,
 )
+from .sampling_bindings import validate_resolved_workflow, workflow_from_document
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +51,7 @@ class CompositionOutputExecutionRequest:
     offset: tuple[float, float, float]
     batches: tuple[CompositionOutputBatchRequest, ...]
     elevation_options: dict[str, Any] = field(default_factory=dict)
+    workflow: ResolvedPlantWorkflow | None = None
 
 
 class CompositionOutputStages(Protocol):
@@ -100,7 +103,7 @@ class CompositionOutputExecutionService:
             canonical_json_bytes(document),
             media_type="application/vnd.verdflow.request+json",
             schema_id=COMPOSITION_OUTPUT_EXECUTION_REQUEST_SCHEMA,
-            schema_version=COMPOSITION_OUTPUT_EXECUTION_REQUEST_VERSION,
+            schema_version=document["version"],
         )
         return self._store.create_composition_output_execution(
             idempotency_key=(
@@ -164,6 +167,7 @@ class CompositionOutputExecutionService:
                             offset=(0.0, 0.0, 0.0),
                             elevation_options=request.elevation_options,
                             complete_after_elevation=True,
+                            workflow=request.workflow,
                         ),
                     )
                     self._mark_running(info)
@@ -174,6 +178,14 @@ class CompositionOutputExecutionService:
                     PlantRunExecutionStatus.CANCEL_REQUESTED,
                 }:
                     return self._mark_running(info)
+                # A new output request can retry a previously failed batch once.
+                # Failure during this request must not create an automatic retry loop.
+                if (
+                    execution.updated_at < info.created_at
+                    and self._plant_runs.resume_elevation(execution) is not None
+                ):
+                    self._mark_running(info)
+                    return True
                 raise RuntimeError(
                     "Planting batch elevation did not complete: "
                     + (execution.error_message or execution.status.value)
@@ -193,6 +205,7 @@ class CompositionOutputExecutionService:
                 provider_id=request.export_provider_id,
                 offset=request.offset,
                 inputs=tuple(inputs),
+                capability=request.workflow.output if request.workflow else None,
             ),
             idempotency_key=f"{info.execution_id}:export",
         )
@@ -254,6 +267,8 @@ class CompositionOutputExecutionService:
             or composition.generation != request.composition_generation
         ):
             raise RuntimeError("Planting composition changed during output")
+        if request.workflow is not None:
+            validate_resolved_workflow(self._store, request.workflow, composition.scene_revision_id, request.workflow.target_type)
         batches = {
             batch.batch_id: batch for batch in self._store.list_planting_batches()
         }
@@ -309,7 +324,7 @@ class CompositionOutputExecutionService:
         if (
             document.get("schema") != COMPOSITION_OUTPUT_EXECUTION_REQUEST_SCHEMA
             or str(document.get("version"))
-            != COMPOSITION_OUTPUT_EXECUTION_REQUEST_VERSION
+            not in {COMPOSITION_OUTPUT_EXECUTION_REQUEST_VERSION, "2"}
         ):
             raise ValueError("Composition output request schema is unsupported")
         batches = document.get("batches")
@@ -334,6 +349,7 @@ class CompositionOutputExecutionService:
                 for item in batches
             ),
             elevation_options=dict(document.get("elevation_options", {})),
+            workflow=workflow_from_document(document, COMPOSITION_OUTPUT_EXECUTION_REQUEST_VERSION),
         )
         self._validate_request(request)
         return request
@@ -342,7 +358,8 @@ class CompositionOutputExecutionService:
     def _document(request: CompositionOutputExecutionRequest) -> dict[str, Any]:
         return {
             "schema": COMPOSITION_OUTPUT_EXECUTION_REQUEST_SCHEMA,
-            "version": COMPOSITION_OUTPUT_EXECUTION_REQUEST_VERSION,
+            "version": "2" if request.workflow else COMPOSITION_OUTPUT_EXECUTION_REQUEST_VERSION,
+            **({"workflow": request.workflow.to_document()} if request.workflow else {}),
             "composition_id": request.composition_id,
             "composition_generation": request.composition_generation,
             "elevation_provider_id": request.elevation_provider_id,
@@ -364,6 +381,11 @@ class CompositionOutputExecutionService:
 
     @staticmethod
     def _validate_request(request: CompositionOutputExecutionRequest) -> None:
+        if request.workflow is not None:
+            PlantRunExecutionService._validate_continuation(PlantRunContinuationRequest(
+                request.elevation_provider_id, request.export_provider_id, request.offset,
+                request.elevation_options, workflow=request.workflow,
+            ))
         if (
             not request.composition_id.strip()
             or request.composition_generation < 1

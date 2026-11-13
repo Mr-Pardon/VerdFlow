@@ -40,10 +40,10 @@ def main() -> int:
 
     context = json.loads(args.command.read_text(encoding="utf-8"))
     result = generator(context)
-    args.output.write_text(
-        json.dumps(result, ensure_ascii=False, separators=(",", ":")),
-        encoding="utf-8",
-    )
+    if isinstance(result, dict) and "points" in result:
+        result = {**{key: value for key, value in result.items() if key != "points"}, "points": result["points"]}
+    with args.output.open("w", encoding="utf-8") as stream:
+        json.dump(result, stream, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
     return 0
 
 

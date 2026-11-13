@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import Any
 
 import bpy
@@ -38,6 +39,8 @@ def import_sources(
     source_path: Path | None = None,
     source_members: list[dict[str, object]] | None = None,
     import_settings: dict[str, object] | None = None,
+    stage_callback: Any | None = None,
+    cancel_check: Any | None = None,
 ) -> None:
     if source_members is None:
         if source_path is None:
@@ -51,7 +54,10 @@ def import_sources(
 
     bpy.ops.object.select_all(action="SELECT")
     bpy.ops.object.delete()
-    for member in source_members:
+    next_report = time.monotonic() + 1.0
+    for index, member in enumerate(source_members, 1):
+        if cancel_check is not None:
+            cancel_check()
         member_id = str(member.get("source_member_id", "")).strip()
         member_path = Path(str(member.get("source_path", "")))
         matrix_values = member.get("source_to_scene_matrix_row_major")
@@ -75,6 +81,9 @@ def import_sources(
         for obj in imported:
             obj[SOURCE_MEMBER_PROP] = member_id
         bpy.context.view_layer.update()
+        if stage_callback is not None and time.monotonic() >= next_report:
+            stage_callback("importing_fbx", 0.1 + 0.09 * index / len(source_members))
+            next_report = time.monotonic() + 1.0
 
 
 def load_scene_inputs(
@@ -84,6 +93,7 @@ def load_scene_inputs(
     import_settings: dict[str, object] | None = None,
     scene_cache_path: Path | None = None,
     stage_callback: Any | None = None,
+    cancel_check: Any | None = None,
 ) -> str:
     """Load a disposable derived scene when available, else rebuild from Source."""
     if scene_cache_path is not None and scene_cache_path.is_file():
@@ -104,6 +114,8 @@ def load_scene_inputs(
         source_path=source_path,
         source_members=source_members,
         import_settings=import_settings,
+        stage_callback=stage_callback,
+        cancel_check=cancel_check,
     )
     if stage_callback is not None:
         stage_callback("scene_ready", 0.2)
@@ -343,6 +355,7 @@ def inspect_scene(
         source_members=source_members,
         import_settings=settings,
         stage_callback=stage_callback,
+        cancel_check=cancel_check,
     )
     if cancel_check is not None:
         cancel_check()

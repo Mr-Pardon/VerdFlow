@@ -268,17 +268,13 @@ class AssetAssignmentService:
             or artifact.schema_version != "1"
         ):
             raise AssetAssignmentError("Assignment output schema is unsupported")
-        assignment = self._read_json(
-            assignment_artifact_id,
-            "AssignmentSet",
-        )
-        return self._snapshots.finalize_asset_assignments(
+        return self._snapshots.finalize_assignment_artifact(
             point_set_id=command["point_set_id"],
             effective_binding_snapshot_id=(
                 command["effective_binding_snapshot_id"]
             ),
             producer_job_id=job.job_id,
-            value=assignment,
+            artifact_id=assignment_artifact_id,
         )
 
     def _read_json(self, artifact_id: str, label: str) -> dict[str, Any]:

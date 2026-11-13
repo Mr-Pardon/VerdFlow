@@ -17,6 +17,12 @@
 固定 Python wheel 清单见 [portable-requirements.txt](portable-requirements.txt)，品牌回归见
 [branding.test.mjs](tests/branding.test.mjs)。
 
+`python tools/build_portable_release.py --imagery-model <已验证的本地 ONNX> --smoke-test`
+生成常规 Windows 免安装包。也可通过 `VERDFLOW_IMAGERY_MODEL_PATH` 提供模型路径。模型缺失
+或哈希不匹配时构建失败；成品内置固定模型和 [CPU 推理依赖](portable-imagery-requirements.txt)，
+沿用正式数据目录及更新源。源码不包含模型权重；公开上传制品前须核对
+[模型来源和分发条款](portable-imagery-notice.md)。
+
 `inspect_resource_center.py --resources-root <资源仓库目录> --output <检查记录.json>` 使用本工作区
 的包读取器及 Python 依赖，按已审核条目的固定 Release 地址受控下载。`--packages-root`
 可改为读取本地已下载附件。临时下载自动清理，输出仅含公开资源信息和内容指纹；提交资源

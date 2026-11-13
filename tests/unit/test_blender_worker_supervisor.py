@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
+import errno
 import json
 import subprocess
 import sys
@@ -8,6 +10,7 @@ import unittest
 from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -385,6 +388,27 @@ class BlenderWorkerSupervisorTests(unittest.TestCase):
                 self.assertFalse(any((root / "runtime").iterdir()))
 
     def test_provider_neutral_elevation_command_runs_through_blender(self) -> None:
+        self._run_provider_neutral_elevation(explicit=False)
+
+    def test_explicit_scene_elevation_binding_runs_through_blender(self) -> None:
+        self._run_provider_neutral_elevation(explicit=True)
+
+    def test_framed_point_set_keeps_transport_out_of_durable_command(self) -> None:
+        self._run_provider_neutral_elevation(explicit=True, framed=True)
+
+    def test_cancel_during_large_point_staging_does_not_launch_or_publish(self) -> None:
+        self._run_provider_neutral_elevation(explicit=True, framed=True, staging_failure="cancel")
+
+    def test_disk_full_during_staging_does_not_launch_or_publish(self) -> None:
+        self._run_provider_neutral_elevation(explicit=True, framed=True, staging_failure="disk")
+
+    def test_cancel_during_elevation_registration_leaves_no_published_result(self) -> None:
+        self._run_provider_neutral_elevation(explicit=True, framed=True, cancel_registration=True)
+
+    def _run_provider_neutral_elevation(
+        self, *, explicit: bool, framed: bool = False, staging_failure: str | None = None,
+        cancel_registration: bool = False,
+    ) -> None:
         with tempfile.TemporaryDirectory(dir=TEST_TEMP_ROOT) as directory:
             root = Path(directory)
             with ProjectStore.create(
@@ -402,9 +426,27 @@ class BlenderWorkerSupervisorTests(unittest.TestCase):
                             provider_version="1",
                             command_type=BLENDER_SAMPLE_ELEVATION_COMMAND,
                             command_version="1",
+                            sampling_source_kind="scene",
+                            configuration_schema="verdflow.blender-elevation.config/1",
+                            failure_policy="sample-hit-else-generated",
                         ),
                     ),
                 )
+                binding = None
+                if explicit:
+                    from verdflow.contracts import CapabilityRef, SamplingBinding, SamplingSourceRef
+                    run = store.get_planting_run(generated.planting_run_id)
+                    scene = store.get_scene_revision(run.scene_revision_id)
+                    source = store.get_source(scene.source_id)
+                    binding = SamplingBinding(
+                        CapabilityRef("elevation", BLENDER_WORKER_ADAPTER_ID, "1", BLENDER_SAMPLE_ELEVATION_COMMAND, "1"),
+                        SamplingSourceRef("scene", source.source_id, source.artifact_id,
+                            store.get_artifact(source.artifact_id).content_hash, scene.coordinate_frame_id,
+                            scene_revision_id=scene.scene_revision_id),
+                        "verdflow.blender-elevation.config/1",
+                        {"ray_distance": 750.0, "target_object_names": ["terrain"]},
+                        "sample-hit-else-generated",
+                    )
                 submitted = service.submit(
                     ElevationSamplingRequest(
                         generated.point_set_id,
@@ -413,13 +455,23 @@ class BlenderWorkerSupervisorTests(unittest.TestCase):
                             "ray_distance": 750.0,
                             "target_object_names": ["terrain"],
                         },
+                        binding=binding,
                     )
                 )
+
+                launches = []
 
                 def fake_command(
                     control_dir: Path,
                     command_path: Path,
                 ) -> list[str]:
+                    launches.append(command_path)
+                    prepared = json.loads(command_path.read_bytes())
+                    if framed:
+                        self.assertEqual(prepared["points_encoding"], "verdflow.point-rows.ndjson.v1")
+                        self.assertEqual(prepared["points_header"]["point_count"], 1)
+                    else:
+                        self.assertNotIn("points_encoding", prepared)
                     return [
                         sys.executable,
                         str(FAKE_WORKER),
@@ -440,9 +492,50 @@ class BlenderWorkerSupervisorTests(unittest.TestCase):
                     command_factory=fake_command,
                 )
 
-                completed = supervisor.run_once()
+                from verdflow.blender_worker.point_transport import stage_point_rows
+
+                def stop_after_one_row(output, rows, progress):
+                    def interrupted_rows():
+                        for row in rows:
+                            yield row
+                            if staging_failure == "disk":
+                                raise OSError(errno.ENOSPC, "fixture")
+                            supervisor.request_cancel(submitted.job_id)
+                    stage_point_rows(output, interrupted_rows(), progress)
+
+                persist = store.put_file
+
+                def interrupt_registration(path, **options):
+                    supervisor.request_cancel(submitted.job_id)
+                    return persist(path, **options)
+
+                module = "verdflow.blender_worker.supervisor"
+                with (
+                    patch(f"{module}._INLINE_POINTSET_BYTES", 0) if framed else nullcontext(),
+                    patch(f"{module}.stage_point_rows", side_effect=stop_after_one_row)
+                    if staging_failure else nullcontext(),
+                    patch.object(store, "put_bytes", side_effect=OSError(errno.ENOSPC, "diagnostic disk full"))
+                    if staging_failure == "disk" else nullcontext(),
+                    patch.object(store, "put_file", side_effect=interrupt_registration)
+                    if cancel_registration else nullcontext(),
+                ):
+                    completed = supervisor.run_once()
 
                 assert completed is not None
+                if staging_failure or cancel_registration:
+                    if staging_failure == "cancel" or cancel_registration:
+                        self.assertIs(completed.status, JobStatus.CANCELLED)
+                    else:
+                        self.assertIs(completed.status, JobStatus.FAILED)
+                        self.assertEqual(completed.error.code, "BLENDER_DISK_FULL")
+                        self.assertTrue(completed.error.retryable)
+                        self.assertIsNone(completed.error.diagnostic_artifact_id)
+                    self.assertIsNone(completed.result_artifact_id)
+                    self.assertIsNone(store.get_point_set_by_job(submitted.job_id))
+                    self.assertEqual(len(launches), int(cancel_registration))
+                    self.assertFalse(any((root / "runtime").iterdir()))
+                    return
+                self.assertEqual(len(launches), 1)
                 self.assertEqual(
                     completed.status,
                     JobStatus.SUCCEEDED,
@@ -465,6 +558,8 @@ class BlenderWorkerSupervisorTests(unittest.TestCase):
                 )
                 self.assertIn("options", durable)
                 self.assertNotIn("points_path", durable)
+                self.assertNotIn("points_encoding", durable)
+                self.assertNotIn("points_header", durable)
                 self.assertNotIn("source_path", durable)
                 self.assertFalse(any((root / "runtime").iterdir()))
 
@@ -942,6 +1037,36 @@ class BlenderWorkerSupervisorTests(unittest.TestCase):
                 "BLENDER_HEARTBEAT_TIMEOUT",
             )
 
+    def test_worker_with_advancing_progress_can_outlive_the_stall_budget(self) -> None:
+        with self._environment(
+            "event_progress", duration=1.2, blocking_timeout=0.4,
+        ) as environment:
+            store, _, supervisor, job = environment
+            completed = supervisor.run_once()
+            self.assertEqual(completed.status, JobStatus.SUCCEEDED)
+            self.assertEqual(store.get_worker_process(job.job_id, 1).status, WorkerProcessStatus.EXITED)
+
+    def test_heartbeats_and_repeated_stage_events_do_not_extend_stalled_work(self) -> None:
+        with self._environment(
+            "stalled_with_heartbeat", duration=2.0, blocking_timeout=0.4,
+        ) as environment:
+            store, _, supervisor, job = environment
+            failed = supervisor.run_once()
+            self.assertEqual(failed.status, JobStatus.FAILED)
+            self.assertEqual(failed.error.code, "BLENDER_NO_PROGRESS")
+            self.assertIn("building_elevation_bvh", failed.error.message)
+            self.assertIsNone(failed.result_artifact_id)
+            self.assertEqual(store.get_worker_process(job.job_id, 1).status, WorkerProcessStatus.TERMINATED)
+
+    def test_explicit_execution_budget_is_still_enforced(self) -> None:
+        with self._environment(
+            "event_progress", duration=1.5, execution_timeout=0.6,
+        ) as environment:
+            _, _, supervisor, _ = environment
+            failed = supervisor.run_once()
+            self.assertEqual(failed.status, JobStatus.FAILED)
+            self.assertEqual(failed.error.code, "BLENDER_EXECUTION_TIMEOUT")
+
     def test_persistently_invalid_result_is_rejected(self) -> None:
         with self._environment("bad_result") as environment:
             _, _, supervisor, _ = environment
@@ -1004,6 +1129,8 @@ class BlenderWorkerSupervisorTests(unittest.TestCase):
         duration: float = 0.3,
         ready_timeout: float = 2.0,
         heartbeat_timeout: float = 1.0,
+        blocking_timeout: float = 1.0,
+        execution_timeout: float | None = None,
         lease_seconds: float = 5.0,
         process_started: object | None = None,
     ) -> object:
@@ -1012,6 +1139,8 @@ class BlenderWorkerSupervisorTests(unittest.TestCase):
             duration=duration,
             ready_timeout=ready_timeout,
             heartbeat_timeout=heartbeat_timeout,
+            blocking_timeout=blocking_timeout,
+            execution_timeout=execution_timeout,
             lease_seconds=lease_seconds,
             process_started=process_started,
         )
@@ -1025,6 +1154,8 @@ class SupervisorEnvironment:
         duration: float,
         ready_timeout: float,
         heartbeat_timeout: float,
+        blocking_timeout: float,
+        execution_timeout: float | None,
         lease_seconds: float,
         process_started: object | None,
     ) -> None:
@@ -1032,6 +1163,8 @@ class SupervisorEnvironment:
         self.duration = duration
         self.ready_timeout = ready_timeout
         self.heartbeat_timeout = heartbeat_timeout
+        self.blocking_timeout = blocking_timeout
+        self.execution_timeout = execution_timeout
         self.lease_seconds = lease_seconds
         self.process_started = process_started
         self.temporary: tempfile.TemporaryDirectory[str] | None = None
@@ -1083,7 +1216,8 @@ class SupervisorEnvironment:
             poll_interval_seconds=0.02,
             ready_timeout_seconds=self.ready_timeout,
             heartbeat_timeout_seconds=self.heartbeat_timeout,
-            execution_timeout_seconds=3.0,
+            blocking_operation_timeout_seconds=self.blocking_timeout,
+            execution_timeout_seconds=self.execution_timeout,
             termination_grace_seconds=1.0,
         )
         supervisor = BlenderWorkerSupervisor(

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createRequire } from "node:module";
 import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -8,15 +9,18 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { launchPortableUpdate } from "../src/update-runner.mjs";
+import { PortableUpdater } from "../src/portable-updater.mjs";
 
 for (const [runtime, accept, rollback = false] of [["node", true], ["electron", true], ["electron-app", true], ["node", false], ["node", true, true]]) test(`Windows ${runtime} update: acceptance=${accept}, rollback=${rollback}`, { skip: process.platform !== "win32", timeout: 30000 }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "verdflow-swap-test-"));
-  const id = "b".repeat(32), install = path.join(root, "application"), stage = path.join(root, `.verdflow-update-${id}`), job = path.join(root, "job ' \u6d4b\u8bd5");
+  const id = "b".repeat(32), install = path.join(root, "application"), stage = path.join(root, `.verdflow-update-${id}`);
+  const data = path.join(root, "data"), repository = "example/verdflow-test";
+  const job = runtime === "electron-app" ? path.join(data, "Updates", id) : path.join(root, "job ' \u6d4b\u8bd5");
   const powershell = path.join(process.env.SystemRoot, "System32/WindowsPowerShell/v1.0/powershell.exe");
   let parent;
   let handedOff = false;
   try {
-    for (const directory of [install, stage, job]) await mkdir(directory);
+    for (const directory of [install, stage, job]) await mkdir(directory, { recursive: true });
     await writeFile(path.join(install, "old.txt"), "old");
     await writeFile(path.join(root, "userdata.txt"), "retained");
     await writeFile(path.join(stage, ".verdflow-update-ready.json"), JSON.stringify({ id, version: "0.4.0" }));
@@ -26,8 +30,20 @@ for (const [runtime, accept, rollback = false] of [["node", true], ["electron", 
     const compiled = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(command, "utf16le").toString("base64")], { windowsHide: true, encoding: "utf8" });
     assert.equal(compiled.status, 0, compiled.stderr);
     if (rollback) await copyFile(executable, path.join(install, "VerdFlow Studio.exe"));
+    if (runtime === "electron-app") {
+      await writeFile(path.join(install, "VerdFlow Studio.exe"), "old program");
+      const files = await Promise.all(["old.txt", "VerdFlow Studio.exe"].map(async name => {
+        const bytes = await readFile(path.join(install, name));
+        return { path: name, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
+      }));
+      await writeFile(path.join(install, "update-manifest.json"), JSON.stringify({
+        schema: "verdflow.portable-files", version: "1", platform: "windows-x64", product_version: "0.3.1", files,
+      }));
+      await mkdir(path.join(stage, "resources/app"), { recursive: true });
+      await writeFile(path.join(stage, "resources/app/updates.json"), JSON.stringify({ schema: "verdflow.update-source", version: "1", repository }));
+    }
     const planPath = path.join(job, "plan.json");
-    await writeFile(planPath, JSON.stringify({ id, installRoot: install, stageRoot: stage, targetVersion: "0.4.0" }));
+    await writeFile(planPath, JSON.stringify({ id, repository, installRoot: install, stageRoot: stage, targetVersion: "0.4.0" }));
     const ownerScript = `
       import { readFile, writeFile, rm } from "node:fs/promises";
       import { launchPortableUpdate } from ${JSON.stringify(new URL("../src/update-runner.mjs", import.meta.url).href)};
@@ -72,9 +88,22 @@ for (const [runtime, accept, rollback = false] of [["node", true], ["electron", 
     assert.equal(code, 0, errors);
     if (accept && !rollback) {
       await until(async () => await readFile(path.join(install, "launched.txt"), "utf8") === "started");
-      assert.equal(await readFile(path.join(root, `.verdflow-backup-${id}`, "old.txt"), "utf8"), "old");
+      const backup = path.join(root, `.verdflow-backup-${id}`);
+      assert.equal(await readFile(path.join(backup, "old.txt"), "utf8"), "old");
       assert.equal(JSON.parse(await readFile(path.join(job, "result.json"), "utf8")).status, "applied");
       await assert.rejects(readFile(path.join(install, "old.txt")));
+      if (runtime === "electron-app") {
+        const resources = path.join(install, "resources");
+        const updater = new PortableUpdater({
+          portable: { rootPath: install, resourcesPath: resources, userDataPath: data }, version: "0.4.0", scriptRoot: "unused",
+        });
+        try {
+          await updater.initialize();
+          await updater.backupCleanup;
+          await assert.rejects(readFile(path.join(backup, "old.txt")), { code: "ENOENT" });
+          assert.equal(await readFile(path.join(install, "launched.txt"), "utf8"), "started");
+        } finally { updater.dispose(); }
+      }
     } else {
       await until(async () => JSON.parse(await readFile(path.join(job, "result.json"), "utf8")).status === "failed");
       assert.equal(await readFile(path.join(install, "old.txt"), "utf8"), "old");

@@ -71,6 +71,6 @@ try {
     }
     throw
 }
-# User data and projects are outside this program-directory swap. Keep the backup;
-# restoring program files after a newer database has opened requires a separate decision.
+# Leave the backup for the new application to verify after a healthy startup.
+# The swap helper never rolls back a database opened by the new application.
 Start-Process -FilePath (Join-Path $install 'VerdFlow Studio.exe') -WorkingDirectory $install

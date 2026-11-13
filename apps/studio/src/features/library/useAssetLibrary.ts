@@ -7,7 +7,9 @@ import type {
   AssetCatalogDetail,
   AssetCatalogDocument,
   AssetCatalogSummary,
+  AssetPackageOverwrite,
 } from "../../api";
+import { confirmAction } from "../../components/confirmDialog";
 import { platformBridge } from "../../platform";
 import {
   importPackagesSequentially,
@@ -233,11 +235,34 @@ export const useAssetLibrary = () => {
     mutating.value = true;
     errorMessage.value = null;
     noticeMessage.value = null;
+    let skipped = 0;
     try {
       const outcome = await importPackagesSequentially(
         sourcePaths,
         async (sourcePath) => {
-          const result = await client.importAssetCatalogPackage(sourcePath);
+          const result = await client.importAssetCatalogPackage(sourcePath).catch(async (error: unknown) => {
+            if (!(error instanceof LocalApiError) || error.status !== 409 ||
+                error.code !== "asset_catalog_overwrite_required" || !isAssetPackageOverwrite(error.details)) throw error;
+            const conflict = error.details;
+            const confirmed = await confirmAction({
+              title: "覆盖现有资产库？",
+              message: `「${conflict.incoming_name}」与现有资产库「${conflict.existing_name}」的 ID 相同。覆盖会替换库内内容，已保存的种植方案不变。`,
+              detail: `资产库 ID：${conflict.catalog_id}`,
+              confirmLabel: "覆盖资产库",
+              cancelLabel: "保留现有资产库",
+              tone: "danger",
+            });
+            if (!confirmed) {
+              skipped++;
+              return undefined;
+            }
+            return client.importAssetCatalogPackage(sourcePath, {
+              expected_generation: conflict.expected_generation,
+              expected_catalog_hash: conflict.expected_catalog_hash,
+              expected_package_hash: conflict.expected_package_hash,
+            });
+          });
+          if (!result) return undefined;
           if (result.catalog.target_type !== "dts" && result.catalog.target_type !== "blender") {
             throw new Error(`暂不支持目标类型 ${result.catalog.target_type}`);
           }
@@ -257,8 +282,15 @@ export const useAssetLibrary = () => {
           selectedCatalogKey.value = catalogKey(last.catalog);
         }
         await refreshTarget();
+      }
+      if (imported.length || skipped) {
         const existingCount = imported.filter((item) => item.already_installed).length;
-        noticeMessage.value = `已处理 ${imported.length} 个资产包：新导入 ${imported.length - existingCount} 个，已存在 ${existingCount} 个`;
+        const replacedCount = imported.filter((item) => item.replaced).length;
+        const counts = [
+          ["新导入", imported.length - existingCount - replacedCount],
+          ["已覆盖", replacedCount], ["已存在", existingCount], ["已跳过", skipped],
+        ] as const;
+        noticeMessage.value = counts.filter(([, count]) => count > 0).map(([label, count]) => `${label} ${count} 个`).join("，");
       }
       const failures = [
         ...unsupportedPackageFailures(rejectedNames, "vfa"),
@@ -446,6 +478,15 @@ export const useAssetLibrary = () => {
 
 export const catalogKey = (catalog: Pick<AssetCatalogSummary, "target_type" | "catalog_id">) =>
   `${catalog.target_type}:${catalog.catalog_id}`;
+
+const isAssetPackageOverwrite = (value: unknown): value is AssetPackageOverwrite => {
+  if (!value || typeof value !== "object") return false;
+  const details = value as Partial<AssetPackageOverwrite>;
+  return typeof details.catalog_id === "string" && typeof details.existing_name === "string" &&
+    typeof details.incoming_name === "string" && typeof details.expected_generation === "number" &&
+    Number.isSafeInteger(details.expected_generation) && details.expected_generation > 0 &&
+    typeof details.expected_catalog_hash === "string" && typeof details.expected_package_hash === "string";
+};
 
 const readableError = (error: unknown) => {
   if (error instanceof LocalApiError) {

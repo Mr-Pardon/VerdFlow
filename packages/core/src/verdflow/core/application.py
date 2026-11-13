@@ -351,8 +351,23 @@ class ApplicationFacade:
     def finalize_region_source(
         self,
         job_id: str,
+        *,
+        included_region_ids: tuple[str, ...] | None = None,
     ) -> tuple[SceneRevisionInfo, RegionSetInfo]:
-        return self._region_source_import.finalize(job_id)
+        return self._region_source_import.finalize(job_id, included_region_ids=included_region_ids)
+
+    def revise_region_source_selection(
+        self, job_id: str, *, expected_region_set_id: str, included_region_ids: tuple[str, ...],
+    ) -> tuple[SceneRevisionInfo, RegionSetInfo]:
+        return self._region_source_import.revise_selection(job_id, expected_region_set_id=expected_region_set_id,
+            included_region_ids=included_region_ids, runtime=self.runtime)
+
+    def submit_region_source_confirmation(
+        self, job_id: str, *, included_region_ids: tuple[str, ...], expected_region_set_id: str | None,
+        refinement: dict | None = None,
+    ) -> JobInfo:
+        return self._region_source_import.submit_confirmation(self.runtime, job_id,
+            included_region_ids=included_region_ids, expected_region_set_id=expected_region_set_id, refinement=refinement)
 
     def submit_material_analysis(
         self,

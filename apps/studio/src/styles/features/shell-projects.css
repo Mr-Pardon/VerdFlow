@@ -212,6 +212,10 @@
   padding: 30px 38px 24px;
 }
 
+.projects-view > :is(.page-header, .filter-bar, .inline-alert) {
+  flex-shrink: 0;
+}
+
 .page-header {
   display: flex;
   gap: 24px;

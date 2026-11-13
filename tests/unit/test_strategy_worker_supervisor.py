@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+import errno
 from pathlib import Path
 import sys
 import tempfile
@@ -64,6 +65,20 @@ def supervisor_fixture():
 
 
 class StrategyWorkerSupervisorTests(unittest.TestCase):
+    def test_disk_exhaustion_fails_without_point_evidence(self):
+        with supervisor_fixture() as (supervisor, runtime, job):
+            with patch(
+                "verdflow.strategy_worker.runner._check_disk_budget",
+                side_effect=OSError(errno.ENOSPC, "injected"),
+            ):
+                result = supervisor.run_once()
+            self.assertIs(result.status, JobStatus.FAILED)
+            self.assertEqual(result.error.code, "STRATEGY_DISK_FULL")
+            self.assertTrue(result.error.retryable)
+            self.assertIsNone(result.result_artifact_id)
+            self.assertIsNone(runtime.store.get_point_set_by_job(job.job_id))
+            self.assertEqual(list(supervisor.config.runtime_root.iterdir()), [])
+
     def assert_cancelled_without_recovery(self, runtime, job_id):
         self.assertEqual(runtime.get(job_id).status, JobStatus.CANCELLED)
         self.assertEqual(runtime.attempts(job_id)[0].status, JobStatus.CANCELLED)
@@ -89,9 +104,10 @@ class StrategyWorkerSupervisorTests(unittest.TestCase):
     def test_control_signal_after_process_exit_discards_output(self):
         with supervisor_fixture() as (supervisor, runtime, job):
             def finished(*args, **kwargs):
+                yield
                 supervisor.request_cancel(job.job_id)
-                return {}
-            with patch("verdflow.strategy_worker.supervisor.StrategyWorker.run", side_effect=finished):
+                return "2"
+            with patch("verdflow.strategy_worker.supervisor.StrategyWorker.run_steps", side_effect=finished):
                 result = supervisor.run_once()
             self.assertEqual(result.status, JobStatus.CANCELLED)
             self.assert_cancelled_without_recovery(runtime, job.job_id)
@@ -102,7 +118,7 @@ class StrategyWorkerSupervisorTests(unittest.TestCase):
                 runtime.request_cancel(job.job_id)
                 supervisor.request_cancel(job.job_id)
                 raise StrategyExecutionCancelled("test signal")
-            with patch("verdflow.strategy_worker.supervisor.StrategyWorker.run", side_effect=cancelled):
+            with patch("verdflow.strategy_worker.supervisor.StrategyWorker.run_steps", side_effect=cancelled):
                 supervisor.run_once()
             self.assert_cancelled_without_recovery(runtime, job.job_id)
             self.assertEqual(sum(event.event_type == JobEventType.CANCELLATION_REQUESTED
@@ -117,7 +133,7 @@ class StrategyWorkerSupervisorTests(unittest.TestCase):
                 now[0] += runtime.lease_duration + timedelta(seconds=1)
                 supervisor.request_cancel(job.job_id)
                 raise StrategyExecutionCancelled("test signal after lease expiry")
-            with patch("verdflow.strategy_worker.supervisor.StrategyWorker.run", side_effect=expired):
+            with patch("verdflow.strategy_worker.supervisor.StrategyWorker.run_steps", side_effect=expired):
                 self.assertIsNone(supervisor.run_once())
             self.assertEqual(runtime.get(job.job_id).status, JobStatus.CANCELLING)
             runtime.recover_expired()

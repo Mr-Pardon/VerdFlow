@@ -176,6 +176,7 @@ region_extraction_import.py Region Processor 结果入口校验
 region_providers.py RegionSet Producer 的共享执行定义
 region_source.py 直接区域 Source 的 Provider 注册与 Job 提交
 region_source_import.py 直接区域结果的 SceneRevision 与 RegionSet 联合定版
+region_confirmation_worker.py 后台执行用户已确认的候选范围，保证任务成功与区域激活原子提交
 scene_import.py 场景检查结果校验与 SceneRevision 定版
 workers.py      Worker Driver 协议、能力归属与取消路由
 service_loop.py 单项目所有者线程恢复与执行循环

@@ -1,6 +1,7 @@
 """Public entry points for the VerdFlow Core Host."""
 
 from typing import Any
+from .workflows import AdapterWorkflowRegistry
 
 from .host import (
     CoreHost,
@@ -42,6 +43,7 @@ from verdflow.core import (
 )
 
 __all__ = [
+    "AdapterWorkflowRegistry",
     "AssetAssignmentOutcome",
     "CoreHost",
     "CoreHostConfig",

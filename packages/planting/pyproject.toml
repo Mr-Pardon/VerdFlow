@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Strategy authoring and deterministic target asset assignment for VerdFlow."
 requires-python = ">=3.11"
 dependencies = [
+  "ijson>=3.4.0.post0,<4",
   "jsonschema>=4.22,<5",
   "PyYAML>=6.0,<7",
   "verdflow-contracts",

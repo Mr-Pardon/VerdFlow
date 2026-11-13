@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import math
-from collections import defaultdict, deque
-from collections.abc import Iterable, Mapping, Sequence
+from collections import defaultdict
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -74,35 +74,42 @@ def polygon_perimeter_xy(points: Sequence[Point3]) -> float:
 def connected_face_islands(
     face_edges: Mapping[int, Iterable[Edge]],
 ) -> list[list[int]]:
-    edge_to_faces: dict[Edge, list[int]] = defaultdict(list)
-    for face_index, edges in face_edges.items():
-        for edge in edges:
-            edge_to_faces[tuple(sorted(edge))].append(face_index)
+    return connected_face_islands_from_edges(face_edges, face_edges.__getitem__)
 
-    neighbors: dict[int, set[int]] = defaultdict(set)
-    for faces in edge_to_faces.values():
-        for face in faces:
-            neighbors[face].update(
-                other for other in faces if other != face
-            )
 
-    islands: list[list[int]] = []
-    remaining = set(face_edges)
-    while remaining:
-        start = min(remaining)
-        remaining.remove(start)
-        island = {start}
-        queue = deque([start])
-        while queue:
-            current = queue.popleft()
-            for next_face in sorted(neighbors[current]):
-                if next_face not in remaining:
-                    continue
-                remaining.remove(next_face)
-                island.add(next_face)
-                queue.append(next_face)
-        islands.append(sorted(island))
-    return islands
+def connected_face_islands_from_edges(
+    faces: Iterable[int], edges_for_face: Callable[[int], Iterable[Edge]],
+) -> list[list[int]]:
+    parents = {face: face for face in faces}
+    sizes: dict[int, int] = {}
+    edge_first_face: dict[Edge, int] = {}
+
+    def root(face: int) -> int:
+        while face != parents[face]:
+            parents[face] = parents[parents[face]]
+            face = parents[face]
+        return face
+
+    # Connecting every incident face to the first is equivalent to a full
+    # adjacency clique, without quadratic work on heavily shared edges.
+    for face_index in parents:
+        for edge in edges_for_face(face_index):
+            first_face = edge_first_face.setdefault(tuple(sorted(edge)), face_index)
+            if first_face == face_index:
+                continue
+            left, right = root(face_index), root(first_face)
+            if left == right:
+                continue
+            if sizes.get(left, 1) < sizes.get(right, 1):
+                left, right = right, left
+            parents[right] = left
+            sizes[left] = sizes.get(left, 1) + sizes.pop(right, 1)
+
+    # The Region IDs depend on ascending island and face order.
+    islands: dict[int, list[int]] = {}
+    for face in sorted(parents):
+        islands.setdefault(root(face), []).append(face)
+    return list(islands.values())
 
 
 def boundary_vertex_loops(
@@ -163,6 +170,13 @@ def dominant_projected_boundary_loops(
         face_index: signed_polygon_area_xy(face_points.get(face_index, ()))
         for face_index in face_edges
     }
+    return dominant_projected_boundary_from_areas(signed_areas, face_edges.__getitem__, area_epsilon=area_epsilon)
+
+
+def dominant_projected_boundary_from_areas(
+    signed_areas: Mapping[int, float], edges_for_face: Callable[[int], Iterable[Edge]],
+    *, area_epsilon: float = 1e-9,
+) -> list[list[int]]:
     positive_area = math.fsum(
         area for area in signed_areas.values() if area > area_epsilon
     )
@@ -173,8 +187,8 @@ def dominant_projected_boundary_loops(
         return []
     sign = 1.0 if positive_area >= negative_area else -1.0
     return boundary_vertex_loops(
-        face_edges[face_index]
-        for face_index in sorted(face_edges)
+        edges_for_face(face_index)
+        for face_index in sorted(signed_areas)
         if signed_areas[face_index] * sign > area_epsilon
     )
 

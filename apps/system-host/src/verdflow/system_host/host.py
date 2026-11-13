@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from dataclasses import replace
+from dataclasses import asdict, replace
+import errno
 import hashlib
 import json
 import math
@@ -15,7 +16,20 @@ import time
 from typing import Any, Callable
 from uuid import uuid4
 from .asset_search import AssetSearchService, AssetSearchRequest, AssetSearchPage
+from .imagery_input import (
+    ImageryCandidate, ImageryReviewIndexBatch, imagery_request, included_after_exclusions,
+    included_from_imagery_bits, latest_imagery_job, read_imagery_candidate, read_imagery_index_batch,
+    resolve_imagery_tiles, resolve_plant_workflow, scene_imagery_job_id,
+)
+from verdflow.geospatial_worker import (
+    GEOSPATIAL_PREPARE_REGIONS_COMMAND,
+    GeospatialDataError,
+    IMAGERY_PREPARE_REGIONS_COMMAND,
+    IMAGERY_REGION_PROVIDER_ID,
+    ImageryTileReader,
+)
 
+from verdflow.contracts import AssetCatalogInfo
 from verdflow.asset_package import (
     AssetPackageError,
     AssetPackageResource,
@@ -35,6 +49,8 @@ from verdflow.core import (
     OutputExportRequest,
     RegionExtractionRequest,
     RegionSourceRequest,
+    REGION_SOURCE_CONFIRM_ACTIVE,
+    REGION_SOURCE_CONFIRM_COMMAND,
     ScenePreparationRequest,
 )
 from verdflow.core_host import (
@@ -44,6 +60,7 @@ from verdflow.core_host import (
     PlantRunExecutionRequest,
 )
 from verdflow.contracts import (
+    REGION_SOURCE_AUTO_PUBLISH_VERSION,
     AssignmentPreviewRequest,
     AssignmentPreviewResult,
     StrategyPreviewRequest,
@@ -147,6 +164,7 @@ from .models import (
     DtsLiveConfigurationRequest,
     DtsLiveStrategyOption,
     ProjectSessionInfo,
+    ProjectBusinessState,
     ProjectSessionState,
     ProjectRemovalInfo,
     RecentProjectInfo,
@@ -197,10 +215,6 @@ from .library_views import (
     strategy_detail,
     strategy_summary,
 )
-from .planting_routes import (
-    resolve_plant_output_route,
-    resolve_region_extraction_provider,
-)
 from .model_providers import ModelProviderConfigStore
 from .external_runtimes import (
     BLENDER_RUNTIME_ID,
@@ -234,6 +248,7 @@ from .resource_index import ResourceSelection
 from .plan_imports import PlanImportService
 from .plan_import_library import PlanImportLibrary
 from .secret_store import SecretStore, SecretStoreError, platform_secret_store
+from .source_intake import SOURCE_INTAKE_COMMAND, SourceIntakeError, SourceIntakeRequest, SourceIntakeStore
 
 
 class SystemHostError(RuntimeError):
@@ -246,6 +261,14 @@ class SystemHostDataError(SystemHostError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class AssetPackageOverwriteRequired(SystemHostError):
+    def __init__(self, existing: AssetCatalogInfo, incoming_name: str, package_hash: str) -> None:
+        super().__init__("已有同 ID 的资产库，确认后才能覆盖。")
+        self.existing = existing
+        self.incoming_name = incoming_name
+        self.package_hash = package_hash
 
 
 class SystemHostAlreadyRunningError(SystemHostError):
@@ -291,6 +314,7 @@ class SystemHost:
         self._state = SystemHostState.STOPPED
         self._library: LibraryRuntime | None = None
         self._strategy_previews = StrategyPreviewRuntime()
+        self._imagery_tiles = ImageryTileReader()
         self._starter_resources = PlanImportService(self._import_starter_resource,
             PlanImportLibrary(self._library_runtime, self.config.project_call_timeout_seconds),
             lambda package: self._install_inspected_strategy(package)[1])
@@ -302,6 +326,7 @@ class SystemHost:
         self._lock = RLock()
         self._lifecycle_lock = RLock()
         self._system_root = config.resolved_system_path()
+        self._source_intake = SourceIntakeStore(self._system_root / "runtime" / "source-intake", config.imagery_backend)
         self._instance_id = str(uuid4())
         self._system_root_id = system_root_id(self._system_root)
         self._instance_guard = SystemHostInstanceGuard(self._system_root)
@@ -366,6 +391,7 @@ class SystemHost:
                 library = LibraryRuntime(self.config.library_path)
                 self._library = library
                 self._strategy_previews = StrategyPreviewRuntime()
+                self._imagery_tiles = ImageryTileReader()
                 self._starter_resources = PlanImportService(self._import_starter_resource,
                     PlanImportLibrary(self._library_runtime, self.config.project_call_timeout_seconds),
                     lambda package: self._install_inspected_strategy(package)[1])
@@ -421,7 +447,12 @@ class SystemHost:
                     if self._endpoint is not None
                     else None
                 ),
+                imagery_available=self.imagery_available(),
             )
+
+    def imagery_available(self) -> bool:
+        model, python = self.config.imagery_model_path, self.config.imagery_python_executable
+        return model is not None and model.is_file() and python is not None and python.is_file()
 
     def publish_endpoint(
         self,
@@ -860,10 +891,8 @@ class SystemHost:
                 raise ValueError("资产包身份与推荐清单不符。")
             try:
                 return self.import_asset_catalog_package(path).already_installed
-            except SystemHostError as error:
-                if "same id already has different content" in str(error):
-                    raise ValueError("已有同名标识的资产库包含不同内容，未覆盖；请在资产库中手动处理。") from error
-                raise
+            except AssetPackageOverwriteRequired as error:
+                raise ValueError("已有同 ID 的资产库包含不同内容，未覆盖；可在资产库中手动导入并确认覆盖。") from error
         with open_strategy_package_archive(path) as opened:
             if opened.package.package_id != item.identity or opened.package.package_version != item.version:
                 raise ValueError("策略包身份或版本与推荐清单不符。")
@@ -1199,11 +1228,21 @@ class SystemHost:
         source_path: Path,
         *,
         replace_existing: bool = False,
+        expected_package_hash: str | None = None,
+        expected_catalog_hash: str | None = None,
+        expected_generation: int | None = None,
     ) -> AssetPackageImportInfo:
         self._require_running()
         library = self._library_runtime()
         try:
             inspection = inspect_asset_catalog_package(source_path)
+            guarded = any(value is not None for value in (expected_package_hash, expected_catalog_hash, expected_generation))
+            if guarded and (not replace_existing or any(
+                value is None for value in (expected_package_hash, expected_catalog_hash, expected_generation)
+            )):
+                raise ValueError("覆盖确认信息不完整。")
+            if guarded and inspection.package_hash != expected_package_hash:
+                raise SystemHostError("资产包在确认期间已变更，请重新导入。")
             catalog_value = self._json_object(
                 inspection.catalog.canonical_json
             )
@@ -1223,22 +1262,16 @@ class SystemHost:
                 ),
                 timeout_seconds=self.config.project_call_timeout_seconds,
             )
-            if existing is not None:
-                installed = library.call(
-                    lambda store: store.load_asset_catalog_document(
-                        document.target_type,
-                        document.catalog_id,
-                    ),
-                    timeout_seconds=self.config.project_call_timeout_seconds,
-                )
-                if (
-                    installed.semantic_hash != document.semantic_hash
-                    or installed.canonical_json != document.canonical_json
-                ):
-                    if not replace_existing:
-                        raise SystemHostError(
-                            "A Catalog with the same id already has different content"
-                        )
+            def check_confirmed_catalog(current: AssetCatalogInfo | None) -> None:
+                if guarded and (current is None or current.generation != expected_generation
+                                or current.semantic_hash != expected_catalog_hash):
+                    raise SystemHostError("现有资产库在确认期间已变更，请重新导入。")
+
+            check_confirmed_catalog(existing)
+            if existing is not None and existing.provider_id != document.provider_id:
+                raise SystemHostError("同 ID 资产库的资源类型不同，不能覆盖。请更改资产库 ID 后重新导入。")
+            if existing is not None and existing.semantic_hash != document.semantic_hash and not replace_existing:
+                raise AssetPackageOverwriteRequired(existing, document.display_name, inspection.package_hash)
 
             def import_resource(resource: AssetPackageResource) -> None:
                 imported = library.call(
@@ -1265,14 +1298,17 @@ class SystemHost:
             if already_installed:
                 catalog_info = existing
             else:
-                catalog_info = library.call(
-                    lambda store: store.save_asset_catalog(
+                def save_catalog(store: Any) -> AssetCatalogInfo:
+                    if guarded:
+                        check_confirmed_catalog(store.get_asset_catalog(document.target_type, document.catalog_id))
+                    return store.save_asset_catalog(
                         document,
-                        expected_generation=(
-                            existing.generation if existing is not None else 0
-                        ),
+                        expected_generation=existing.generation if existing is not None else 0,
                         origin_package_hash=inspection.package_hash,
-                    ),
+                    )
+
+                catalog_info = library.call(
+                    save_catalog,
                     timeout_seconds=self.config.project_call_timeout_seconds,
                 )
             return AssetPackageImportInfo(
@@ -1281,6 +1317,7 @@ class SystemHost:
                 resource_count=len(inspection.resources),
                 already_installed=already_installed,
                 catalog=catalog_info,
+                replaced=existing is not None and not already_installed,
             )
         except AssetPackageError as error:
             raise ValueError(str(error)) from error
@@ -1814,6 +1851,8 @@ class SystemHost:
                 raise SystemHostError(
                     "Project files were removed but registry cleanup failed"
                 )
+            if record.project_id:
+                self._source_intake.forget(record.project_id, project_path)
             return ProjectRemovalInfo(
                 registry_id=record.registry_id,
                 project_id=record.project_id,
@@ -1879,7 +1918,7 @@ class SystemHost:
                 if scene_revision_id is not None
                 else None
             )
-            return project_business_summary(
+            summary = project_business_summary(
                 store.project_info(),
                 workflow=workflow,
                 scene_revision_id=scene_revision_id,
@@ -1892,6 +1931,52 @@ class SystemHost:
                 material_flow=material_flow,
                 plant_run=plant_run,
             )
+            if summary.state is ProjectBusinessState.NEW:
+                intake = store.list_jobs(command_types=(SOURCE_INTAKE_COMMAND,), limit=1).items
+                if intake and intake[0].status is not JobStatus.SUCCEEDED:
+                    job = intake[0]
+                    state = {
+                        JobStatus.FAILED: ProjectBusinessState.FAILED,
+                        JobStatus.INTERRUPTED: ProjectBusinessState.FAILED,
+                        JobStatus.CANCELLED: ProjectBusinessState.CANCELLED,
+                    }.get(job.status, ProjectBusinessState.RUNNING)
+                    return replace(summary, state=state, execution_kind="source_intake", execution_id=job.job_id,
+                        execution_status=job.status.value, execution_stage=job.stage, updated_at=job.finished_at or job.created_at,
+                        error_code=job.error.code if job.error else None, error_message=job.error.message if job.error else None)
+                imagery = latest_imagery_job(store)
+                if imagery is not None:
+                    state = {
+                        JobStatus.SUCCEEDED: ProjectBusinessState.AWAITING_REGION_CONFIRMATION,
+                        JobStatus.FAILED: ProjectBusinessState.FAILED,
+                        JobStatus.INTERRUPTED: ProjectBusinessState.FAILED,
+                        JobStatus.CANCELLED: ProjectBusinessState.CANCELLED,
+                    }.get(imagery.status, ProjectBusinessState.RUNNING)
+                    return replace(summary, state=state, execution_kind="imagery_preparation",
+                        execution_id=imagery.job_id, execution_status=imagery.status.value,
+                        execution_stage="imagery_preparation", updated_at=imagery.finished_at or imagery.created_at,
+                        error_code=imagery.error.code if imagery.error else None,
+                        error_message=imagery.error.message if imagery.error else None,
+                        imagery_job_id=imagery.job_id)
+                jobs = store.list_jobs(command_types=(GEOSPATIAL_PREPARE_REGIONS_COMMAND,), limit=1).items
+                if jobs and store.get_artifact(jobs[0].command.artifact_id).schema_version == REGION_SOURCE_AUTO_PUBLISH_VERSION:
+                    vector = jobs[0]
+                    state = {
+                        JobStatus.FAILED: ProjectBusinessState.FAILED,
+                        JobStatus.INTERRUPTED: ProjectBusinessState.FAILED,
+                        JobStatus.CANCELLED: ProjectBusinessState.CANCELLED,
+                    }.get(vector.status, ProjectBusinessState.RUNNING)
+                    return replace(
+                        summary, state=state, execution_kind="vector_preparation",
+                        execution_id=vector.job_id, execution_status=vector.status.value,
+                        execution_stage=vector.stage, updated_at=vector.finished_at or vector.created_at,
+                        error_code=vector.error.code if vector.error else None,
+                        error_message=vector.error.message if vector.error else None,
+                    )
+            if scene_revision is not None:
+                imagery_job_id = scene_imagery_job_id(store, scene_revision)
+                if imagery_job_id is not None:
+                    return replace(summary, imagery_job_id=imagery_job_id)
+            return summary
 
         return runtime.query(
             query,
@@ -2119,22 +2204,20 @@ class SystemHost:
                     "Project source is fixed; create another project for a new source"
                 )
             if kind is SourceKind.SHAPEFILE:
-                from verdflow.geospatial_worker import package_shapefile, GeospatialDataError
+                from verdflow.geospatial_worker import write_shapefile_package, GeospatialDataError
                 try:
-                    payload = package_shapefile(source_path)
+                    return host.write_source(
+                        lambda output: write_shapefile_package(source_path, output),
+                        original_name=f"{source_path.stem}.shapefile.zip",
+                        kind=kind,
+                        media_type=media_type,
+                    )
                 except GeospatialDataError as error:
                     raise SystemHostDataError(error.code, str(error)) from error
                 except OSError as error:
+                    if error.errno == errno.ENOSPC:
+                        raise SystemHostDataError("geo_disk_budget", "项目磁盘空间不足，未保存不完整的 SHP 数据。请释放空间后重试。") from error
                     raise SystemHostDataError("geo_file_unreadable", "无法读取 SHP 及其配套文件，请检查文件是否完整、目录是否可访问；项目已保留。") from error
-                return host.add_source_bytes(
-                    payload,
-                    original_name=f"{source_path.stem}.shapefile.zip",
-                    kind=kind,
-                    media_type=(
-                        media_type
-                        or "application/vnd.verdflow.shapefile+zip"
-                    ),
-                )
             return host.add_source_file(
                 source_path,
                 kind=kind,
@@ -2145,6 +2228,31 @@ class SystemHost:
             add,
             timeout_seconds=self.config.project_call_timeout_seconds,
         )
+
+    def submit_source_intake(self, session_id: str, request: SourceIntakeRequest, *, idempotency_key: str) -> JobInfo:
+        if request.workflow == "imagery" and not self.imagery_available():
+            raise SystemHostDataError("imagery_runtime_unavailable", "未配置本地影像模型或推理环境。")
+        runtime = self._project_runtime(session_id)
+        key = f"source-intake:{idempotency_key}"
+        latest = runtime.query(lambda store: store.list_jobs(command_types=(SOURCE_INTAKE_COMMAND,), limit=1).items,
+            timeout_seconds=self.config.project_call_timeout_seconds)
+        if latest and latest[0].idempotency_key == key:
+            return latest[0]
+        if latest and latest[0].status in {JobStatus.QUEUED, JobStatus.RUNNING, JobStatus.CANCELLING, JobStatus.SUCCEEDED}:
+            raise SystemHostDataError("source_intake_exists", "当前项目已提交输入，不能重复登记。")
+        try:
+            return runtime.call(lambda host: self._source_intake.submit(host, request, key),
+                timeout_seconds=self.config.project_call_timeout_seconds)
+        except (SourceIntakeError, GeospatialDataError) as error:
+            raise SystemHostDataError(error.code, str(error)) from error
+
+    def retry_source_intake(self, session_id: str, job_id: str) -> JobInfo:
+        runtime = self._project_runtime(session_id)
+        try:
+            return runtime.call(lambda host: self._source_intake.retry(host, job_id),
+                timeout_seconds=self.config.project_call_timeout_seconds)
+        except (SourceIntakeError, GeospatialDataError) as error:
+            raise SystemHostDataError(error.code, str(error)) from error
 
     def create_identity_source_assembly(
         self,
@@ -2273,6 +2381,24 @@ class SystemHost:
         idempotency_key: str | None = None,
     ) -> JobInfo:
         runtime = self._project_runtime(session_id)
+        if request.provider_id == IMAGERY_REGION_PROVIDER_ID:
+            if request.auto_publish:
+                raise ValueError("影像候选需要确认后定版。")
+            if not self.imagery_available():
+                raise SystemHostDataError("imagery_runtime_unavailable", "未配置本地影像模型或推理环境。")
+
+            def submit_imagery(host):
+                translated = imagery_request(host.store, request, self.config.imagery_backend)
+                latest = latest_imagery_job(host.store)
+                if latest is not None and latest.status not in {JobStatus.FAILED, JobStatus.CANCELLED, JobStatus.INTERRUPTED}:
+                    with host.store.open_artifact(latest.command.artifact_id) as stream:
+                        frozen = json.load(stream)
+                    if frozen["source_id"] == translated.source_id and frozen["options"] == translated.options:
+                        return latest
+                    raise ValueError("项目已有影像识别任务，请继续验收现有结果。")
+                return host.submit_region_source(translated, idempotency_key=idempotency_key)
+
+            return runtime.call(submit_imagery, timeout_seconds=self.config.project_call_timeout_seconds)
         return runtime.call(
             lambda host: host.submit_region_source(
                 request,
@@ -2285,17 +2411,106 @@ class SystemHost:
         self,
         session_id: str,
         job_id: str,
-    ) -> tuple[SceneRevisionInfo, RegionSetInfo]:
+        *,
+        included_region_ids: tuple[str, ...] | None = None,
+        excluded_region_ids: tuple[str, ...] | None = None,
+        expected_region_set_id: str | None = None,
+        included_region_bits: str | None = None,
+        background: bool = False,
+        refinement: dict[str, Any] | None = None,
+    ) -> tuple[SceneRevisionInfo, RegionSetInfo] | JobInfo:
         runtime = self._project_runtime(session_id)
+        if background and runtime.query(lambda store: bool(store.list_jobs(
+            command_types=(REGION_SOURCE_CONFIRM_COMMAND,), statuses=REGION_SOURCE_CONFIRM_ACTIVE, limit=1,
+        ).items), timeout_seconds=self.config.project_call_timeout_seconds):
+            raise SystemHostError("已有区域确认任务正在执行。")
+
+        def finalize(host):
+            included = included_region_ids
+            if sum(value is not None for value in (included, excluded_region_ids, included_region_bits)) > 1:
+                raise ValueError("只能提交一种候选区域选择。")
+            job = host.store.get_job(job_id)
+            is_imagery = job.command.command_type == IMAGERY_PREPARE_REGIONS_COMMAND
+            if refinement is not None and not (is_imagery and background):
+                raise ValueError("仅影像后台确认支持细化种植范围。")
+            if is_imagery:
+                latest = latest_imagery_job(host.store)
+                if latest is None or latest.job_id != job_id:
+                    raise ValueError("影像候选已过期，请重新加载当前任务。")
+                if excluded_region_ids is not None:
+                    included = included_after_exclusions(host.store, job_id, excluded_region_ids)
+                if included_region_bits is not None:
+                    included = included_from_imagery_bits(host.store, job_id, included_region_bits)
+                if not included:
+                    raise ValueError("请至少保留一个候选区域再确认。")
+                if background:
+                    return host.application.submit_region_source_confirmation(job_id,
+                        included_region_ids=included, expected_region_set_id=expected_region_set_id, refinement=refinement)
+                if expected_region_set_id is not None:
+                    return host.revise_region_source_selection(job_id,
+                        expected_region_set_id=expected_region_set_id, included_region_ids=included)
+                active_regions = host.store.project_workflow_state().region_set_id
+                existing = host.store.get_region_set_by_job(job_id)
+                if active_regions is not None and (existing is None or existing.region_set_id != active_regions):
+                    raise ValueError("当前项目已有定版区域，不能覆盖现有种植范围。")
+            elif background or any(value is not None for value in (included, excluded_region_ids, expected_region_set_id, included_region_bits)):
+                raise ValueError("仅影像候选支持选择后定版。")
+            return host.finalize_region_source(job_id, included_region_ids=included)
+
         try:
             return runtime.call(
-                lambda host: host.finalize_region_source(job_id),
+                finalize,
                 timeout_seconds=self.config.project_call_timeout_seconds,
             )
         except JobNotFoundError as error:
             raise ProjectResourceNotFoundError("Job", job_id) from error
         except RuntimeError as error:
             raise SystemHostError(str(error)) from error
+
+    def imagery_candidate(self, session_id: str, job_id: str, *, page: int = 1, compact: bool = False) -> ImageryCandidate:
+        try:
+            return self._project_runtime(session_id).query(
+                lambda store: read_imagery_candidate(store, job_id, page, compact=compact),
+                timeout_seconds=self.config.project_call_timeout_seconds,
+            )
+        except JobNotFoundError as error:
+            raise ProjectResourceNotFoundError("Job", job_id) from error
+
+    def imagery_review_index(self, session_id: str, job_id: str, start: int) -> ImageryReviewIndexBatch:
+        try:
+            return self._project_runtime(session_id).query(
+                lambda store: read_imagery_index_batch(store, job_id, start),
+                timeout_seconds=self.config.project_call_timeout_seconds,
+            )
+        except JobNotFoundError as error:
+            raise ProjectResourceNotFoundError("Job", job_id) from error
+
+    def imagery_tile(
+        self, session_id: str, job_id: str, level: int, column: int, row: int,
+        *, refinement: tuple[str, int, int] | None = None,
+    ) -> dict[str, Any] | None:
+        if not (0 <= level <= 16 and 0 <= column <= 2**31 and 0 <= row <= 2**31):
+            raise ValueError("影像瓦片坐标无效。")
+        runtime = self._project_runtime(session_id)
+        try:
+            source = runtime.query(lambda store: resolve_imagery_tiles(store, job_id),
+                                   timeout_seconds=self.config.project_call_timeout_seconds)
+        except JobNotFoundError as error:
+            raise ProjectResourceNotFoundError("Job", job_id) from error
+        if source is None:
+            return None
+        image, regions, grid, count, mask = source
+        span = 512 << level
+        if column * span >= grid.width or row * span >= grid.height:
+            raise ValueError("影像瓦片超出图幅。")
+        import sys
+
+        return self._imagery_tiles.read(
+            (session_id, job_id), self.config.imagery_python_executable or Path(sys.executable),
+            image, regions, {**asdict(grid), "refinement_mask": str(mask) if mask else None}, (level, column, row),
+            cache_root=Path(runtime.snapshot().project_path) / "cache", expected_count=count,
+            refinement=refinement,
+        )
 
     def submit_plant_run_execution(
         self,
@@ -2408,9 +2623,10 @@ class SystemHost:
             ),
             timeout_seconds=self.config.project_call_timeout_seconds,
         )
-        route = resolve_plant_output_route(
-            scene_importer_id=scene.importer_id,
-            target_type=planting.target_type,
+        route = runtime.call(
+            lambda host: resolve_plant_workflow(host,
+                scene_revision_id=scene.scene_revision_id, target_type=planting.target_type),
+            timeout_seconds=self.config.project_call_timeout_seconds,
         )
         seed = self._plant_run_seed(
             planting.random_seed,
@@ -2429,6 +2645,7 @@ class SystemHost:
                 review_policy=PlantRunReviewPolicy.AUTOMATIC,
                 elevation_provider_id=route.elevation_provider_id,
                 export_provider_id=route.export_provider_id,
+                workflow=route,
                 offset=offset,
                 profile_id=planting.profile_id,
                 assignment_random_seed=planting.assignment_random_seed,
@@ -2746,8 +2963,8 @@ class SystemHost:
                         selected_asset_ids=selected_assets,
                     )
                 )
-            route = resolve_plant_output_route(
-                scene_importer_id=scene.importer_id,
+            route = resolve_plant_workflow(host,
+                scene_revision_id=scene.scene_revision_id,
                 target_type=target_type or "",
             )
             operation = host.submit_composition_output_execution(
@@ -2756,6 +2973,7 @@ class SystemHost:
                     composition_generation=composition.generation,
                     elevation_provider_id=route.elevation_provider_id,
                     export_provider_id=route.export_provider_id,
+                    workflow=route,
                     offset=offset,
                     batches=tuple(inputs),
                 )
@@ -2865,8 +3083,11 @@ class SystemHost:
         runtime = self._project_runtime(session_id)
         offset = self._validated_plant_offset(request.offset)
 
-        def resolve_route(store: Any):
+        def resolve_route(host: Any):
+            store = host.store
             execution = store.get_plant_run_execution(execution_id)
+            if execution.continuation_artifact_id is not None:
+                return host.plant_run_executions.get_output_parameters(execution_id)
             if (
                 execution.generated_point_set_id is None
                 or execution.asset_assignment_set_id is None
@@ -2883,15 +3104,19 @@ class SystemHost:
             scene = store.get_scene_revision(
                 planting_run.scene_revision_id
             )
-            assignment = store.get_assignment_set(
+            assignment = store.get_asset_assignment_set(
                 execution.asset_assignment_set_id
             )
-            return resolve_plant_output_route(
-                scene_importer_id=scene.importer_id,
+            resolved = resolve_plant_workflow(host,
+                scene_revision_id=scene.scene_revision_id,
                 target_type=assignment.target_type,
             )
+            return PlantRunContinuationRequest(
+                resolved.elevation_provider_id, resolved.export_provider_id,
+                offset, workflow=resolved,
+            )
 
-        route = runtime.query(
+        route = runtime.call(
             resolve_route,
             timeout_seconds=self.config.project_call_timeout_seconds,
         )
@@ -2901,6 +3126,8 @@ class SystemHost:
             PlantRunContinuationRequest(
                 elevation_provider_id=route.elevation_provider_id,
                 export_provider_id=route.export_provider_id,
+                workflow=route.workflow,
+                elevation_options=route.elevation_options,
                 offset=offset,
                 selected_asset_ids=normalize_asset_selection(request.selected_asset_ids),
             ),
@@ -2941,17 +3168,15 @@ class SystemHost:
             assignment = host.store.get_asset_assignment_set(
                 execution.asset_assignment_set_id
             )
-            route = resolve_plant_output_route(
-                scene_importer_id=scene.importer_id,
-                target_type=assignment.target_type,
-            )
+            output = host.workflows.output_for_target(assignment.target_type)
             job = host.submit_output_export(
                 OutputExportRequest(
                     point_set_id=execution.elevation_point_set_id,
                     asset_assignment_set_id=(
                         execution.asset_assignment_set_id
                     ),
-                    provider_id=route.export_provider_id,
+                    provider_id=output.provider_id,
+                    capability=output,
                     offset=offset,
                     selected_asset_ids=normalize_asset_selection(request.selected_asset_ids),
                 )
@@ -3089,9 +3314,10 @@ class SystemHost:
                 allow_contains = template.allow_contains
                 import_settings = template.import_settings
             scene = host.store.get_scene_revision(scene_revision_id)
-            region_provider_id = resolve_region_extraction_provider(
-                scene_importer_id=scene.importer_id
-            )
+            recipe = host.workflows.recipe_for_scene(scene.importer_id)
+            if recipe.preparation.kind != "region_extraction":
+                raise SystemHostError("Selected input recipe does not support material extraction")
+            region_provider_id = recipe.preparation.provider_id
             execution = host.submit_material_flow_execution(
                 MaterialFlowExecutionRequest(
                     scene_revision_id=scene_revision_id,
@@ -3363,6 +3589,7 @@ class SystemHost:
             if runtime is None:
                 raise ProjectSessionNotFoundError(session_id)
             runtime.close(self.config.project_call_timeout_seconds)
+            self._imagery_tiles.close_project(session_id)
             closed = runtime.snapshot()
             with self._lock:
                 self._projects.pop(session_id, None)
@@ -3382,6 +3609,10 @@ class SystemHost:
                 library = self._library
                 endpoint = self._endpoint
             failures: list[BaseException] = []
+            try:
+                self._imagery_tiles.close()
+            except BaseException as error:
+                failures.append(error)
             try:
                 self._starter_resources.close()
             except BaseException as error:
@@ -3500,6 +3731,9 @@ class SystemHost:
                             cache_root=(
                                 resolved / "cache" / "geospatial-inputs"
                             ),
+                            imagery_model_path=self.config.imagery_model_path,
+                            imagery_python_executable=self.config.imagery_python_executable,
+                            enable_imagery=True,
                         ),
                     )
                 runtime = ProjectRuntime(
@@ -3523,6 +3757,7 @@ class SystemHost:
                         else None
                     ),
                     extension_factories=extension_factories,
+                    source_intake=self._source_intake,
                 )
                 self._projects[runtime.session_id] = runtime
                 self._sessions_by_path[key] = runtime.session_id

@@ -5,6 +5,7 @@ import type {
   AssignmentPreviewInput,
   AssignmentPreviewResult,
   ApiErrorDocument,
+  Bounds3D,
   ItemCollection,
   MaterialClassification,
   MaterialClassificationCandidate,
@@ -20,6 +21,8 @@ import type {
   ProjectTaskPage,
   RecentProject,
   RegionViewerManifest,
+  RegionOverview,
+  RegionSelectionPage,
   RegionViewportChunk,
   ScenePreparationInfo,
   SourceInfo,
@@ -27,6 +30,7 @@ import type {
   AssetCatalogSummary,
   AssetPackageExportInfo,
   AssetPackageImportInfo,
+  AssetPackageOverwrite,
   AuthoringKitExportInfo,
   AssetCatalogDocument,
   AssetCatalogDetail,
@@ -67,6 +71,12 @@ import type {
   SourceKind,
   JobSubmissionInfo,
   RegionSourceFinalization,
+  ImageryCandidate,
+  ImageryReviewIndexBatch,
+  ProjectJobState,
+  RegionSourceSelection,
+  ImageryRefinement,
+  ImageryTileResponse,
 } from "./types";
 
 const BLENDER_REGION_PROVIDER_ID = "verdflow-blender-worker";
@@ -76,6 +86,7 @@ export class LocalApiError extends Error {
     message: string,
     readonly status: number | null,
     readonly code: string,
+    readonly details?: unknown,
   ) {
     super(message);
     this.name = "LocalApiError";
@@ -274,6 +285,7 @@ export class LocalApiClient {
         project_path: projectPath,
         workspace,
         enable_geospatial_worker: workspace !== "blender",
+        enable_model_api_worker: workspace !== "blender",
       }),
     });
   }
@@ -296,6 +308,26 @@ export class LocalApiClient {
         enable_model_api_worker: input.enableModelApiWorker,
         workspace: "dts",
       }),
+    });
+  }
+
+  submitSourceIntake(sessionId: string, input: {
+    workflow: "fbx" | "vector" | "imagery";
+    source_path: string;
+    elevation_path?: string;
+    selection_mode?: "manual" | "ai_assisted";
+    confirmation_mode?: "manual" | "automatic";
+    analysis_provider_id?: string | null;
+    idempotency_key: string;
+  }): Promise<JobSubmissionInfo> {
+    return this.request(`/api/v1/projects/${encodeURIComponent(sessionId)}/source-intake`, {
+      method: "POST", body: JSON.stringify(input),
+    });
+  }
+
+  retrySourceIntake(sessionId: string, jobId: string): Promise<JobSubmissionInfo> {
+    return this.request(`/api/v1/projects/${encodeURIComponent(sessionId)}/source-intake/${encodeURIComponent(jobId)}/retry`, {
+      method: "POST", body: "{}",
     });
   }
 
@@ -338,6 +370,7 @@ export class LocalApiClient {
     sessionId: string;
     sourceId: string;
     idempotencyKey: string;
+    imagery?: { sourceId: string; elevationSourceId: string };
   }): Promise<JobSubmissionInfo> {
     return this.request(
       `/api/v1/projects/${encodeURIComponent(input.sessionId)}/region-sources`,
@@ -345,7 +378,11 @@ export class LocalApiClient {
         method: "POST",
         body: JSON.stringify({
           source_id: input.sourceId,
-          provider_id: "verdflow.geospatial",
+          provider_id: input.imagery ? "verdflow.geospatial.imagery" : "verdflow.geospatial",
+          ...(input.imagery ? { options: {
+            imagery_source_id: input.imagery.sourceId,
+            elevation_source_id: input.imagery.elevationSourceId,
+          } } : { auto_publish: true }),
           idempotency_key: input.idempotencyKey,
         }),
       },
@@ -355,11 +392,50 @@ export class LocalApiClient {
   finalizeRegionSource(
     sessionId: string,
     jobId: string,
+    selection?: RegionSourceSelection,
   ): Promise<RegionSourceFinalization> {
+    return this.requestRegionSourceFinalization(sessionId, jobId, selection, false);
+  }
+
+  submitImageryConfirmation(sessionId: string, jobId: string, selection: RegionSourceSelection): Promise<JobSubmissionInfo> {
+    return this.requestRegionSourceFinalization(sessionId, jobId, selection, true);
+  }
+
+  private requestRegionSourceFinalization<Value>(sessionId: string, jobId: string, selection: RegionSourceSelection | undefined, background: boolean): Promise<Value> {
+    const params = new URLSearchParams();
+    if (selection && "included_region_bits" in selection) params.set("selection", "bitmap");
+    if (background) params.set("background", "1");
+    const query = params.size ? `?${params}` : "";
     return this.request(
-      `/api/v1/projects/${encodeURIComponent(sessionId)}/region-sources/${encodeURIComponent(jobId)}/finalize`,
-      { method: "POST", body: "{}" },
+      `/api/v1/projects/${encodeURIComponent(sessionId)}/region-sources/${encodeURIComponent(jobId)}/finalize${query}`,
+      { method: "POST", body: JSON.stringify(selection ?? {}) },
     );
+  }
+
+  imageryCandidate(sessionId: string, jobId: string, page = 1): Promise<ImageryCandidate> {
+    return this.request(`/api/v1/projects/${encodeURIComponent(sessionId)}/region-sources/${encodeURIComponent(jobId)}/imagery-preview?page=${page}&compact_index=1`);
+  }
+
+  imageryReviewIndex(sessionId: string, jobId: string, start: number): Promise<ImageryReviewIndexBatch> {
+    return this.request(`/api/v1/projects/${encodeURIComponent(sessionId)}/region-sources/${encodeURIComponent(jobId)}/imagery-review-index?start=${start}`);
+  }
+
+  imageryTile(sessionId: string, jobId: string, level: number, column: number, row: number, refinement?: ImageryRefinement): Promise<ImageryTileResponse> {
+    const query = new URLSearchParams({ level: String(level), column: String(column), row: String(row) });
+    if (refinement) {
+      query.set("refine", refinement.mode);
+      query.set("strength", String(refinement.strength));
+      query.set("minimum", String(refinement.minimum));
+    }
+    return this.request(`/api/v1/projects/${encodeURIComponent(sessionId)}/region-sources/${encodeURIComponent(jobId)}/imagery-tile?${query}`);
+  }
+
+  projectJob(sessionId: string, jobId: string): Promise<ProjectJobState> {
+    return this.request(`/api/v1/projects/${encodeURIComponent(sessionId)}/jobs/${encodeURIComponent(jobId)}`);
+  }
+
+  cancelJob(sessionId: string, jobId: string): Promise<{ accepted: boolean }> {
+    return this.request(`/api/v1/projects/${encodeURIComponent(sessionId)}/jobs/${encodeURIComponent(jobId)}/cancel`, { method: "POST", body: "{}" });
   }
 
   submitScenePreparation(input: {
@@ -494,6 +570,7 @@ export class LocalApiClient {
     afterOrdinal?: number;
     limit?: number;
     simplificationTolerance?: number;
+    overviewThreshold?: number;
   }): Promise<RegionViewportChunk> {
     const simplificationTolerance =
       input.simplificationTolerance ??
@@ -510,8 +587,40 @@ export class LocalApiClient {
     if (input.classifications?.length) {
       query.set("classification", input.classifications.join(","));
     }
+    if (input.overviewThreshold) query.set("overview_threshold", String(input.overviewThreshold));
     return this.request(
       `/api/v1/projects/${encodeURIComponent(input.sessionId)}/region-sets/${encodeURIComponent(input.regionSetId)}/geometry?${query}`,
+    );
+  }
+
+  regionOverview(input: {
+    sessionId: string;
+    regionSetId: string;
+    bounds: Bounds3D;
+    classifications: readonly string[];
+  }): Promise<RegionOverview> {
+    const { min_x, min_y, max_x, max_y } = input.bounds;
+    const query = new URLSearchParams({
+      min_x: String(min_x), min_y: String(min_y), max_x: String(max_x), max_y: String(max_y),
+    });
+    if (input.classifications.length) query.set("classification", input.classifications.join(","));
+    return this.request(
+      `/api/v1/projects/${encodeURIComponent(input.sessionId)}/region-sets/${encodeURIComponent(input.regionSetId)}/overview?${query}`,
+    );
+  }
+
+  regionSelection(input: {
+    sessionId: string;
+    regionSetId: string;
+    corners: readonly { x: number; y: number }[];
+    classifications: string[];
+    afterOrdinal: number;
+  }): Promise<RegionSelectionPage> {
+    const query = new URLSearchParams({ after_ordinal: String(input.afterOrdinal) });
+    for (const { x, y } of input.corners) query.append("corner", `${x},${y}`);
+    if (input.classifications.length) query.set("classification", input.classifications.join(","));
+    return this.request(
+      `/api/v1/projects/${encodeURIComponent(input.sessionId)}/region-sets/${encodeURIComponent(input.regionSetId)}/selection?${query}`,
     );
   }
 
@@ -674,13 +783,14 @@ export class LocalApiClient {
 
   importAssetCatalogPackage(
     sourcePath: string,
-    replaceExisting = false,
+    overwrite?: Pick<AssetPackageOverwrite, "expected_generation" | "expected_catalog_hash" | "expected_package_hash">,
   ): Promise<AssetPackageImportInfo> {
     return this.request("/api/v1/asset-catalog-packages/import", {
       method: "POST",
       body: JSON.stringify({
         source_path: sourcePath,
-        replace_existing: replaceExisting,
+        replace_existing: overwrite !== undefined,
+        ...overwrite,
       }),
     });
   }
@@ -1108,6 +1218,7 @@ export class LocalApiClient {
         document.error?.message || `本地服务返回 ${response.status}`,
         response.status,
         document.error?.code || "request_failed",
+        document.error?.details,
       );
     }
     try {

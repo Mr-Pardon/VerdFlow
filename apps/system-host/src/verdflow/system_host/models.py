@@ -61,6 +61,7 @@ class ProjectBusinessState(StrEnum):
     NEW = "new"
     RUNNING = "running"
     AWAITING_MATERIAL_CONFIRMATION = "awaiting_material_confirmation"
+    AWAITING_REGION_CONFIRMATION = "awaiting_region_confirmation"
     READY_TO_PLANT = "ready_to_plant"
     AWAITING_POINT_REVIEW = "awaiting_point_review"
     COMPLETED = "completed"
@@ -86,6 +87,7 @@ class ProjectBusinessSummary:
     plant_run_execution_id: str | None = None
     error_code: str | None = None
     error_message: str | None = None
+    imagery_job_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,8 +121,13 @@ class SystemHostConfig:
     project_call_timeout_seconds: float = 30.0
     project_idle_cycle_seconds: float = 0.1
     provider_test_timeout_seconds: float = 30.0
+    imagery_model_path: Path | None = None
+    imagery_python_executable: Path | None = None
+    imagery_backend: str = "cpu"
 
     def validate(self) -> None:
+        if self.imagery_backend not in {"cpu", "directml"}:
+            raise ValueError("imagery_backend must be cpu or directml")
         if self.project_start_timeout_seconds <= 0:
             raise ValueError("project_start_timeout_seconds must be positive")
         if self.project_call_timeout_seconds <= 0:
@@ -160,6 +167,7 @@ class SystemHostStatus:
     model_provider_count: int
     secret_store_kind: str
     endpoint_base_url: str | None
+    imagery_available: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +355,7 @@ class AssetPackageImportInfo:
     resource_count: int
     already_installed: bool
     catalog: AssetCatalogInfo
+    replaced: bool = False
 
 
 @dataclass(frozen=True, slots=True)

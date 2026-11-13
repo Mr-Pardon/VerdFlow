@@ -20,6 +20,7 @@ test("packaged layout keeps mutable data in the stable VerdFlow application dire
     layout.pythonExecutablePath,
     "D:\\VerdFlow\\resources\\python\\python.exe",
   );
+  assert.equal(layout.imageryModelPath, "D:\\VerdFlow\\resources\\imagery\\segformer-probabilities.onnx");
 });
 
 test("portable layout rejects resources outside the application root", () => {

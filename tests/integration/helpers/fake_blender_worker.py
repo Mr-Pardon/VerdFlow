@@ -47,6 +47,11 @@ def main() -> None:
     )
     stop = threading.Event()
     progress = [0.0]
+    stage = "building_elevation_bvh" if mode == "stalled_with_heartbeat" else "fake_work"
+    event_sequence = 0
+    progress_dir = control_dir / "progress-events"
+    if mode in {"event_progress", "stalled_with_heartbeat"}:
+        progress_dir.mkdir()
 
     def heartbeat() -> None:
         sequence = 0
@@ -60,7 +65,7 @@ def main() -> None:
                     "pid": os.getpid(),
                     "sequence": sequence,
                     "progress": progress[0],
-                    "stage": "fake_work",
+                    "stage": stage,
                 },
             )
 
@@ -77,6 +82,18 @@ def main() -> None:
                 0.9,
                 (time.monotonic() - started) / max(duration, 0.01),
             )
+            if progress_dir.is_dir():
+                event_sequence += 1
+                atomic_json(
+                    progress_dir / f"{event_sequence:08d}.json",
+                    {
+                        "schema": "verdflow.blender-worker.progress",
+                        "version": "1",
+                        "sequence": event_sequence,
+                        "progress": 0.05 + 0.9 * progress[0] if mode == "event_progress" else 0.25,
+                        "stage": stage,
+                    },
+                )
             time.sleep(0.02)
         if mode == "bad_result":
             atomic_json(control_dir / "result.json", {"not": "a protocol"})
@@ -97,9 +114,12 @@ def main() -> None:
             cache.write_bytes(b"fake blend cache")
             result["scene_cache_file"] = "outputs/scene-cache.blend"
         if command.get("operation") == "sample_elevation":
-            points = json.loads(
-                Path(str(command["points_path"])).read_text(encoding="utf-8")
-            )
+            points_path = Path(str(command["points_path"]))
+            if command.get("points_encoding") == "verdflow.point-rows.ndjson.v1":
+                with points_path.open(encoding="utf-8") as source:
+                    points = {**command["points_header"], "points": [json.loads(line) for line in source]}
+            else:
+                points = json.loads(points_path.read_text(encoding="utf-8"))
             points["kind"] = "elevation_resolved"
             points["resolution_policy"] = "sample_hit_else_generated"
             for point in points["points"]:

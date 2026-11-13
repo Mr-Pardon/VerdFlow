@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from contextlib import closing
 import json
 import math
-from typing import Any
+from typing import Any, BinaryIO, Callable, Iterator
+
+import ijson
+from ijson.common import JSONError, ObjectBuilder
 
 from verdflow.contracts import (
     JobStatus,
@@ -13,6 +17,15 @@ from verdflow.contracts import (
     SourceKind,
 )
 from verdflow.project_store import ProjectStore
+
+
+_INLINE_REGION_DOCUMENT_BYTES = 4 * 1024**2
+_REGION_SUMMARY_FIELDS = frozenset({
+    "id", "bbox", "label", "tags", "classification", "greenbelt_type", "strategy_hint", "source_member_id",
+})
+_REGION_HEADER_FIELDS = frozenset({"schema", "version", "coordinate_space", "offset_applied", "region_count"})
+RegionEvent = tuple[str, Any]
+RegionBoundaryReader = Callable[[Iterator[RegionEvent], RegionEvent], Any]
 
 
 class RegionSetImportError(RuntimeError):
@@ -33,6 +46,7 @@ class RegionSetImportService:
         source_id: str,
         result: dict[str, Any],
         command_artifact_id: str,
+        check_progress: Callable[[], None] | None = None,
     ) -> RegionSetInfo:
         """Create a RegionSet after a typed entry point validates result kind."""
         existing = self.store.get_region_set_by_job(job_id)
@@ -68,65 +82,39 @@ class RegionSetImportService:
             outputs,
             "geometry_metrics",
         )
-        geometry = self._read_json(
-            geometry_artifact_id,
-            "Region geometry",
-        )
-        metrics = self._read_json(
-            metrics_artifact_id,
-            "Region metrics",
-        )
-        self._validate_payload(
-            geometry,
-            schema="verdflow.regions",
-            label="Region geometry",
-        )
-        self._validate_payload(
-            metrics,
-            schema="verdflow.region-metrics",
-            label="Region metrics",
-        )
-        geometry_rows = geometry.get("regions")
-        metric_rows = metrics.get("regions")
-        if not isinstance(geometry_rows, list):
-            raise RegionSetImportError("Region geometry rows are required")
-        if not isinstance(metric_rows, list):
-            raise RegionSetImportError("Region metric rows are required")
-        if geometry.get("region_count") != len(geometry_rows):
-            raise RegionSetImportError("Region geometry count is inconsistent")
-        if metrics.get("region_count") != len(metric_rows):
-            raise RegionSetImportError("Region metric count is inconsistent")
-        if len(geometry_rows) != len(metric_rows):
-            raise RegionSetImportError(
-                "Region geometry and metric counts differ"
-            )
-
         metrics_by_id: dict[str, dict[str, Any]] = {}
-        for metric in metric_rows:
-            if not isinstance(metric, dict):
-                raise RegionSetImportError("Region metric must be an object")
-            region_id = self._required_text(metric, "id")
-            if region_id in metrics_by_id:
-                raise RegionSetImportError(
-                    f"Region metric is duplicated: {region_id}"
-                )
-            metrics_by_id[region_id] = metric
+        with closing(self.read_rows(
+            metrics_artifact_id, schema="verdflow.region-metrics", label="Region metrics",
+            check_progress=check_progress,
+        )) as metric_rows:
+            for ordinal, metric in enumerate(metric_rows):
+                if check_progress is not None and ordinal % 256 == 0:
+                    check_progress()
+                if not isinstance(metric, dict):
+                    raise RegionSetImportError("Region metric must be an object")
+                region_id = self._required_text(metric, "id")
+                if region_id in metrics_by_id:
+                    raise RegionSetImportError(
+                        f"Region metric is duplicated: {region_id}"
+                    )
+                metrics_by_id[region_id] = metric
 
-        summaries = tuple(
-            self._summary(
-                index,
-                region,
-                metrics_by_id,
-                require_source_member=(
-                    source.kind is SourceKind.ASSEMBLY
-                ),
-                allowed_source_member_ids=assembly_member_ids,
-            )
-            for index, region in enumerate(geometry_rows)
-        )
-        if set(metrics_by_id) != {
-            summary.region_id for summary in summaries
-        }:
+        with closing(self.read_rows(
+            geometry_artifact_id, schema="verdflow.regions", label="Region geometry",
+            fields=_REGION_SUMMARY_FIELDS, check_progress=check_progress,
+        )) as geometry_rows:
+            def summary_rows() -> Iterator[RegionSummary]:
+                for index, region in enumerate(geometry_rows):
+                    if check_progress is not None and index % 256 == 0:
+                        check_progress()
+                    yield self._summary(
+                        index, region, metrics_by_id,
+                        require_source_member=(source.kind is SourceKind.ASSEMBLY),
+                        allowed_source_member_ids=assembly_member_ids,
+                    )
+
+            summaries = tuple(summary_rows())
+        if metrics_by_id:
             raise RegionSetImportError(
                 "Region geometry and metric identifiers differ"
             )
@@ -159,7 +147,7 @@ class RegionSetImportService:
             raise RegionSetImportError("Region geometry must be an object")
         region_id = self._required_text(region, "id")
         try:
-            metric = metrics_by_id[region_id]
+            metric = metrics_by_id.pop(region_id)
         except KeyError as error:
             raise RegionSetImportError(
                 f"Region metrics are missing: {region_id}"
@@ -267,21 +255,72 @@ class RegionSetImportService:
                 f"{label} must use unshifted coordinates"
             )
 
-    def _read_json(
-        self,
-        artifact_id: str,
-        label: str,
-    ) -> dict[str, Any]:
+    def read_rows(
+        self, artifact_id: str, *, schema: str, label: str, fields: frozenset[str] | None = None,
+        read_boundary: RegionBoundaryReader | None = None,
+        check_progress: Callable[[], None] | None = None,
+    ) -> Iterator[Any]:
+        artifact = self.store.get_artifact(artifact_id)
         with self.store.open_artifact(artifact_id) as stream:
             try:
-                payload = json.load(stream)
-            except (UnicodeDecodeError, json.JSONDecodeError) as error:
+                if artifact.byte_size <= _INLINE_REGION_DOCUMENT_BYTES:
+                    payload = json.load(stream)
+                    if not isinstance(payload, dict):
+                        raise RegionSetImportError(f"{label} must be a JSON object")
+                    self._validate_payload(payload, schema=schema, label=label)
+                    rows = payload.get("regions")
+                    if not isinstance(rows, list):
+                        raise RegionSetImportError(f"{label} rows are required")
+                    if payload.get("region_count") != len(rows):
+                        raise RegionSetImportError(f"{label} count is inconsistent")
+                    yield from rows
+                    return
+
+                reader = stream if check_progress is None else _ProgressReader(stream, check_progress)
+                events = iter(ijson.basic_parse(reader, use_float=True))
+                if next(events) != ("start_map", None):
+                    raise RegionSetImportError(f"{label} must be a JSON object")
+                header: dict[str, Any] = {}
+                has_rows, count = False, 0
+                while (field := next(events))[0] != "end_map":
+                    key = field[1]
+                    first = next(events)
+                    if key == "regions":
+                        if has_rows or first != ("start_array", None):
+                            raise RegionSetImportError(f"{label} must contain one Region array")
+                        has_rows = True
+                        while (item := next(events))[0] != "end_array":
+                            if item != ("start_map", None):
+                                raise RegionSetImportError(f"{label} row must be an object")
+                            row: dict[str, Any] = {}
+                            while (member := next(events))[0] != "end_map":
+                                name = member[1]
+                                keep = fields is None or name in fields
+                                first = next(events)
+                                if keep and read_boundary is not None and name == "footprint_boundary_xyz":
+                                    value = read_boundary(events, first)
+                                else:
+                                    value = _read_value(events, first, keep=keep)
+                                if keep:
+                                    row[name] = value
+                            count += 1
+                            yield row
+                    else:
+                        keep = key in _REGION_HEADER_FIELDS
+                        value = _read_value(events, first, keep=keep)
+                        if keep:
+                            if key in header:
+                                raise RegionSetImportError(f"{label} contains a duplicate header field")
+                            header[key] = value
+                if next(events, None) is not None:
+                    raise RegionSetImportError(f"{label} contains trailing data")
+                self._validate_payload(header, schema=schema, label=label)
+                if not has_rows or header.get("region_count") != count:
+                    raise RegionSetImportError(f"{label} count is inconsistent")
+            except (UnicodeDecodeError, json.JSONDecodeError, JSONError, StopIteration) as error:
                 raise RegionSetImportError(
                     f"{label} is not valid UTF-8 JSON"
                 ) from error
-        if not isinstance(payload, dict):
-            raise RegionSetImportError(f"{label} must be a JSON object")
-        return payload
 
     @staticmethod
     def _outputs_by_role(
@@ -349,3 +388,38 @@ class RegionSetImportService:
                 f"{field} is invalid for Region {region_id}"
             )
         return value.strip()
+
+
+class _ProgressReader:
+    def __init__(self, stream: BinaryIO, check: Callable[[], None]) -> None:
+        self._stream = stream
+        self._check = check
+        self._remaining = 1024**2
+
+    def read(self, size: int) -> bytes:
+        chunk = self._stream.read(size)
+        self._remaining -= len(chunk)
+        if self._remaining <= 0:
+            self._check()
+            self._remaining = 1024**2
+        return chunk
+
+
+def _read_value(events: Iterator[RegionEvent], first: RegionEvent, *, keep: bool) -> Any:
+    event, value = first
+    if event not in {"start_map", "start_array"}:
+        return value if keep else None
+    builder = ObjectBuilder() if keep else None
+    if builder is not None:
+        builder.event(event, value)
+    depth = 1
+    for event, value in events:
+        if event in {"start_map", "start_array"}:
+            depth += 1
+        elif event in {"end_map", "end_array"}:
+            depth -= 1
+        if builder is not None:
+            builder.event(event, value)
+        if not depth:
+            return builder.value if builder is not None else None
+    raise StopIteration

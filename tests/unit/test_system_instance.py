@@ -25,6 +25,7 @@ SOURCE_ROOTS = [
     ROOT / "packages" / "core" / "src",
     ROOT / "adapters" / "blender-worker" / "src",
     ROOT / "adapters" / "dts" / "src",
+    ROOT / "adapters" / "geospatial-worker" / "src",
     ROOT / "adapters" / "model-api" / "src",
     ROOT / "adapters" / "strategy-worker" / "src",
     ROOT / "apps" / "core-host" / "src",

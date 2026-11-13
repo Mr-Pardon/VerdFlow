@@ -29,6 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--library-path", type=Path, required=True)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8768)
+    parser.add_argument("--imagery-model", type=Path, help="local model supplied by the desktop launcher")
+    parser.add_argument("--imagery-python", type=Path, help="optional separate development interpreter")
     return parser
 
 
@@ -38,7 +40,17 @@ def main(argv: list[str] | None = None) -> int:
         "VERDFLOW_LOCAL_API_MANAGEMENT_TOKEN"
     )
     shutdown_requested = _portable_shutdown_event()
-    system_config = SystemHostConfig(library_path=arguments.library_path)
+    imagery_model = arguments.imagery_model or os.environ.get("VERDFLOW_IMAGERY_MODEL_PATH")
+    imagery_python = (
+        arguments.imagery_python
+        or (sys.executable if arguments.imagery_model else os.environ.get("VERDFLOW_IMAGERY_PYTHON"))
+    )
+    system_config = SystemHostConfig(
+        library_path=arguments.library_path,
+        imagery_model_path=Path(imagery_model).resolve() if imagery_model else None,
+        imagery_python_executable=Path(imagery_python).resolve() if imagery_python else None,
+        imagery_backend=os.environ.get("VERDFLOW_IMAGERY_BACKEND", "cpu"),
+    )
     system = SystemHost(system_config)
     try:
         system.start()

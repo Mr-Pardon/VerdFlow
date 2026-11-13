@@ -31,8 +31,12 @@ PlatformBridge 订阅，卸载时解除；浏览器开发环境不执行更新�
 桌面壳通过精确地址白名单交给系统浏览器，不替换当前工作页面。
 
 首次引导位于 `src/features/onboarding/`，样式位于 `styles/features/onboarding.css`。
-资产与策略步骤提供“导入推荐资源”：`StarterResourcesDialog` 展示在线清单，
-`useStarterResources` 通过 Local API 提交、查询和取消，结束后刷新当前页面。
+欢迎页说明资产库、策略与可选方案；随后先选择工作方式并检查所需环境，再进入内置资源
+中心准备本次资源。本地资产管理和策略信任仍在对应页面。浏览不会自动导入或信任，
+可不联网完成介绍；已有步骤进度仍按原标识恢复。
+资源中心步骤提供“导入推荐资源”：`StarterResourcesDialog` 展示在线清单，
+支持在内置资源中心查看对应版本或选择“全部导入”。`useResourceImport` 通过 Local API
+提交、查询和取消，结束后刷新当前页面。
 仅用户打开弹窗时联网，不在 Renderer 下载文件、解析包或决定信任；失败保留手动导入入口。
 导航底部进入应用内资源中心；网页版和受控 PAK 分享链接交给系统浏览器打开。
 空配置首次启动提供欢迎页，已有配置不自动打断；设置中的“产品引导”可以继续或重看。
@@ -75,6 +79,14 @@ SystemHost 返回的可选分组、推荐和静态构图示意；资料缺失时
 - `src/router/index.ts`：产品稳定路由，不保存 Project Session ID。
 
 ## PlatformBridge
+
+DTS 项目工作台的「影像 GeoTIFF」试用入口复用原生选文件与区域画布。用户选择 RGB 影像、
+单波段高程，识别后可在原图上检查并保留候选区域；确认前可以重开项目继续验收。
+`dev:desktop` 自动使用本工作区已有的 `_work/imagery-green-assessment` 验证环境，无需先跑
+启动脚本。内部免安装测试包直接使用内置模型与 Python；两种入口默认 CPU，本地开发仍可用
+`VERDFLOW_IMAGERY_MODEL_PATH`、`VERDFLOW_IMAGERY_PYTHON` 和 `VERDFLOW_IMAGERY_BACKEND`
+覆盖。未配置时不运行影像推理，已确认的影像项目仍可种植和输出。WebUI 不变，普通发布包
+不包含实验权重，也不会自动下载。
 
 所有本机能力只通过 `src/platform/bridge.ts` 中的 `PlatformBridge` 进入 Renderer：
 

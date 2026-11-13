@@ -12,12 +12,12 @@ from typing import Any
 class ProcessTreeGuard:
     """Own a child process tree and terminate it when the guard closes."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, memory_limit_bytes: int | None = None) -> None:
         self._job_handle: int | None = None
         self._process_group_id: int | None = None
         self.mode = "posix-process-group"
         if os.name == "nt":
-            self._job_handle = _create_kill_on_close_job()
+            self._job_handle = _create_kill_on_close_job(memory_limit_bytes=memory_limit_bytes)
             self.mode = "windows-job-object"
 
     def popen_options(self) -> dict[str, Any]:
@@ -98,7 +98,7 @@ class ProcessTreeGuard:
         self._job_handle = None
 
 
-def _create_kill_on_close_job() -> int:
+def _create_kill_on_close_job(*, memory_limit_bytes: int | None = None) -> int:
     from ctypes import wintypes
 
     class IO_COUNTERS(ctypes.Structure):
@@ -151,6 +151,9 @@ def _create_kill_on_close_job() -> int:
         raise ctypes.WinError(ctypes.get_last_error())
     information = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
     information.BasicLimitInformation.LimitFlags = 0x00002000
+    if memory_limit_bytes is not None:
+        information.BasicLimitInformation.LimitFlags |= 0x00000200  # JOB_OBJECT_LIMIT_JOB_MEMORY
+        information.JobMemoryLimit = memory_limit_bytes
     if not kernel32.SetInformationJobObject(
         handle,
         9,

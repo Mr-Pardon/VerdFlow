@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
 import type { Bounds3D, PointReviewItem, RegionViewerItem } from "../../api";
+import { extentBoundary } from "./regionGeometry";
+import { createRegionOverviewCanvas, drawRegionOverview } from "./regionViewport";
+import type { RegionOverviewGrid } from "./regionViewport";
 
 type PointReviewCanvasItem = PointReviewItem & {
   reference_radius_m: number | null;
@@ -10,6 +13,7 @@ type PointReviewCanvasItem = PointReviewItem & {
 const props = defineProps<{
   bounds: Bounds3D | null;
   regions: RegionViewerItem[];
+  regionOverview: RegionOverviewGrid | null;
   points: PointReviewCanvasItem[];
   colors: Record<string, string>;
   loading: boolean;
@@ -107,6 +111,9 @@ const render = () => {
   context.fillRect(0, 0, view.width, view.height);
 
   const plantedRegionIds = new Set(props.plantedRegionIds);
+  if (props.regionOverview && overviewCanvas.value) {
+    drawRegionOverview(context, overviewCanvas.value, props.regionOverview.bounds, worldToScreen);
+  }
   for (const region of props.regions) {
     const planted = plantedRegionIds.has(region.region_id);
     drawRegion(context, region, planted && !props.pointDetailsVisible);
@@ -179,8 +186,9 @@ const drawRegion = (
   region: RegionViewerItem,
   plantedOverview = false,
 ) => {
+  const extent = region.boundary_mode === "extent";
   context.beginPath();
-  for (const ring of region.footprint_boundary_xyz) {
+  for (const ring of extent ? extentBoundary(region.bounds) : region.footprint_boundary_xyz) {
     if (!ring.length) continue;
     const first = worldToScreen(ring[0][0], ring[0][1]);
     context.moveTo(first.x, first.y);
@@ -197,8 +205,10 @@ const drawRegion = (
     ? "#1c6f62"
     : classificationStroke(region.classification);
   context.lineWidth = plantedOverview ? 1.4 : 1;
-  context.fill("evenodd");
+  if (extent) context.setLineDash([5, 4]);
+  else context.fill("evenodd");
   context.stroke();
+  if (extent) context.setLineDash([]);
 };
 
 const pointerPosition = (event: PointerEvent | WheelEvent) => {
@@ -319,6 +329,11 @@ onBeforeUnmount(() => {
 
 watch(() => props.bounds, fit);
 watch(() => props.regions, scheduleRender);
+const overviewCanvas = computed(() => props.regionOverview
+  ? createRegionOverviewCanvas(props.regionOverview, new Set(), new Set(props.plantedRegionIds),
+      props.pointDetailsVisible ? "context" : "planted")
+  : null);
+watch(overviewCanvas, scheduleRender);
 watch(() => props.points, scheduleRender);
 watch(() => props.colors, scheduleRender);
 watch(() => props.showReferenceRanges, scheduleRender);

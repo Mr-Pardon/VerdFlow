@@ -36,7 +36,7 @@ useGuidePage("strategies", () => ({
   refresh: library.refresh,
   actions: [
     { label: "导入策略包", disabled: !library.managementAvailable.value || !library.canSelectSourceFiles, run: library.importStrategy },
-    { label: "批量信任", disabled: !library.managementAvailable.value || !library.trustableStrategies.value.length, run: () => trustAll() },
+    { label: "批量信任", primary: true, disabled: !library.managementAvailable.value || !library.trustableStrategies.value.length, run: () => trustAll() },
   ],
   authorAction: { label: "VFS Author", disabled: !library.managementAvailable.value || !library.canExportTarget, run: library.exportAuthoringKit },
 }));

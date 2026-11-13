@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import json
 import sys
 import tempfile
 import unittest
@@ -36,6 +37,7 @@ from verdflow.core.project_snapshots import (  # noqa: E402
     ProjectSnapshotService,
 )
 from verdflow.planting import (  # noqa: E402
+    PlantingDocumentError,
     build_effective_binding_from_profile,
     canonical_json_bytes,
     resolve_asset_assignments,
@@ -64,6 +66,46 @@ class ManualClock:
 
 
 class ProjectSnapshotServiceTests(unittest.TestCase):
+    def test_streams_legacy_unordered_assignment_artifact_without_reordering(self) -> None:
+        with tempfile.TemporaryDirectory(dir=TEST_TEMP_ROOT) as directory:
+            with ProjectStore.create(Path(directory) / "unordered", "Unordered") as store:
+                points = self._point_set(store)
+                service = ProjectSnapshotService(store)
+                service.finalize_strategy_package(points.planting_run_id, self._package_artifact(store))
+                effective = build_effective_binding_from_profile(self._strategy(), self._profile())
+                binding = service.finalize_effective_binding(points.planting_run_id, effective).effective_binding
+                document = resolve_asset_assignments(self._points_document(), effective, random_seed=42)
+                document.pop("semantic_hash")
+                document["assignments"].reverse()
+                document["semantic_hash"] = semantic_hash(document)
+
+                def save(value):
+                    return store.put_bytes(
+                        json.dumps(value, indent=2).encode(),
+                        media_type="application/vnd.verdflow.asset-assignment-set+json",
+                        schema_id="verdflow.asset-assignment-set", schema_version="1",
+                    ).artifact_id
+
+                def finalize(artifact_id, job_id):
+                    return service.finalize_assignment_artifact(
+                        point_set_id=points.point_set_id,
+                        effective_binding_snapshot_id=binding.effective_binding_snapshot_id,
+                        producer_job_id=job_id, artifact_id=artifact_id,
+                    )
+
+                raw = save(document)
+                record = finalize(raw, self._succeeded_job(store, "verdflow.assets.resolve"))
+                self.assertNotEqual(record.assignment_artifact_id, raw)
+                with store.open_artifact(record.assignment_artifact_id) as stream:
+                    self.assertEqual(stream.read(), canonical_json_bytes(document))
+                document["assignments"][1] = document["assignments"][0]
+                document["semantic_hash"] = semantic_hash({k: v for k, v in document.items() if k != "semantic_hash"})
+                rejected = self._succeeded_job(store, "verdflow.assets.resolve.invalid")
+                with self.assertRaisesRegex(PlantingDocumentError, "duplicate"):
+                    finalize(save(document), rejected)
+                self.assertIsNone(store.get_asset_assignment_set_by_job(rejected))
+                self.assertEqual(list((store.root / "runtime").glob("assignment-verify-*")), [])
+
     def test_persists_reproducible_binding_and_assignment_graph(self) -> None:
         with tempfile.TemporaryDirectory(dir=TEST_TEMP_ROOT) as directory:
             root = Path(directory)

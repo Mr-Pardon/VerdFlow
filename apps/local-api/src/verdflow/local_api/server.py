@@ -19,7 +19,7 @@ from verdflow.contracts import parse_assignment_preview_request
 
 from verdflow.dts_live_connector import DtsLiveLifecycleService
 from verdflow.core import StrategyAccessError
-from verdflow.contracts import MaterialConfirmationMode, SourceKind
+from verdflow.contracts import MaterialConfirmationMode, MaterialSelectionMode, SourceKind
 from verdflow.system_host import (
     parse_asset_search_request,
     LibraryResourceNotFoundError,
@@ -27,10 +27,12 @@ from verdflow.system_host import (
     MaterialExtractionSubmission,
     PlantingBatchCommitRequest,
     AssetCatalogSaveRequest,
+    AssetPackageOverwriteRequired,
     ProjectResourceNotFoundError,
     ProjectSessionNotFoundError,
     RegionExtractionRequest,
     RegionSourceRequest,
+    SourceIntakeRequest,
     SYSTEM_API_PROTOCOL_VERSION,
     SystemHost,
     SystemHostError,
@@ -170,6 +172,36 @@ class LocalApiServer:
                 try:
                     if path == "/api/v1/health":
                         self._send_json(HTTPStatus.OK, asdict(system_host.status()))
+                        return
+                    imagery_preview = resource_paths.project_action_resource(path, "region-sources", "imagery-preview")
+                    if imagery_preview is not None:
+                        self._require_management()
+                        query = parse_qs(target.query)
+                        page = int(query.get("page", ["1"])[0])
+                        self._send_json(HTTPStatus.OK, asdict(system_host.imagery_candidate(
+                            *imagery_preview, page=page, compact=query.get("compact_index") == ["1"],
+                        )))
+                        return
+                    imagery_index = resource_paths.project_action_resource(path, "region-sources", "imagery-review-index")
+                    if imagery_index is not None:
+                        self._require_management()
+                        start = int(request_values.query_required_text(parse_qs(target.query), "start"))
+                        self._send_json(HTTPStatus.OK, asdict(system_host.imagery_review_index(*imagery_index, start)))
+                        return
+                    imagery_tile = resource_paths.project_action_resource(path, "region-sources", "imagery-tile")
+                    if imagery_tile is not None:
+                        self._require_management()
+                        query = parse_qs(target.query)
+                        level, column, row = (int(request_values.query_required_text(query, key)) for key in ("level", "column", "row"))
+                        refinement = None
+                        if "refine" in query:
+                            mode = request_values.query_required_text(query, "refine")
+                            strength, minimum = (int(request_values.query_required_text(query, key)) for key in ("strength", "minimum"))
+                            if mode not in {"greenness", "patches"} or not 0 <= strength <= 100 or minimum < 0:
+                                raise ValueError("细化预览参数无效。")
+                            refinement = (mode, strength, minimum)
+                        options = {"refinement": refinement} if refinement is not None else {}
+                        self._send_json(HTTPStatus.OK, system_host.imagery_tile(*imagery_tile, level, column, row, **options))
                         return
                     if path == "/api/v1/starter-resources":
                         self._require_management()
@@ -464,6 +496,26 @@ class LocalApiServer:
                                         default=0.0,
                                     )
                                 ),
+                                overview_threshold=request_values.query_integer(
+                                    query, "overview_threshold", default=0, minimum=0, maximum=20_000,
+                                ),
+                            )
+                        elif kind == "region-sets" and action == "overview":
+                            result = studio_queries.get_region_overview(
+                                session_id, project_path, resource_id,
+                                **request_values.viewport_query(query),
+                                classifications=request_values.query_values(query, "classification"),
+                            )
+                        elif kind == "region-sets" and action == "selection":
+                            result = studio_queries.get_region_selection(
+                                session_id,
+                                project_path,
+                                resource_id,
+                                corners=request_values.selection_corners(query),
+                                classifications=request_values.query_values(query, "classification"),
+                                after_ordinal=request_values.query_integer(
+                                    query, "after_ordinal", default=-1, minimum=-1,
+                                ),
                             )
                         elif kind == "point-sets" and action == "review":
                             result = studio_queries.get_point_manifest(
@@ -722,7 +774,8 @@ class LocalApiServer:
                     self._handle_error(error)
 
             def do_POST(self) -> None:
-                path = urlsplit(self.path).path.rstrip("/") or "/"
+                target = urlsplit(self.path)
+                path = target.path.rstrip("/") or "/"
                 try:
                     if path == "/api/v1/resource-imports/prepare":
                         self._require_management()
@@ -830,6 +883,10 @@ class LocalApiServer:
                                 "replace_existing",
                                 default=False,
                             ),
+                            expected_package_hash=request_values.optional_text(document, "expected_package_hash"),
+                            expected_catalog_hash=request_values.optional_text(document, "expected_catalog_hash"),
+                            expected_generation=(request_values.required_integer(document, "expected_generation", minimum=1)
+                                                 if "expected_generation" in document else None),
                         )
                         self._send_json(HTTPStatus.CREATED, asdict(result))
                         return
@@ -979,6 +1036,29 @@ class LocalApiServer:
                             model=request_values.optional_text(document, "model"),
                         )
                         self._send_json(HTTPStatus.OK, asdict(result))
+                        return
+                    intake_session = resource_paths.project_collection(path, "source-intake")
+                    if intake_session is not None:
+                        self._require_management()
+                        document = self._read_json()
+                        workflow = request_values.required_text(document, "workflow")
+                        if workflow not in {"fbx", "vector", "imagery"}:
+                            raise ValueError("输入工作流程不受支持。")
+                        elevation = request_values.optional_text(document, "elevation_path")
+                        result = system_host.submit_source_intake(intake_session, SourceIntakeRequest(
+                            workflow=workflow,
+                            source_path=Path(request_values.required_text(document, "source_path")),
+                            elevation_path=Path(elevation) if elevation is not None else None,
+                            selection_mode=MaterialSelectionMode(document.get("selection_mode", "manual")),
+                            confirmation_mode=MaterialConfirmationMode(document.get("confirmation_mode", "manual")),
+                            analysis_provider_id=request_values.optional_text(document, "analysis_provider_id"),
+                        ), idempotency_key=request_values.required_text(document, "idempotency_key"))
+                        self._send_json(HTTPStatus.ACCEPTED, asdict(result))
+                        return
+                    intake_retry = resource_paths.project_action_resource(path, "source-intake", "retry")
+                    if intake_retry is not None:
+                        self._require_management()
+                        self._send_json(HTTPStatus.ACCEPTED, asdict(system_host.retry_source_intake(*intake_retry)))
                         return
                     source_session = resource_paths.project_collection(path, "sources")
                     if source_session is not None:
@@ -1163,6 +1243,11 @@ class LocalApiServer:
                     )
                     if region_source_session is not None:
                         document = self._read_json()
+                        auto_publish = document.get("auto_publish", False)
+                        if type(auto_publish) is not bool:
+                            raise ValueError("auto_publish must be a boolean")
+                        if auto_publish or document.get("provider_id") == "verdflow.geospatial.imagery":
+                            self._require_management()
                         idempotency_key = request_values.pop_idempotency_key(document)
                         options = document.get("options", {})
                         if not isinstance(options, dict):
@@ -1179,6 +1264,7 @@ class LocalApiServer:
                                     "provider_id",
                                 ),
                                 options=options,
+                                auto_publish=auto_publish,
                             ),
                             idempotency_key=idempotency_key,
                         )
@@ -1190,10 +1276,54 @@ class LocalApiServer:
                         "finalize",
                     )
                     if region_source_finalize is not None:
-                        scene, regions = system_host.finalize_region_source(
+                        query = parse_qs(target.query)
+                        packed = query.get("selection") == ["bitmap"]
+                        background = query.get("background") == ["1"]
+                        if packed or background:
+                            self._require_management()
+                        # A full 24-bit candidate index needs at most 2,796,204 base64 bytes.
+                        document = (self._read_json(limit_multiplier=3 if packed else 1)
+                                    if self.headers.get("Content-Length") not in {None, "0"} else {})
+                        included = document.get("included_region_ids")
+                        excluded = document.get("excluded_region_ids")
+                        included_bits = None
+                        if packed:
+                            if set(document) - {"included_region_bits", "expected_region_set_id", "refinement"}:
+                                raise ValueError("只能提交一种候选区域选择。")
+                            included_bits = request_values.required_text(document, "included_region_bits")
+                        elif "included_region_bits" in document:
+                            raise ValueError("候选区域选择格式不受支持。")
+                        expected_region_set_id = None
+                        refinement = None
+                        if "refinement" in document:
+                            self._require_management()
+                            refinement = request_values.imagery_refinement(document["refinement"])
+                        if "expected_region_set_id" in document:
+                            self._require_management()
+                            expected_region_set_id = request_values.required_text(document, "expected_region_set_id")
+                        for field, values, minimum in (
+                            ("included_region_ids", included, 1), ("excluded_region_ids", excluded, 0),
+                        ):
+                            if field not in document:
+                                continue
+                            self._require_management()
+                            if (not isinstance(values, list) or not minimum <= len(values) <= 40_000
+                                    or any(not isinstance(value, str) or not value.strip() for value in values)):
+                                raise ValueError("候选区域选择无效。")
+                        result = system_host.finalize_region_source(
                             region_source_finalize[0],
                             region_source_finalize[1],
+                            included_region_ids=tuple(included) if included is not None else None,
+                            excluded_region_ids=tuple(excluded) if excluded is not None else None,
+                            expected_region_set_id=expected_region_set_id,
+                            included_region_bits=included_bits,
+                            background=background,
+                            refinement=refinement,
                         )
+                        if background:
+                            self._send_json(HTTPStatus.ACCEPTED, asdict(result))
+                            return
+                        scene, regions = result
                         self._send_json(
                             HTTPStatus.OK,
                             {
@@ -1828,6 +1958,20 @@ class LocalApiServer:
                 return document
 
             def _handle_error(self, error: Exception) -> None:
+                if isinstance(error, AssetPackageOverwriteRequired):
+                    self._send_json(HTTPStatus.CONFLICT, {"error": {
+                        "code": "asset_catalog_overwrite_required",
+                        "message": str(error),
+                        "details": {
+                            "catalog_id": error.existing.catalog_id,
+                            "existing_name": error.existing.display_name,
+                            "incoming_name": error.incoming_name,
+                            "expected_generation": error.existing.generation,
+                            "expected_catalog_hash": error.existing.semantic_hash,
+                            "expected_package_hash": error.package_hash,
+                        },
+                    }})
+                    return
                 if isinstance(error, SystemHostDataError):
                     self._send_error(HTTPStatus.BAD_REQUEST, error.code, str(error))
                     return

@@ -5,6 +5,10 @@ from __future__ import annotations
 import json
 import math
 from collections import Counter
+from collections.abc import Iterator
+from contextlib import closing
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from verdflow.contracts import (
@@ -16,15 +20,51 @@ from verdflow.contracts import (
 from verdflow.project_store import ProjectStore
 from verdflow.planting import (
     PlantingDocumentError,
-    canonical_json_bytes,
-    filter_point_roles,
-    validate_elevation_point_set,
-    validate_point_set,
+    PointSetReader,
+    canonical_point_document,
+    encoded_point_rows,
+    validate_elevation_headers,
+    validate_elevation_row,
+    validate_point_header,
+    validated_point_rows,
 )
 
 
 class PointSetImportError(RuntimeError):
     """Raised when point outputs cannot become an immutable PointSet."""
+
+
+class _PointSummary:
+    def __init__(self) -> None:
+        self.counts: Counter[str] = Counter()
+        self.count = 0
+        self.hit_count = 0
+        self._min = [math.inf] * 3
+        self._max = [-math.inf] * 3
+
+    def add(self, point: dict[str, Any]) -> None:
+        self.count += 1
+        self.counts[point["role_key"]] += 1
+        sample = point["terrain_sample"]
+        if sample is not None and sample["hit"] is True:
+            self.hit_count += 1
+        for axis, coordinate in enumerate(point["resolved_position"]):
+            value = float(coordinate)
+            if value < self._min[axis]:
+                self._min[axis] = value
+            if value > self._max[axis]:
+                self._max[axis] = value
+
+    @property
+    def roles(self) -> tuple[PointRoleSummary, ...]:
+        return tuple(PointRoleSummary(role_key=key, point_count=count) for key, count in sorted(self.counts.items()))
+
+    @property
+    def bounds(self) -> tuple[float, float, float, float, float, float] | None:
+        if not self.count:
+            return None
+        lo, hi = self._min, self._max
+        return lo[0], lo[1], lo[2], hi[0], hi[1], hi[2]
 
 
 class PointSetImportService:
@@ -71,26 +111,6 @@ class PointSetImportService:
             raise PointSetImportError("random_seed must be an integer")
 
         point_artifact_id = self._output_artifact(result, "points")
-        payload = self._read_json(point_artifact_id, "Generated points")
-        points = self._validate_document(
-            payload,
-            expected_kind=PointSetKind.GENERATED,
-        )
-        if payload["version"] != ("3" if path_input else "2"):
-            raise PointSetImportError(
-                "PointSet version differs from planting input kind"
-            )
-        self._validate_strategy_ref(payload, strategy)
-        excluded_roles = tuple(command.get("excluded_role_keys", ()))
-        if excluded_roles:
-            payload = filter_point_roles(payload, excluded_roles)
-            points = payload["points"]
-            point_artifact_id = self.store.put_bytes(
-                canonical_json_bytes(payload),
-                media_type="application/vnd.verdflow.points+json",
-                schema_id="verdflow.points",
-                schema_version=payload["version"],
-            ).artifact_id
         if path_input:
             with self.store.open_artifact(region_set.geometry_artifact_id) as stream:
                 rows = json.load(stream)["paths"]
@@ -103,18 +123,6 @@ class PointSetImportService:
             reference["selected_ids"] if path_input else command["selected_region_ids"]
         )
         allowed_regions &= selected
-        unknown_regions = sorted(
-            {
-                self._required_text(point, "path_id" if path_input else "region_id")
-                for point in points
-            }
-            - allowed_regions
-        )
-        if unknown_regions:
-            raise PointSetImportError(
-                "Points reference Regions outside the RegionSet: "
-                + ", ".join(unknown_regions[:3])
-            )
         producer = self._producer(result)
         command_artifact = self.store.get_artifact(
             job.command.artifact_id
@@ -131,6 +139,14 @@ class PointSetImportService:
             raise PointSetImportError(
                 "Strategy package output schema is unsupported"
             )
+        point_artifact_id, summary = self._verified_generated_points(
+            point_artifact_id,
+            strategy=strategy,
+            version="3" if path_input else "2",
+            input_id_key="path_id" if path_input else "region_id",
+            allowed_regions=allowed_regions,
+            excluded_roles=frozenset(command.get("excluded_role_keys", ())),
+        )
         run, point_set = self.store.create_generated_point_set(
             scene_revision_id=scene.scene_revision_id,
             region_set_id=region_set_id,
@@ -148,15 +164,74 @@ class PointSetImportService:
             input_hash=command_artifact.content_hash,
             coordinate_frame_id=scene.coordinate_frame_id,
             point_artifact_id=point_artifact_id,
-            point_count=len(points),
-            bounds=self._resolved_bounds(points),
-            roles=self._role_summaries(points),
+            point_count=summary.count,
+            bounds=summary.bounds,
+            roles=summary.roles,
         )
         self.store.create_strategy_package_snapshot(
             planting_run_id=run.planting_run_id,
             package_artifact_id=package_artifact_id,
         )
         return point_set
+
+    def _verified_generated_points(
+        self, artifact_id: str, *, strategy: dict[str, Any], version: str,
+        input_id_key: str, allowed_regions: set[str], excluded_roles: frozenset[str],
+    ) -> tuple[str, _PointSummary]:
+        summary = _PointSummary()
+        scratch_root = self.store.root / "runtime"
+        scratch_root.mkdir(exist_ok=True)
+        try:
+            with (
+                TemporaryDirectory(prefix="point-verify-", dir=scratch_root) as temporary,
+                self.store.open_artifact(artifact_id) as source,
+            ):
+                scratch = Path(temporary)
+                reader = PointSetReader(source)
+                verified = validated_point_rows(
+                    reader.rows(), version=version, kind=PointSetKind.GENERATED.value,
+                    scratch=scratch / "point-ids.sqlite",
+                )
+
+                def retained() -> Iterator[dict[str, Any]]:
+                    for point in verified:
+                        if point["role_key"] in excluded_roles:
+                            continue
+                        input_id = self._required_text(point, input_id_key)
+                        if input_id not in allowed_regions:
+                            raise PointSetImportError(
+                                f"Points reference Regions outside the RegionSet: {input_id}"
+                            )
+                        summary.add(point)
+                        yield point
+
+                spool = scratch / "points.json-fragment"
+                with closing(verified):
+                    if excluded_roles:
+                        with spool.open("wb") as output:
+                            output.writelines(encoded_point_rows(retained()))
+                    else:
+                        for _ in retained():
+                            pass
+                header = reader.header
+                self._validate_generated_header(header, version=version)
+                self._validate_strategy_ref(header, strategy)
+                if excluded_roles:
+                    if not summary.count:
+                        raise PlantingDocumentError("Enabled roles produced no planting points")
+                    header["point_count"] = summary.count
+
+                    def write(stream) -> None:
+                        with spool.open("rb") as body:
+                            stream.writelines(canonical_point_document(header, iter(lambda: body.read(1024**2), b"")))
+
+                    artifact_id = self.store.write_artifact(
+                        write, media_type="application/vnd.verdflow.points+json",
+                        schema_id="verdflow.points", schema_version=version,
+                    ).artifact_id
+        except PlantingDocumentError as error:
+            raise PointSetImportError(f"PointSet validation failed: {error}") from error
+        return artifact_id, summary
 
     def finalize_elevation(self, job_id: str) -> PointSetInfo:
         existing = self.store.get_point_set_by_job(job_id)
@@ -187,29 +262,22 @@ class PointSetImportService:
             )
 
         point_artifact_id = self._output_artifact(result, "points")
-        payload = self._read_json(
-            point_artifact_id,
-            "Elevation-resolved points",
-        )
-        parent_payload = self._read_json(
-            parent.point_artifact_id,
-            "Parent generated points",
-        )
+        summary = _PointSummary()
         try:
-            points = validate_elevation_point_set(
-                payload,
-                parent_payload,
-                expected_point_count=parent.point_count,
-            )["points"]
+            with (
+                self.store.open_artifact(parent.point_artifact_id) as source,
+                self.store.open_artifact(point_artifact_id) as output,
+            ):
+                originals = PointSetReader(source, expected_point_count=parent.point_count)
+                sampled = PointSetReader(output, expected_point_count=parent.point_count)
+                for index, (original, point) in enumerate(zip(originals.rows(), sampled.rows(), strict=True)):
+                    validate_elevation_row(original, point, index=index)
+                    summary.add(point)
+                validate_elevation_headers(originals.header, sampled.header)
         except PlantingDocumentError as error:
             raise PointSetImportError(
                 f"Elevation PointSet validation failed: {error}"
             ) from error
-        hit_count = sum(
-            1
-            for point in points
-            if self._terrain_sample(point)["hit"] is True
-        )
         producer = self._producer(result)
         command_artifact = self.store.get_artifact(
             job.command.artifact_id
@@ -223,11 +291,11 @@ class PointSetImportService:
             coordinate_frame_id=scene.coordinate_frame_id,
             point_artifact_id=point_artifact_id,
             resolution_policy="sample_hit_else_generated",
-            point_count=len(points),
-            hit_count=hit_count,
-            miss_count=len(points) - hit_count,
-            bounds=self._resolved_bounds(points),
-            roles=self._role_summaries(points),
+            point_count=summary.count,
+            hit_count=summary.hit_count,
+            miss_count=summary.count - summary.hit_count,
+            bounds=summary.bounds,
+            roles=summary.roles,
         )
 
     def _completed_job(
@@ -249,32 +317,21 @@ class PointSetImportService:
             )
         return job, command, result
 
-    def _validate_document(
-        self,
-        payload: dict[str, Any],
-        *,
-        expected_kind: PointSetKind,
-    ) -> list[dict[str, Any]]:
-        if payload.get("offset_applied") is not False:
+    @staticmethod
+    def _validate_generated_header(header: dict[str, Any], *, version: str) -> None:
+        if header.get("offset_applied") is not False:
             raise PointSetImportError(
                 "Point document must use unshifted coordinates"
             )
-        try:
-            document = validate_point_set(payload)
-        except PlantingDocumentError as error:
-            raise PointSetImportError(f"PointSet validation failed: {error}") from error
-        if document["kind"] != expected_kind.value:
+        if header.get("version") != version:
+            raise PointSetImportError("PointSet version differs from planting input kind")
+        validate_point_header(header)
+        if header["kind"] != PointSetKind.GENERATED.value:
             raise PointSetImportError("Point document kind is inconsistent")
-        expected_policy = (
-            "generated_position"
-            if expected_kind is PointSetKind.GENERATED
-            else "sample_hit_else_generated"
-        )
-        if document["resolution_policy"] != expected_policy:
+        if header["resolution_policy"] != "generated_position":
             raise PointSetImportError(
                 "Point document resolution policy is unsupported"
             )
-        return document["points"]
 
     @staticmethod
     def _validate_strategy_ref(
@@ -291,66 +348,6 @@ class PointSetImportService:
             raise PointSetImportError(
                 "Point document strategy differs from Job command"
             )
-
-    @staticmethod
-    def _role_summaries(
-        points: list[dict[str, Any]],
-    ) -> tuple[PointRoleSummary, ...]:
-        counts = Counter(str(point["role_key"]) for point in points)
-        return tuple(
-            PointRoleSummary(role_key=key, point_count=counts[key])
-            for key in sorted(counts)
-        )
-
-    def _resolved_bounds(
-        self,
-        points: list[dict[str, Any]],
-    ) -> tuple[float, float, float, float, float, float] | None:
-        if not points:
-            return None
-        positions = [
-            self._vector(point, "resolved_position", 3)
-            for point in points
-        ]
-        return (
-            min(position[0] for position in positions),
-            min(position[1] for position in positions),
-            min(position[2] for position in positions),
-            max(position[0] for position in positions),
-            max(position[1] for position in positions),
-            max(position[2] for position in positions),
-        )
-
-    @staticmethod
-    def _terrain_sample(point: dict[str, Any]) -> dict[str, Any]:
-        sample = point.get("terrain_sample")
-        if not isinstance(sample, dict):
-            raise PointSetImportError(
-                "Elevation PointSet requires terrain_sample"
-            )
-        if not isinstance(sample.get("hit"), bool):
-            raise PointSetImportError("terrain_sample.hit must be boolean")
-        return sample
-
-    @staticmethod
-    def _vector(
-        payload: dict[str, Any],
-        field: str,
-        length: int,
-    ) -> tuple[float, ...]:
-        value = payload.get(field)
-        if (
-            not isinstance(value, list)
-            or len(value) != length
-            or not all(
-                isinstance(item, (int, float))
-                and not isinstance(item, bool)
-                and math.isfinite(float(item))
-                for item in value
-            )
-        ):
-            raise PointSetImportError(f"{field} is invalid")
-        return tuple(float(item) for item in value)
 
     def _read_json(
         self,

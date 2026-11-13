@@ -7,6 +7,7 @@ import math
 from typing import Any, Protocol
 
 from verdflow.contracts import (
+    ResolvedPlantWorkflow,
     AssetAssignmentSetInfo,
     ExportRecordInfo,
     JobInfo,
@@ -81,6 +82,7 @@ class ResolveElevationAndExportRequest:
     offset: tuple[float, float, float]
     elevation_options: dict[str, Any] = field(default_factory=dict)
     require_terrain_hit: bool = False
+    workflow: ResolvedPlantWorkflow | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,6 +291,7 @@ class PlantRunCoordinator:
                 parent_point_set_id=request.generated_point_set_id,
                 provider_id=request.elevation_provider_id,
                 options=request.elevation_options,
+                binding=request.workflow.sampling if request.workflow else None,
             ),
             timeout_seconds=limits.elevation_seconds,
         )
@@ -299,6 +302,7 @@ class PlantRunCoordinator:
                 provider_id=request.export_provider_id,
                 offset=request.offset,
                 require_terrain_hit=request.require_terrain_hit,
+                capability=request.workflow.output if request.workflow else None,
             ),
             timeout_seconds=limits.export_seconds,
         )

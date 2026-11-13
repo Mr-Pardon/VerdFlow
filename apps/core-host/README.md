@@ -58,8 +58,8 @@ Provider Registry 转换为 Core Provider Definition，并注册唯一命令所�
 异步入口；父 execution 只保存子 Job/Flow 引用，不重新实现 Blender 或模型逻辑。
 
 `CoreHostExtensionFactory` 是组合根的受限扩展入口。Factory 只能使用 Host 创建的
-`JobRuntime` 增量注册 Worker Driver、Region Extraction、Region Source 和 Elevation
-Provider；不能替换
+`JobRuntime` 增量注册 Worker Driver、Region Extraction、Region Source、Elevation、Output
+Provider 和推荐 Input Recipe；不能替换
 ProjectStore、ApplicationFacade、Plant Run 状态机或基础 Worker。DTS Live 等应用 Adapter
 通过该入口接入，不要求 Core 感知 Explorer、WebUI 或相机。
 `add_source_bytes()` 仅用于小型 Adapter 场景引用等受信任输入；
@@ -67,6 +67,13 @@ ProjectStore、ApplicationFacade、Plant Run 状态机或基础 Worker。DTS Liv
 Elevation Provider，未挂载该扩展时不会启动或加载 GIS Worker；
 `submit_extension_command()` 只接受已安装扩展 Driver 声明拥有的 command type，不能
 成为上层提交任意命令的通道。
+
+`CoreHost.workflows` 是内置能力与链路的受限注册入口：准备能力检查、链路解析与输出目标
+选择使用同一注册表。新执行将精确采样来源、配置和输出能力冻结为 `ResolvedPlantWorkflow`，
+随后由 Core 校验与持久化；重试不重新解析默认组合。GeoTIFF 采样独立绑定高程 Source，
+FBX 绑定准备所得 SceneRevision，DTS 实时采样绑定受控会话。旧协议保持原语义。
+现有专用入口仍通过唯一 importer 映射选择 recipe，不提供第三方加载或通用 DAG。
+详见 [Adapter 链路契约](../../docs/architecture/ADAPTER_WORKFLOW_CONTRACT.md)。
 
 ## 依赖边界
 
@@ -88,6 +95,7 @@ python -m unittest tests.unit.test_core_host -v
 python -m unittest tests.unit.test_material_flow tests.unit.test_model_api_worker_supervisor -v
 python -m unittest tests.unit.test_planting_generation_stage -v
 python -m unittest tests.unit.test_point_import tests.unit.test_blender_worker_supervisor -v
+python -m unittest tests.unit.test_adapter_workflows tests.unit.test_core_host_extensions -v
 ```
 
 ## 当前限制

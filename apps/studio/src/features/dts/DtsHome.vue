@@ -53,6 +53,11 @@ const openGeospatialDialog = () => {
   sourceDialogOpen.value = false;
 };
 
+const openImageryDialog = () => {
+  geospatialCreation.openDialog("imagery");
+  sourceDialogOpen.value = false;
+};
+
 onMounted(() => {
   void creation.initialize();
   void geospatialCreation.initialize();
@@ -142,9 +147,11 @@ onMounted(() => {
       v-if="sourceDialogOpen"
       :fbx-available="creation.canSelectSource.value"
       :geospatial-available="geospatialCreation.canSelectSources.value"
+      :imagery-available="geospatialCreation.canSelectSources.value && geospatialCreation.imageryAvailable.value"
       @close="sourceDialogOpen = false"
       @select-fbx="chooseFbxSource"
       @select-geospatial="openGeospatialDialog"
+      @select-imagery="openImageryDialog"
     />
 
     <DtsCreateDialog
@@ -174,6 +181,7 @@ onMounted(() => {
     <DtsGeospatialCreateDialog
       v-if="geospatialCreation.dialogOpen.value"
       :vector-path="geospatialCreation.vectorPath.value"
+      :imagery="geospatialCreation.imageryMode.value"
       :elevation-path="geospatialCreation.elevationPath.value"
       :project-name="geospatialCreation.projectName.value"
       :project-path="geospatialCreation.projectPath.value"

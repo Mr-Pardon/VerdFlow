@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass, field
 from datetime import timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, BinaryIO, Callable, Protocol
 
 from verdflow.blender_worker import (
     BLENDER_EXTRACT_REGIONS_COMMAND,
@@ -19,6 +19,7 @@ from verdflow.blender_worker import (
     locate_blender,
 )
 from verdflow.contracts import (
+    InputRecipe,
     JobInfo,
     JobStatus,
     PlantRunExecutionInfo,
@@ -70,6 +71,9 @@ from verdflow.core import (
     ElevationProviderDefinition,
     RegionExtractionProviderDefinition,
     RegionSourceProviderDefinition,
+    RegionConfirmationWorker,
+    RegionSelectionRefiner,
+    ExportProviderDefinition,
 )
 from verdflow.project_store import ProjectStorageProfile, ProjectStore
 from verdflow.strategy_worker import (
@@ -102,6 +106,7 @@ from .material_flow import (
     MaterialFlowRequest,
 )
 from .strategy_driver import StrategyWorkerDriver
+from .workflows import AdapterWorkflowRegistry, capability_ref
 
 if TYPE_CHECKING:
     from verdflow.model_api import ModelApiProviderRegistry, SecretResolver
@@ -155,6 +160,9 @@ class CoreHostExtension:
     ] = ()
     elevation_providers: tuple[ElevationProviderDefinition, ...] = ()
     region_source_providers: tuple[RegionSourceProviderDefinition, ...] = ()
+    export_providers: tuple[ExportProviderDefinition, ...] = ()
+    input_recipes: tuple[InputRecipe, ...] = ()
+    region_selection_refiner: RegionSelectionRefiner | None = None
 
 
 class CoreHostExtensionFactory(Protocol):
@@ -178,7 +186,7 @@ class CoreHostConfig:
     blender_ready_timeout_seconds: float = 90.0
     blender_heartbeat_timeout_seconds: float = 30.0
     blender_blocking_timeout_seconds: float = 900.0
-    blender_execution_timeout_seconds: float = 1800.0
+    blender_execution_timeout_seconds: float | None = None
     strategy_timeout_seconds: float | None = None
     strategy_heartbeat_interval_seconds: float = 5.0
     enable_model_api_worker: bool = False
@@ -306,8 +314,6 @@ class CoreHost:
             lease_duration=timedelta(seconds=config.lease_seconds),
         )
         self.registry = WorkerRegistry()
-        from verdflow.core import ExportProviderDefinition
-
         export_providers = (
             ExportProviderDefinition(
                 provider_id=DTS_ADAPTER_ID,
@@ -318,11 +324,15 @@ class CoreHost:
                 output_media_type="application/xml",
                 output_schema_id="verdflow.dts-model-point-xml",
                 output_schema_version="1",
+                max_attempts=2,
                 supports_asset_selection=True,
                 supports_terrain_hit_selection=True,
             ),
         )
-        self.registry.register(DtsXmlExportWorker(self.runtime))
+        builtin_output = CoreHostExtension(
+            worker_drivers=(DtsXmlExportWorker(self.runtime),),
+            export_providers=export_providers,
+        )
         strategy_authorizer = (
             StrategyExecutionAuthorizer(strategy_library, strategy_library)
             if strategy_library is not None
@@ -394,6 +404,9 @@ class CoreHost:
                     command_type=BLENDER_SAMPLE_ELEVATION_COMMAND,
                     command_version="1",
                     max_attempts=2,
+                    sampling_source_kind="scene",
+                    configuration_schema="verdflow.blender-elevation.config/1",
+                    failure_policy="sample-hit-else-generated",
                 ),
             )
             region_extraction_providers = (
@@ -408,10 +421,15 @@ class CoreHost:
         else:
             elevation_providers = ()
             region_extraction_providers = ()
-        extensions = tuple(
+        extensions = (builtin_output,) + tuple(
             factory.build(self.runtime)
             for factory in extension_factories
         )
+        refiners = tuple(item.region_selection_refiner for item in extensions
+                         if isinstance(item, CoreHostExtension) and item.region_selection_refiner is not None)
+        if len(refiners) > 1:
+            raise ValueError("Multiple region selection refiners are not supported")
+        self.registry.register(RegionConfirmationWorker(self.runtime, next(iter(refiners), None)))
         extension_command_types: set[str] = set()
         for extension in extensions:
             if not isinstance(extension, CoreHostExtension):
@@ -421,12 +439,14 @@ class CoreHost:
             for driver in extension.worker_drivers:
                 self.registry.register(driver)
                 extension_command_types.update(driver.descriptor.command_types)
+        for extension in extensions:
             declared_provider_commands = {
                 provider.command_type
                 for provider in (
                     *extension.region_extraction_providers,
                     *extension.region_source_providers,
                     *extension.elevation_providers,
+                    *extension.export_providers,
                 )
             }
             unowned_commands = sorted(
@@ -437,7 +457,10 @@ class CoreHost:
                     "CoreHost extension Provider command has no Worker owner: "
                     + ", ".join(unowned_commands)
                 )
-        self._extension_command_types = frozenset(extension_command_types)
+        self._extension_command_types = frozenset(
+            command for extension in extensions[1:] for driver in extension.worker_drivers
+            for command in driver.descriptor.command_types
+        )
         region_extraction_providers += tuple(
             provider
             for extension in extensions
@@ -452,6 +475,25 @@ class CoreHost:
             provider
             for extension in extensions
             for provider in extension.region_source_providers
+        )
+        export_providers = tuple(
+            provider for extension in extensions for provider in extension.export_providers
+        )
+        recipes = tuple(recipe for extension in extensions for recipe in extension.input_recipes)
+        if self.blender_executable is not None:
+            recipes += (InputRecipe(
+                recipe_id="verdflow.fbx-regions", version="1", adapter_id=BLENDER_WORKER_ADAPTER_ID,
+                preparation=capability_ref("region_extraction", region_extraction_providers[0]),
+                sampling=capability_ref("elevation", elevation_providers[0]),
+                geometry_kinds=("polygon",), sampling_source_kind="scene",
+                configuration_schema="verdflow.blender-elevation.config/1",
+                failure_policy="sample-hit-else-generated",
+                legacy_importer_ids=(BLENDER_WORKER_ADAPTER_ID,),
+            ),)
+        self.workflows = AdapterWorkflowRegistry(
+            recipes=recipes, region_sources=region_source_providers,
+            region_extractors=region_extraction_providers, samplers=elevation_providers,
+            outputs=export_providers,
         )
         model_analysis_providers = ()
         if config.enable_model_api_worker:
@@ -673,6 +715,7 @@ class CoreHost:
             return
         try:
             self.stop()
+            self.service_loop.registry.close()
         finally:
             self.store.close()
             self._closed = True
@@ -729,6 +772,25 @@ class CoreHost:
                 artifact_id=artifact.artifact_id,
             )
         )
+
+    def write_source(
+        self,
+        write: Callable[[BinaryIO], None],
+        *,
+        original_name: str,
+        kind: SourceKind,
+        media_type: str | None = None,
+    ) -> SourceInfo:
+        """Register Adapter-authored source bytes without holding them in memory."""
+        self._require_open()
+        if not original_name.strip():
+            raise ValueError("original_name is required")
+        artifact = self.store.write_artifact(
+            write, media_type=media_type or _media_type_for_source(kind),
+        )
+        return self.application.register_source(SourceRegistration(
+            kind=kind, original_name=original_name.strip(), artifact_id=artifact.artifact_id,
+        ))
 
     def submit_extension_command(
         self,
@@ -963,7 +1025,7 @@ class CoreHost:
         timeout_seconds: float = 300.0,
     ) -> RegionSourceOutcome:
         self.start()
-        submitted = self.application.submit_region_source(
+        submitted = self.submit_region_source(
             request,
             idempotency_key=idempotency_key,
         )
@@ -990,6 +1052,7 @@ class CoreHost:
         idempotency_key: str | None = None,
     ) -> JobInfo:
         self.start()
+        self.workflows.preparation("region_source", request.provider_id)
         return self.application.submit_region_source(
             request,
             idempotency_key=idempotency_key,
@@ -998,9 +1061,18 @@ class CoreHost:
     def finalize_region_source(
         self,
         job_id: str,
+        *,
+        included_region_ids: tuple[str, ...] | None = None,
     ) -> tuple[SceneRevisionInfo, RegionSetInfo]:
         self._require_open()
-        return self.application.finalize_region_source(job_id)
+        return self.application.finalize_region_source(job_id, included_region_ids=included_region_ids)
+
+    def revise_region_source_selection(
+        self, job_id: str, *, expected_region_set_id: str, included_region_ids: tuple[str, ...],
+    ) -> tuple[SceneRevisionInfo, RegionSetInfo]:
+        self._require_open()
+        return self.application.revise_region_source_selection(job_id,
+            expected_region_set_id=expected_region_set_id, included_region_ids=included_region_ids)
 
     def submit_scene_preparation(
         self,
@@ -1009,6 +1081,7 @@ class CoreHost:
         idempotency_key: str | None = None,
     ) -> ScenePreparationInfo:
         self.start()
+        self.workflows.preparation("region_extraction", request.region_provider_id)
         return self.scene_preparations.submit(
             request,
             idempotency_key=idempotency_key,
@@ -1022,6 +1095,7 @@ class CoreHost:
     ) -> ScenePreparationInfo:
         """Start the one current scene workflow for this fixed-source project."""
         self.start()
+        self.workflows.preparation("region_extraction", request.region_provider_id)
         workflow = self.store.project_workflow_state()
         if workflow.source_id not in {None, request.source_id}:
             raise CoreHostError(
@@ -1242,6 +1316,7 @@ class CoreHost:
     ):
         """Submit deferred elevation and one final composition output."""
         self.start()
+        self.workflows.validate_frozen(request.workflow)
         return self.composition_output_executions.submit(
             request,
             idempotency_key=idempotency_key,
@@ -1292,6 +1367,7 @@ class CoreHost:
     ) -> PlantRunExecutionInfo:
         """Persist a composed Plant Run and return without running a Worker."""
         self.start()
+        self.workflows.validate_frozen(request.workflow)
         return self.plant_run_executions.submit(
             request,
             idempotency_key=idempotency_key,
@@ -1305,6 +1381,7 @@ class CoreHost:
     ) -> PlantRunExecutionInfo:
         """Replace the current Plant Run without retaining a product branch."""
         self.start()
+        self.workflows.validate_frozen(request.workflow)
         workflow = self.store.project_workflow_state()
         if (
             workflow.region_set_id is None
@@ -1368,6 +1445,7 @@ class CoreHost:
     ) -> PlantRunExecutionInfo:
         """Confirm Review and continue from the existing PointSet."""
         self.start()
+        self.workflows.validate_frozen(request.workflow)
         return self.plant_run_executions.confirm(execution_id, request)
 
     def retry_plant_run_assignment(

@@ -1,15 +1,17 @@
 <script setup lang="ts">
-import { ChevronRight, FileBox, Map, X } from "@lucide/vue";
+import { ChevronRight, FileBox, Image, Map, X } from "@lucide/vue";
 
 defineProps<{
   fbxAvailable: boolean;
   geospatialAvailable: boolean;
+  imageryAvailable: boolean;
 }>();
 
 defineEmits<{
   close: [];
   selectFbx: [];
   selectGeospatial: [];
+  selectImagery: [];
 }>();
 </script>
 
@@ -61,6 +63,15 @@ defineEmits<{
           <span class="source-mode-option__state">
             当前可用
           </span>
+          <ChevronRight :size="18" />
+        </button>
+        <button class="source-mode-option" type="button" :disabled="!imageryAvailable" @click="$emit('selectImagery')">
+          <span class="source-mode-option__icon"><Image :size="22" /></span>
+          <span class="source-mode-option__copy">
+            <strong>影像 GeoTIFF</strong>
+            <small>识别植被区域并匹配地形高程</small>
+          </span>
+          <span class="source-mode-option__state">{{ imageryAvailable ? "当前可用" : "未配置" }}</span>
           <ChevronRight :size="18" />
         </button>
       </div>

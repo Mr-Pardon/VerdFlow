@@ -9,6 +9,8 @@ import type {
   RegionViewerManifest,
 } from "../../api";
 import { platformBridge } from "../../platform";
+import { readRegionViewport } from "./regionViewport";
+import type { RegionOverviewGrid } from "./regionViewport";
 
 const ASSET_COLORS = [
   "#df5b4d",
@@ -20,8 +22,6 @@ const ASSET_COLORS = [
   "#bd6b32",
   "#477f97",
 ];
-const REGION_PAGE_SIZE = 5000;
-const MAX_REGION_PAGES = 4;
 const POINT_DETAIL_ENTER_LIMIT = 35_000;
 const POINT_DETAIL_EXIT_LIMIT = 50_000;
 const MAX_VIEWPORT_POINT_ITEMS = 50_000;
@@ -42,10 +42,10 @@ export const usePointReview = (input: {
   const regionManifest = shallowRef<RegionViewerManifest | null>(null);
   const pointsBySource = shallowRef<Record<string, PointReviewItem[]>>({});
   const regions = shallowRef<RegionViewerItem[]>([]);
+  const overview = shallowRef<RegionOverviewGrid | null>(null);
   const loading = ref(true);
   const loadingPoints = ref(false);
   const loadingRegions = ref(false);
-  const regionsCapped = ref(false);
   const pointDetailsVisible = ref(false);
   const pointsCapped = ref(false);
   const errorMessage = ref<string | null>(null);
@@ -185,7 +185,7 @@ export const usePointReview = (input: {
           : Promise.resolve([]),
         loadRegions(bounds, revision),
       ]);
-      if (revision !== viewportRevision) return;
+      if (revision !== viewportRevision || !terrain) return;
       if (loadPointDetails) {
         pointsBySource.value = Object.fromEntries(
           pointEntries.map(([key, result]) => [key, result.items]),
@@ -193,7 +193,7 @@ export const usePointReview = (input: {
         pointsCapped.value = pointEntries.some(([, result]) => result.capped);
       }
       regions.value = terrain.items;
-      regionsCapped.value = terrain.capped;
+      overview.value = terrain.overview;
     } catch (error) {
       if (revision === viewportRevision) {
         errorMessage.value = readableError(error);
@@ -309,30 +309,11 @@ export const usePointReview = (input: {
 
   const loadRegions = async (bounds: Bounds3D, revision: number) => {
     const manifest = Object.values(manifests.value)[0];
-    if (!manifest) return { items: [], capped: false };
-    const collected: RegionViewerItem[] = [];
-    let afterOrdinal = -1;
-    let capped = false;
-    for (let page = 0; page < MAX_REGION_PAGES; page += 1) {
-      const chunk = await client.regionGeometry({
-        sessionId: input.sessionId,
-        regionSetId: manifest.region_set_id,
-        minX: bounds.min_x,
-        minY: bounds.min_y,
-        maxX: bounds.max_x,
-        maxY: bounds.max_y,
-        afterOrdinal,
-        limit: REGION_PAGE_SIZE,
-      });
-      if (revision !== viewportRevision) {
-        return { items: [], capped: false };
-      }
-      collected.push(...chunk.items);
-      if (!chunk.truncated || chunk.next_after_ordinal === null) break;
-      afterOrdinal = chunk.next_after_ordinal;
-      capped = page === MAX_REGION_PAGES - 1;
-    }
-    return { items: collected, capped };
+    if (!manifest) return { items: [], overview: null };
+    return readRegionViewport({
+      client, sessionId: input.sessionId, regionSetId: manifest.region_set_id, bounds,
+      classifications: [], isCurrent: () => revision === viewportRevision,
+    });
   };
 
   onBeforeUnmount(() => {
@@ -352,13 +333,13 @@ export const usePointReview = (input: {
     maxResolvedRadius,
     manifests,
     pointDetailsVisible,
+    overview,
     pointsCapped,
     pointsBySource,
     regionManifest,
     reviewBounds,
     retry,
     regions,
-    regionsCapped,
   };
 };
 

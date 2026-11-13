@@ -8,7 +8,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO, Iterator
+from typing import BinaryIO, Callable, Iterator
 
 from .layout import ProjectLayout
 
@@ -37,25 +37,58 @@ class ContentAddressedObjectStore:
     def put_bytes(self, data: bytes) -> StoredObject:
         digest = hashlib.sha256(data).hexdigest()
         staged_path = self._new_staging_path()
-        with staged_path.open("wb") as stream:
-            stream.write(data)
-            self._flush(stream)
-        return self._install(staged_path, digest, len(data))
+        try:
+            with staged_path.open("wb") as stream:
+                stream.write(data)
+                self._flush(stream)
+            return self._install(staged_path, digest, len(data))
+        finally:
+            staged_path.unlink(missing_ok=True)
 
-    def put_file(self, source: Path) -> StoredObject:
+    def put_file(
+        self, source: Path, *, on_chunk: Callable[[], None] | None = None, on_progress: Callable[[int], None] | None = None,
+    ) -> StoredObject:
         source = source.resolve()
         if not source.is_file():
             raise FileNotFoundError(source)
         staged_path = self._new_staging_path()
         digest = hashlib.sha256()
         byte_size = 0
-        with source.open("rb") as input_stream, staged_path.open("wb") as output_stream:
-            while chunk := input_stream.read(HASH_CHUNK_SIZE):
-                digest.update(chunk)
-                output_stream.write(chunk)
-                byte_size += len(chunk)
-            self._flush(output_stream)
-        return self._install(staged_path, digest.hexdigest(), byte_size)
+        try:
+            with source.open("rb") as input_stream, staged_path.open("wb") as output_stream:
+                while chunk := input_stream.read(HASH_CHUNK_SIZE):
+                    digest.update(chunk)
+                    output_stream.write(chunk)
+                    byte_size += len(chunk)
+                    if on_chunk is not None:
+                        on_chunk()
+                    if on_progress is not None:
+                        on_progress(byte_size)
+                self._flush(output_stream)
+            return self._install(staged_path, digest.hexdigest(), byte_size)
+        finally:
+            staged_path.unlink(missing_ok=True)
+
+    def write_object(
+        self, write: Callable[[BinaryIO], None], *, on_chunk: Callable[[], None] | None = None,
+    ) -> StoredObject:
+        """Stage generated data once and install it only after the writer succeeds."""
+        staged_path = self._new_staging_path()
+        digest = hashlib.sha256()
+        byte_size = 0
+        try:
+            with staged_path.open("w+b") as stream:
+                write(stream)
+                self._flush(stream)
+                stream.seek(0)
+                while chunk := stream.read(HASH_CHUNK_SIZE):
+                    digest.update(chunk)
+                    byte_size += len(chunk)
+                    if on_chunk is not None:
+                        on_chunk()
+            return self._install(staged_path, digest.hexdigest(), byte_size)
+        finally:
+            staged_path.unlink(missing_ok=True)
 
     @contextmanager
     def open(self, content_hash: str) -> Iterator[BinaryIO]:

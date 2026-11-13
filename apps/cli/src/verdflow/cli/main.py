@@ -223,7 +223,7 @@ def _scene_inspect(args: argparse.Namespace) -> Any:
 
 def _geospatial_prepare(args: argparse.Namespace) -> Any:
     from verdflow.core_host import GeospatialExtensionFactory
-    from verdflow.geospatial_worker import package_shapefile
+    from verdflow.geospatial_worker import write_shapefile_package
 
     vector_path = args.vector.resolve()
     elevation_path = args.elevation.resolve()
@@ -243,8 +243,8 @@ def _geospatial_prepare(args: argparse.Namespace) -> Any:
         extension_factories=(extension,),
     ) as host:
         if vector_suffix == ".shp":
-            vector = host.add_source_bytes(
-                package_shapefile(vector_path),
+            vector = host.write_source(
+                lambda output: write_shapefile_package(vector_path, output),
                 original_name=f"{vector_path.stem}.shapefile.zip",
                 kind=SourceKind.SHAPEFILE,
             )

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 import sys
 import tempfile
+from threading import Event
+from time import monotonic, sleep
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -32,10 +37,74 @@ from verdflow.system_host import (  # noqa: E402
     SystemHostConfig,
     SystemHostState,
 )
-from verdflow.contracts import SourceKind  # noqa: E402
+from verdflow.contracts import JobCommandRef, JobEventType, JobStatus, SourceKind  # noqa: E402
+from verdflow.core import StrategyExecutionAuthorizer  # noqa: E402
+from verdflow.library_store import LibraryStore  # noqa: E402
+from verdflow.strategy_worker import StrategyWorkerSupervisor, inspect_strategy_package  # noqa: E402
+from verdflow.strategy_worker.protocol import STRATEGY_GENERATE_POINTS_COMMAND  # noqa: E402
+from verdflow.strategy_worker.runner import _validated_output  # noqa: E402
 
 
 class SystemHostTests(unittest.TestCase):
+    def test_reopening_view_during_result_validation_keeps_running_job(self) -> None:
+        entered, release = Event(), Event()
+        package = inspect_strategy_package(ROOT / "strategy-packs" / "universal-street-tree")
+        command = {
+            "strategy": {"id": package.package_id, "version": package.package_version,
+                         "package_hash": package.package_hash},
+            "random_seed": 17, "args": {},
+        }
+
+        def delayed_validation(source, output, **kwargs):
+            entered.set()
+            if not release.wait(12):
+                raise TimeoutError("Test did not release the validator")
+            return _validated_output(source, output, **kwargs)
+
+        def submit(host):
+            host.runtime.lease_duration = timedelta(seconds=1.5)
+            artifact = host.store.put_bytes(b"{}", media_type="application/json")
+            return host.runtime.submit(
+                JobCommandRef(STRATEGY_GENERATE_POINTS_COMMAND, "1", artifact.artifact_id),
+                idempotency_key="background-result",
+            )
+
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            patch.object(StrategyWorkerSupervisor, "_load_command", return_value=command),
+            patch.object(StrategyWorkerSupervisor, "_selected_regions", return_value=[]),
+            patch.object(StrategyExecutionAuthorizer, "authorize", return_value=SimpleNamespace(
+                strategy=SimpleNamespace(package_hash=package.package_hash))),
+            patch.object(LibraryStore, "strategy_package_root", return_value=package.root),
+            patch("verdflow.strategy_worker.runner._validated_output", side_effect=delayed_validation),
+        ):
+            root = Path(temporary)
+            with SystemHost(SystemHostConfig(library_path=root / "library")) as system:
+                project = system.create_project(root / "project", project_name="Background",
+                                                enable_blender_worker=False)
+                runtime = system._projects[project.session_id]
+                job = runtime.call(submit, timeout_seconds=2)
+                try:
+                    self.assertTrue(entered.wait(6), system.get_job(project.session_id, job.job_id))
+                    initial = system.get_job(project.session_id, job.job_id)
+                    # No client polling while the view is away for longer than the lease.
+                    sleep(2)
+                    reopened = system.open_project(root / "project", enable_blender_worker=False)
+                    self.assertEqual(reopened.session_id, project.session_id)
+                    running = runtime.call(lambda host: host.runtime.get(job.job_id), timeout_seconds=1)
+                    self.assertIs(running.status, JobStatus.RUNNING)
+                    self.assertGreater(running.heartbeat_at, initial.heartbeat_at)
+                finally:
+                    release.set()
+                deadline = monotonic() + 4
+                while running.status is JobStatus.RUNNING and monotonic() < deadline:
+                    sleep(0.05)
+                    running = system.get_job(project.session_id, job.job_id)
+                self.assertIs(running.status, JobStatus.SUCCEEDED)
+                events = runtime.call(lambda host: host.runtime.events(job.job_id), timeout_seconds=2)
+                self.assertNotIn(JobEventType.INTERRUPTED, [event.event_type for event in events])
+                self.assertEqual(running.attempt_count, 1)
+
     def test_registers_geospatial_input_without_a_parallel_core_path(
         self,
     ) -> None:

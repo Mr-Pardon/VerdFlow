@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from io import BytesIO
-from typing import Any, Callable
+from typing import Any, BinaryIO, Callable, Iterable
 from xml.sax.saxutils import escape
 
 from verdflow.planting import (
@@ -13,6 +13,9 @@ from verdflow.planting import (
     validate_effective_binding_snapshot,
     validate_point_set,
 )
+
+_XML_HEADER = b'<?xml version="1.0" encoding="UTF-8"?>\n<ModelPointClass>\n'
+_XML_END = b"</ModelPointClass>\n"
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,38 +65,71 @@ def _render_persisted_dts_xml_composition(
     offset: tuple[float, float, float],
     progress: Callable[[int, int], None] | None = None,
 ) -> DtsXmlDocument:
-    """Adapter-internal path; Worker has checked Core Artifact references/counts."""
-    if not inputs:
-        raise ValueError("DTS composition export requires at least one input")
+    output = BytesIO()
+    record_count = _write_persisted_dts_xml_composition(
+        output, inputs, offset, total_count=sum(item[0]["point_count"] for item in inputs),
+        progress=progress,
+    )
+    return DtsXmlDocument(content=output.getvalue(), record_count=record_count)
+
+
+def _write_persisted_dts_xml_composition(
+    output: BinaryIO,
+    inputs: Iterable[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]],
+    offset: tuple[float, float, float],
+    *,
+    total_count: int,
+    progress: Callable[[int, int], None] | None = None,
+) -> int:
+    """Write one document while holding only the current batch of inputs."""
     if len(offset) != 3:
         raise ValueError("DTS offset must contain three coordinates")
     normalized_offset = _finite_vector(offset, "offset")
-    output = BytesIO()
-    output.write(
-        b'<?xml version="1.0" encoding="UTF-8"?>\n<ModelPointClass>\n'
-    )
-    total_count = sum(
-        int(point_set.get("point_count", 0))
-        for point_set, _, _ in inputs
-    )
+    output.write(_XML_HEADER)
     record_count = 0
-    for point_set, effective_binding, assignment_set in inputs:
+    has_input = False
+    for batch in inputs:
+        has_input = True
         record_count += _append_points(
             output,
-            point_set,
-            effective_binding,
-            assignment_set,
+            *batch,
             normalized_offset,
             completed_count=record_count,
             total_count=total_count,
             progress=progress,
         )
-    output.write(b"</ModelPointClass>\n")
-    return DtsXmlDocument(content=output.getvalue(), record_count=record_count)
+        del batch
+    if not has_input:
+        raise ValueError("DTS composition export requires at least one input")
+    output.write(_XML_END)
+    return record_count
+
+
+def _write_streamed_dts_xml(
+    output: BinaryIO,
+    inputs: Iterable[tuple[dict[str, Any], Iterable[tuple[dict[str, Any], dict[str, Any]]]]],
+    offset: tuple[float, float, float],
+) -> int:
+    if len(offset) != 3:
+        raise ValueError("DTS offset must contain three coordinates")
+    normalized_offset = _finite_vector(offset, "offset")
+    output.write(_XML_HEADER)
+    has_input = False
+    count = 0
+    for binding, rows in inputs:
+        has_input = True
+        models = _model_names(binding)
+        for point, assignment in rows:
+            _write_model_point(output, point, assignment, models, normalized_offset)
+            count += 1
+    if not has_input:
+        raise ValueError("DTS composition export requires at least one input")
+    output.write(_XML_END)
+    return count
 
 
 def _append_points(
-    output: BytesIO,
+    output: BinaryIO,
     point_set: dict[str, Any],
     effective_binding: dict[str, Any],
     assignment_set: dict[str, Any],
@@ -133,39 +169,42 @@ def _append_points(
         raise ValueError("DTS export requires exactly one assignment per point")
 
     for index, point in enumerate(points["points"], start=1):
-        assignment = by_point[point["id"]]
-        asset_id = assignment["asset_id"]
-        model_name = models.get(asset_id)
-        if model_name is None:
-            raise ValueError(f"DTS model_name is missing for asset: {asset_id}")
-        position = _finite_vector(tuple(point["resolved_position"]), "resolved_position")
-        if len(position) != 3:
-            raise ValueError("DTS resolved_position must contain three coordinates")
-        matrix = _matrix3(
-            point["rotation_quaternion_xyzw"],
-            assignment["target_scale_xyz"],
-        )
-        output.write(
-            (
-                "    <ModelPoint>\n"
-                f"        <ModelName>{escape(model_name)}</ModelName>\n"
-                "        <LocationX>"
-                f"{_number(position[0] + offset[0])}</LocationX>\n"
-                "        <LocationY>"
-                f"{_number(position[1] + offset[1])}</LocationY>\n"
-                "        <LocationZ>"
-                f"{_number(position[2] + offset[2])}</LocationZ>\n"
-                "        <Matrix3>"
-                + ",".join(_number(value) for value in matrix)
-                + "</Matrix3>\n"
-                "    </ModelPoint>\n"
-            ).encode("utf-8")
-        )
+        _write_model_point(output, point, by_point[point["id"]], models, offset)
         if progress is not None and (
             index % 5000 == 0 or index == len(points["points"])
         ):
             progress(completed_count + index, total_count)
     return len(points["points"])
+
+
+def _write_model_point(
+    output: BinaryIO, point: dict[str, Any], assignment: dict[str, Any],
+    models: dict[str, str], offset: tuple[float, float, float],
+) -> None:
+    asset_id = assignment["asset_id"]
+    model_name = models.get(asset_id)
+    if model_name is None:
+        raise ValueError(f"DTS model_name is missing for asset: {asset_id}")
+    position = _finite_vector(tuple(point["resolved_position"]), "resolved_position")
+    if len(position) != 3:
+        raise ValueError("DTS resolved_position must contain three coordinates")
+    matrix = _matrix3(point["rotation_quaternion_xyzw"], assignment["target_scale_xyz"])
+    output.write(
+        (
+            "    <ModelPoint>\n"
+            f"        <ModelName>{escape(model_name)}</ModelName>\n"
+            "        <LocationX>"
+            f"{_number(position[0] + offset[0])}</LocationX>\n"
+            "        <LocationY>"
+            f"{_number(position[1] + offset[1])}</LocationY>\n"
+            "        <LocationZ>"
+            f"{_number(position[2] + offset[2])}</LocationZ>\n"
+            "        <Matrix3>"
+            + ",".join(_number(value) for value in matrix)
+            + "</Matrix3>\n"
+            "    </ModelPoint>\n"
+        ).encode("utf-8")
+    )
 
 
 def _model_names(binding: dict[str, Any]) -> dict[str, str]:

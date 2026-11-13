@@ -9,6 +9,7 @@ from verdflow.contracts import (
     JobCommandRef,
     JobInfo,
     JobRetentionClass,
+    REGION_SOURCE_AUTO_PUBLISH_VERSION,
     REGION_SOURCE_COMMAND_SCHEMA,
     REGION_SOURCE_COMMAND_VERSION,
     SourceKind,
@@ -24,12 +25,15 @@ from .region_providers import RegionSetProducerDefinition
 class RegionSourceProviderDefinition(RegionSetProducerDefinition):
     """Registered source facts -> initial SceneRevision and RegionSet."""
 
+    supports_auto_publish: bool = False
+
 
 @dataclass(frozen=True, slots=True)
 class RegionSourceRequest:
     source_id: str
     provider_id: str
     options: dict[str, Any] = field(default_factory=dict)
+    auto_publish: bool = False
 
 
 class RegionSourceService:
@@ -70,6 +74,10 @@ class RegionSourceService:
             ) from error
         if not isinstance(request.options, dict):
             raise ValueError("options must be a JSON object")
+        if type(request.auto_publish) is not bool or (
+            request.auto_publish and not provider.supports_auto_publish
+        ):
+            raise ValueError("This Region source does not support automatic publication")
         self._reject_local_paths(request.options)
 
         source = self._store.get_source(source_id)
@@ -82,9 +90,10 @@ class RegionSourceService:
             raise ValueError(
                 "Project source is fixed; create another project for a new source"
             )
+        version = REGION_SOURCE_AUTO_PUBLISH_VERSION if request.auto_publish else REGION_SOURCE_COMMAND_VERSION
         command = {
             "schema": REGION_SOURCE_COMMAND_SCHEMA,
-            "version": REGION_SOURCE_COMMAND_VERSION,
+            "version": version,
             "operation": "prepare_regions",
             "provider": {
                 "id": provider.provider_id,
@@ -98,7 +107,7 @@ class RegionSourceService:
             canonical_json_bytes(command),
             media_type="application/vnd.verdflow.command+json",
             schema_id=REGION_SOURCE_COMMAND_SCHEMA,
-            schema_version=REGION_SOURCE_COMMAND_VERSION,
+            schema_version=version,
         )
         default_key = (
             "region-source:" + semantic_hash(command).removeprefix("sha256:")

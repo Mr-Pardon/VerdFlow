@@ -3,7 +3,15 @@ name = "verdflow-studio-service"
 version = "0.1.0"
 description = "Optional read projections and caches for the VerdFlow Studio UI."
 requires-python = ">=3.11"
-dependencies = ["verdflow-contracts", "verdflow-project-store"]
+dependencies = [
+  "ijson>=3.4.0.post0,<4",
+  "numpy>=1.24",
+  "rasterio>=1.4",
+  "shapely>=2.0",
+  "verdflow-contracts",
+  "verdflow-planting",
+  "verdflow-project-store",
+]
 
 [build-system]
 requires = ["hatchling"]

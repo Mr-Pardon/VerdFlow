@@ -152,7 +152,7 @@ onMounted(() => void state.load());
 .resource-card { display: flex; flex-direction: column; min-width: 0; padding: 0; text-align: left; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; overflow: hidden; cursor: pointer; color: var(--color-text); transition: border-color .15s, box-shadow .15s; }
 .resource-card:hover, .resource-card:focus-visible { border-color: var(--color-accent); box-shadow: 0 3px 12px #183b2c0c; }
 .resource-card__media { position: relative; aspect-ratio: 16/9; width: 100%; display: grid; place-items: center; background: #edf2f0; border-bottom: 1px solid var(--color-border); overflow: hidden; }
-.resource-card__media img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; }
+.resource-card__media img { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: cover; }
 .resource-card__fallback { color: #6c8b80; }
 .resource-card__body { display: flex; flex-direction: column; flex: 1; padding: 18px 18px 0; min-width: 0; }
 .resource-card__meta, .resource-card footer { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; color: var(--color-text-muted); }

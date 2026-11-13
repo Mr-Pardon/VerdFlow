@@ -80,6 +80,27 @@ class StrategyWorkerTests(unittest.TestCase):
         self.assertGreater(point_set["point_count"], 0)
         self.assertNotIn("asset_id", point_set["points"][0])
 
+    def test_memory_limit_does_not_reject_a_normalized_file_result(self) -> None:
+        package = inspect_strategy_package(STRATEGY_ROOT)
+        worker = StrategyWorker({package.package_hash})
+        context = {"strategy": package.strategy, "selected_regions": [rectangle_region("double", 2.5)], "seed": 42}
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "verdflow.strategy_worker.runner._IN_MEMORY_RESULT_LIMIT", 1,
+        ):
+            output = Path(directory) / "normalized.json"
+            with self.assertRaisesRegex(StrategyExecutionError, "exceeds configured limit"):
+                worker.run(package, context)
+            steps = worker.run_steps(package, context, normalized_output=output)
+            try:
+                while True:
+                    next(steps)
+                    time.sleep(0.01)
+            except StopIteration as done:
+                self.assertEqual(done.value, "2")
+            finally:
+                steps.close()
+            self.assertGreater(json.loads(output.read_bytes())["point_count"], 0)
+
     def test_start_gate_keeps_worker_alive_until_provenance_is_registered(
         self,
     ) -> None:
@@ -143,7 +164,7 @@ class StrategyWorkerTests(unittest.TestCase):
             )
         self.assertGreater(point_set["point_count"], 0)
         self.assertGreater(heartbeat.call_count, 0)
-        clock.monotonic.assert_not_called()
+        clock.monotonic.assert_called()
 
     def test_unbounded_running_worker_can_be_cancelled_after_heartbeats(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

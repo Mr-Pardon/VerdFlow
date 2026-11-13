@@ -1,4 +1,4 @@
-import { computed, ref, shallowRef } from "vue";
+import { computed, onBeforeUnmount, ref, shallowRef } from "vue";
 
 import { LocalApiClient, LocalApiError } from "../../api";
 import type {
@@ -7,26 +7,48 @@ import type {
   RegionViewerManifest,
 } from "../../api";
 import { platformBridge } from "../../platform";
+import { readRegionViewport } from "./regionViewport";
+import type { RegionOverviewGrid } from "./regionViewport";
 
 export type RegionSelectionMode = "replace" | "add" | "toggle";
-
-const PAGE_SIZE = 5000;
-const MAX_VIEWPORT_PAGES = 4;
 
 export const useRegionViewer = (sessionId: string, regionSetId: string) => {
   const client = new LocalApiClient(platformBridge());
   const manifest = shallowRef<RegionViewerManifest | null>(null);
   const regions = shallowRef<RegionViewerItem[]>([]);
+  const overview = shallowRef<RegionOverviewGrid | null>(null);
   const selected = ref<Set<string>>(new Set());
+  const pendingClick = shallowRef<{ id: string; mode: RegionSelectionMode } | null>(null);
   const classifications = ref<string[]>([]);
   const loadingManifest = ref(true);
   const loadingGeometry = ref(false);
-  const geometryCapped = ref(false);
+  const selecting = ref(false);
   const errorMessage = ref<string | null>(null);
   const currentViewport = shallowRef<Bounds3D | null>(null);
   let viewportSequence = 0;
+  let pendingViewport: { bounds: Bounds3D; sequence: number } | null = null;
+  let viewportRequest: Promise<void> | undefined;
+  let selectionSequence = 0;
 
   const selectedRegionIds = computed(() => [...selected.value]);
+  const displaySelectedRegionIds = computed(() => {
+    const pending = pendingClick.value;
+    return pending ? [...mergeSelection(selected.value, [pending.id], pending.mode)] : selectedRegionIds.value;
+  });
+  const exactSelection = computed(() => overview.value !== null ||
+    regions.value.some(item => item.boundary_mode && item.boundary_mode !== "detail"));
+
+  const invalidateSelection = () => {
+    selectionSequence += 1;
+    pendingClick.value = null;
+    selecting.value = false;
+  };
+
+  onBeforeUnmount(() => {
+    viewportSequence += 1;
+    pendingViewport = null;
+    invalidateSelection();
+  });
 
   const initialize = async () => {
     loadingManifest.value = true;
@@ -40,36 +62,17 @@ export const useRegionViewer = (sessionId: string, regionSetId: string) => {
     }
   };
 
-  const loadViewport = async (bounds: Bounds3D) => {
-    const sequence = ++viewportSequence;
-    currentViewport.value = bounds;
+  const readViewport = async (bounds: Bounds3D, sequence: number) => {
     loadingGeometry.value = true;
     errorMessage.value = null;
     try {
-      const nextRegions: RegionViewerItem[] = [];
-      let afterOrdinal = -1;
-      let capped = false;
-      for (let page = 0; page < MAX_VIEWPORT_PAGES; page += 1) {
-        const chunk = await client.regionGeometry({
-          sessionId,
-          regionSetId,
-          minX: bounds.min_x,
-          minY: bounds.min_y,
-          maxX: bounds.max_x,
-          maxY: bounds.max_y,
-          classifications: classifications.value,
-          afterOrdinal,
-          limit: PAGE_SIZE,
-        });
-        if (sequence !== viewportSequence) return;
-        nextRegions.push(...chunk.items);
-        if (!chunk.truncated || chunk.next_after_ordinal === null) break;
-        afterOrdinal = chunk.next_after_ordinal;
-        capped = page === MAX_VIEWPORT_PAGES - 1;
-      }
-      if (sequence !== viewportSequence) return;
-      regions.value = nextRegions;
-      geometryCapped.value = capped;
+      const view = await readRegionViewport({
+        client, sessionId, regionSetId, bounds, classifications: classifications.value,
+        isCurrent: () => sequence === viewportSequence,
+      });
+      if (!view || sequence !== viewportSequence) return;
+      regions.value = view.items;
+      overview.value = view.overview;
     } catch (error) {
       if (sequence === viewportSequence) {
         errorMessage.value = readableError(error);
@@ -81,7 +84,27 @@ export const useRegionViewer = (sessionId: string, regionSetId: string) => {
     }
   };
 
+  const drainViewports = async () => {
+    try {
+      while (pendingViewport) {
+        const { bounds, sequence } = pendingViewport;
+        pendingViewport = null;
+        await readViewport(bounds, sequence);
+      }
+    } finally {
+      viewportRequest = undefined;
+    }
+  };
+
+  const loadViewport = (bounds: Bounds3D) => {
+    currentViewport.value = bounds;
+    pendingViewport = { bounds, sequence: ++viewportSequence };
+    viewportRequest ??= drainViewports();
+    return viewportRequest;
+  };
+
   const setClassificationFilter = async (values: string[]) => {
+    invalidateSelection();
     classifications.value = [...values];
     if (currentViewport.value) {
       await loadViewport(currentViewport.value);
@@ -89,38 +112,79 @@ export const useRegionViewer = (sessionId: string, regionSetId: string) => {
   };
 
   const applySelection = (ids: string[], mode: RegionSelectionMode) => {
-    if (mode === "replace") {
-      selected.value = new Set(ids);
-      return;
+    invalidateSelection();
+    selected.value = mergeSelection(selected.value, ids, mode);
+  };
+
+  const selectByGeometry = async (
+    corners: readonly { x: number; y: number }[],
+    mode: RegionSelectionMode,
+    committed: () => ReadonlySet<string>,
+    previewId?: string,
+  ) => {
+    const sequence = ++selectionSequence;
+    selecting.value = true;
+    pendingClick.value = previewId && !committed().has(previewId) ? { id: previewId, mode } : null;
+    errorMessage.value = null;
+    try {
+      const ids: string[] = [];
+      let afterOrdinal = -1;
+      while (true) {
+        const page = await client.regionSelection({
+          sessionId, regionSetId, corners, classifications: classifications.value, afterOrdinal,
+        });
+        if (sequence !== selectionSequence) return;
+        ids.push(...page.region_ids);
+        if (page.next_after_ordinal === null) break;
+        if (page.next_after_ordinal <= afterOrdinal) throw new Error("区域选择响应顺序无效");
+        afterOrdinal = page.next_after_ordinal;
+      }
+      const excluded = committed();
+      applySelection(ids.filter(id => !excluded.has(id)), mode);
+    } catch (error) {
+      if (sequence === selectionSequence) errorMessage.value = readableError(error);
+    } finally {
+      if (sequence === selectionSequence) {
+        pendingClick.value = null;
+        selecting.value = false;
+      }
     }
-    const next = new Set(selected.value);
-    for (const id of ids) {
-      if (mode === "toggle" && next.has(id)) next.delete(id);
-      else next.add(id);
-    }
-    selected.value = next;
   };
 
   const clearSelection = () => {
-    selected.value = new Set();
+    applySelection([], "replace");
   };
 
   return {
     applySelection,
     classifications,
     clearSelection,
+    displaySelectedRegionIds,
     errorMessage,
-    geometryCapped,
+    exactSelection,
     initialize,
     loadingGeometry,
     loadingManifest,
     loadViewport,
     manifest,
+    overview,
     regions,
+    selectByGeometry,
+    selecting,
     selectedRegionIds,
     setClassificationFilter,
   };
 };
+
+function mergeSelection(current: ReadonlySet<string>, ids: string[], mode: RegionSelectionMode) {
+  if (mode === "replace") return new Set(ids);
+  const next = new Set(current);
+  for (const id of ids) {
+    if (mode === "toggle" && next.has(id)) next.delete(id);
+    else next.add(id);
+  }
+  return next;
+}
 
 const readableError = (error: unknown): string => {
   if (error instanceof LocalApiError) {

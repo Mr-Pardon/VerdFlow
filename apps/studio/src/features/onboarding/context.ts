@@ -2,7 +2,7 @@ import { inject, onScopeDispose, type InjectionKey } from "vue";
 import type { GuideStepId } from "./steps";
 import type { FirstUseGuide } from "./useFirstUseGuide";
 
-export interface GuideAction { label: string; run: () => unknown | Promise<unknown>; disabled?: boolean }
+export interface GuideAction { label: string; run: () => unknown | Promise<unknown>; disabled?: boolean; primary?: boolean }
 export interface GuidePageState {
   ready?: boolean;
   status: string;

@@ -12,11 +12,14 @@ from verdflow.contracts import (
     JobInfo,
     JobRetentionClass,
     PointSetKind,
+    CapabilityRef,
+    SamplingBinding,
 )
 from verdflow.planting import canonical_json_bytes, semantic_hash
 from verdflow.project_store import ProjectStore
 
 from .job_runtime import JobRuntime
+from .sampling_bindings import validate_sampling_binding
 
 
 @dataclass(frozen=True, slots=True)
@@ -28,6 +31,10 @@ class ElevationProviderDefinition:
     command_type: str
     command_version: str
     max_attempts: int = 2
+    sampling_source_kind: str | None = None
+    configuration_schema: str | None = None
+    failure_policy: str | None = None
+    point_schema_versions: tuple[str, ...] = ("2",)
 
     def validate(self) -> None:
         for field_name in (
@@ -50,6 +57,7 @@ class ElevationSamplingRequest:
     parent_point_set_id: str
     provider_id: str
     options: dict[str, Any] = field(default_factory=dict)
+    binding: SamplingBinding | None = None
 
 
 class ElevationSamplingService:
@@ -99,13 +107,38 @@ class ElevationSamplingService:
             raise ValueError("Elevation input must be a generated PointSet")
         run = self._store.get_planting_run(parent.planting_run_id)
         scene = self._store.get_scene_revision(run.scene_revision_id)
-        source = self._store.get_source(scene.source_id)
         if parent.coordinate_frame_id != scene.coordinate_frame_id:
             raise ValueError("PointSet coordinate frame differs from SceneRevision")
 
+        binding = request.binding
+        version = ELEVATION_SAMPLING_COMMAND_VERSION
+        options = request.options
+        if binding is not None:
+            validate_sampling_binding(self._store, binding, parent.coordinate_frame_id)
+            expected = CapabilityRef("elevation", provider.provider_id,
+                                     provider.provider_version, provider.command_type,
+                                     provider.command_version)
+            if binding.provider != expected:
+                raise ValueError("Frozen elevation capability is no longer available")
+            if (binding.source.kind != provider.sampling_source_kind
+                    or binding.configuration_schema != provider.configuration_schema
+                    or binding.failure_policy != provider.failure_policy):
+                raise ValueError("Sampling binding is incompatible with the provider contract")
+            if options and options != binding.configuration:
+                raise ValueError("Sampling options differ from frozen configuration")
+            points = self._store.get_artifact(parent.point_artifact_id)
+            if points.schema_version not in provider.point_schema_versions:
+                raise ValueError("Elevation provider does not support this PointSet version")
+            source = self._store.get_source(binding.source.source_id)
+            version = "2"
+            options = binding.configuration
+        else:
+            # Version 1 recovery retains the original scene-owned source semantics.
+            source = self._store.get_source(scene.source_id)
+
         command = {
             "schema": ELEVATION_SAMPLING_COMMAND_SCHEMA,
-            "version": ELEVATION_SAMPLING_COMMAND_VERSION,
+            "version": version,
             "operation": "sample_elevation",
             "provider": {
                 "id": provider.provider_id,
@@ -117,14 +150,16 @@ class ElevationSamplingService:
             "coordinate_frame_id": scene.coordinate_frame_id,
             "parent_point_set_id": parent.point_set_id,
             "points_artifact_id": parent.point_artifact_id,
-            "options": request.options,
+            "options": options,
         }
+        if binding is not None:
+            command["sampling_binding"] = binding.to_document()
         content = canonical_json_bytes(command)
         artifact = self._store.put_bytes(
             content,
             media_type="application/vnd.verdflow.command+json",
             schema_id=ELEVATION_SAMPLING_COMMAND_SCHEMA,
-            schema_version=ELEVATION_SAMPLING_COMMAND_VERSION,
+            schema_version=version,
         )
         default_key = (
             "elevation-sample:"

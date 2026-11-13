@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 
 from verdflow.contracts import RegionSetInfo, RegionSummary
 
@@ -186,7 +187,7 @@ class RegionRepository:
                     ?, ?, ?, ?, ?, ?, ?, ?
                 )
                 """,
-                [
+                (
                     (
                         region_set.region_set_id,
                         region.region_id,
@@ -207,7 +208,7 @@ class RegionRepository:
                         region.metrics_json,
                     )
                     for region in regions
-                ],
+                ),
             )
         return region_set
 
@@ -266,6 +267,16 @@ class RegionRepository:
             (region_set_id,),
         )
         return tuple(_region_from_row(row) for row in rows)
+
+    def iter_region_ids(self, region_set_id: str) -> Iterator[str]:
+        rows = self.database.connection.execute(
+            "SELECT region_id FROM regions WHERE region_set_id = ?", (region_set_id,),
+        )
+        try:
+            for row in rows:
+                yield row["region_id"]
+        finally:
+            rows.close()
 
     @staticmethod
     def _validate_regions(regions: tuple[RegionSummary, ...]) -> None:

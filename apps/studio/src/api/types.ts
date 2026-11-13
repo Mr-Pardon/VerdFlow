@@ -10,6 +10,7 @@ export interface SystemHealth {
   model_provider_count: number;
   secret_store_kind: string;
   endpoint_base_url: string | null;
+  imagery_available?: boolean;
 }
 
 export type ProjectSessionState =
@@ -53,6 +54,7 @@ export type ProjectBusinessState =
   | "new"
   | "running"
   | "awaiting_material_confirmation"
+  | "awaiting_region_confirmation"
   | "ready_to_plant"
   | "awaiting_point_review"
   | "completed"
@@ -76,6 +78,7 @@ export interface ProjectBusinessSummary {
   plant_run_execution_id: string | null;
   error_code: string | null;
   error_message: string | null;
+  imagery_job_id: string | null;
 }
 
 export interface PlantPreviewInputInfo {
@@ -257,6 +260,14 @@ export interface JobSubmissionInfo {
   status: ProjectTaskStatus;
 }
 
+export interface ProjectJobState extends JobSubmissionInfo {
+  error: { message: string } | null;
+}
+
+export type RegionSourceSelection = (
+  { included_region_ids: readonly string[] } | { excluded_region_ids: readonly string[] } | { included_region_bits: string }
+) & { expected_region_set_id?: string; refinement?: ImageryConfirmationRefinement };
+
 export interface RegionSourceFinalization {
   scene_revision: {
     scene_revision_id: string;
@@ -412,12 +423,101 @@ export interface RegionViewerItem {
   footprint_area_xy: number | null;
   bounds: Bounds3D;
   footprint_boundary_xyz: Array<Array<[number, number, number]>>;
+  boundary_mode?: "detail" | "overview" | "extent";
 }
+
+export interface RegionSelectionPage {
+  region_ids: string[];
+  next_after_ordinal: number | null;
+}
+
+export interface RegionOverviewItem {
+  region_id: string;
+  classification: string | null;
+  footprint_area_xy: number | null;
+}
+
+export interface RegionOverview {
+  bounds: Bounds3D;
+  width: number;
+  height: number;
+  pixels: string;
+  items: Array<[regionId: string, classification: string | null, footprintAreaXY: number | null]>;
+}
+
+export interface ImageryReviewItem {
+  region_id: string;
+  label: string;
+  pixel_count: number | null;
+  page: number;
+}
+
+export interface ImageryCandidate {
+  bounds: [number, number, number, number, number, number];
+  preview_transform: [number, number, number, number, number, number];
+  preview_png_base64: string | null;
+  preview_width: number;
+  preview_height: number;
+  overview_png_base64: string | null;
+  review_index: ImageryReviewItem[] | null;
+  review_index_encoding?: string | null;
+  source_grid: { width: number; height: number; transform: ImageryCandidate["preview_transform"] } | null;
+  confirmed_region_set_id: string | null;
+  confirmed_region_ids: string[] | null;
+  confirmed_region_bits?: string | null;
+  pending_confirmation_job_id?: string | null;
+  refinement_available?: boolean;
+  confirmed_refinement?: ImageryConfirmationRefinement | null;
+  selection_locked_reason: string | null;
+  page: number;
+  page_count: number;
+  region_count: number;
+  min_region_pixels: number;
+  filtered_regions: number;
+  regions: Array<{
+    region_id: string;
+    label: string;
+    bbox: ImageryCandidate["bounds"];
+    pixel_count: number | null;
+    preview_mode: "exact" | "simplified" | "list_only";
+    footprint_boundary_xyz: RegionViewerItem["footprint_boundary_xyz"];
+  }>;
+}
+
+export interface ImageryReviewIndexBatch {
+  start: number;
+  count: number;
+  rows_base64: string;
+}
+
+export interface ImageryTile {
+  width: number;
+  height: number;
+  transform: ImageryCandidate["preview_transform"];
+  region_ids: string[];
+  base_png: string;
+  ids_png: string;
+  refinement_png?: string;
+  refinement_unavailable?: boolean;
+}
+
+export interface ImageryRefinement {
+  mode: "greenness" | "patches";
+  strength: number;
+  minimum: string;
+}
+
+export interface ImageryConfirmationRefinement extends ImageryRefinement {
+  min_region_pixels: string;
+}
+
+export type ImageryTileResponse = ImageryTile | { retry_after_ms: number; refinement_pending?: boolean } | null;
 
 export interface RegionViewportChunk {
   items: RegionViewerItem[];
   next_after_ordinal: number | null;
   truncated: boolean;
+  overview_recommended?: boolean;
 }
 
 export interface StrategyLibrarySummary {
@@ -516,7 +616,17 @@ export interface AssetPackageImportInfo {
   package_hash: string;
   resource_count: number;
   already_installed: boolean;
+  replaced: boolean;
   catalog: AssetPackageCatalogInfo;
+}
+
+export interface AssetPackageOverwrite {
+  catalog_id: string;
+  existing_name: string;
+  incoming_name: string;
+  expected_generation: number;
+  expected_catalog_hash: string;
+  expected_package_hash: string;
 }
 
 export interface AssetPackageExportInfo {
@@ -879,5 +989,6 @@ export interface ApiErrorDocument {
   error?: {
     code?: string;
     message?: string;
+    details?: unknown;
   };
 }

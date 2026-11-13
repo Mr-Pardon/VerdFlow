@@ -58,6 +58,12 @@ from verdflow.contracts import (
 - 不包含第三方平台类型或持久化模型。
 - 新增公共类型时同步评估 schema 版本和跨进程序列化需求。
 
+Adapter 能力、推荐输入链路、显式采样绑定与解析后运行记录的目标语义见
+[Adapter 链路契约](../../docs/architecture/ADAPTER_WORKFLOW_CONTRACT.md)（ADR-0024）。
+`adapter_workflows.py` 提供能力引用、链路、采样来源、绑定与解析结果，供 Host 和 Core
+共同消费。绑定/解析记录使用 v1 值对象，新采样命令为 v2；不得将其塞入旧 Job `options`。
+现有 HTTP 产品入口不开放任意 Provider 调用或第三方可执行清单。
+
 ## 内部结构
 
 ```text

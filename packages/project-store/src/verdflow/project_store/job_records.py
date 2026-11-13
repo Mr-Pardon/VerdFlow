@@ -117,11 +117,11 @@ def same_submission(
     row: sqlite3.Row,
     submission: JobSubmission,
 ) -> bool:
+    # A replay keeps the attempt budget captured at the original submission.
     return (
         row["command_type"] == submission.command.command_type
         and row["command_version"] == submission.command.command_version
         and row["command_artifact_id"] == submission.command.artifact_id
-        and int(row["max_attempts"]) == submission.max_attempts
         and row["retention_class"] == submission.retention_class.value
         and (
             int(row["retention_seconds"])

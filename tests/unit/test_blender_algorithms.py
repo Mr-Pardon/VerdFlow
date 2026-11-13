@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from io import BytesIO, StringIO
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -24,6 +26,41 @@ from verdflow.blender_worker.algorithms import (  # noqa: E402
     rule_match_evidence,
     validate_rule_pack,
 )
+from verdflow.blender_worker.point_transport import (  # noqa: E402
+    SampledPointWriter,
+    read_point_rows,
+    stage_point_rows,
+)
+
+
+class BlenderPointTransportTests(unittest.TestCase):
+    def test_preserves_rows_and_canonical_output_bytes(self) -> None:
+        rows = [
+            {"id": "a", "label": "\u690d\u88ab\nline", "position": [-0.0, 1, 1e-13]},
+            {"id": "b", "attributes": {"nested": [None, True, {"b": 1}]}},
+        ]
+        for count in (0, len(rows)):
+            with self.subTest(count=count):
+                selected = rows[:count]
+                header = {"coordinate_space": "source_scene_world", "point_count": count, "schema": "verdflow.points"}
+                frames, output = StringIO(), StringIO()
+                stage_point_rows(frames, selected, lambda: None)
+                self.assertEqual(len(frames.getvalue().splitlines()), count)
+                writer = SampledPointWriter(output, header)
+                for point in read_point_rows(BytesIO(frames.getvalue().encode("utf-8")), count):
+                    writer.write_point(point)
+                writer.finish()
+                self.assertEqual(output.getvalue(), json.dumps({**header, "points": selected}, ensure_ascii=False, sort_keys=True))
+
+    def test_rejects_missing_extra_and_invalid_frames(self) -> None:
+        for frames, count, message in (
+            (b'{"id":"a"}', 1, "ended before"),
+            (b"{}\n", 2, "ended before"),
+            (b"{}\n{}\n", 1, "beyond"),
+            (b"[]\n", 1, "must be an object"),
+        ):
+            with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
+                list(read_point_rows(BytesIO(frames), count))
 
 
 class BlenderAlgorithmTests(unittest.TestCase):
@@ -67,6 +104,23 @@ class BlenderAlgorithmTests(unittest.TestCase):
         )
 
         self.assertEqual(islands, [[0, 1], [2]])
+
+    def test_connected_face_islands_order_and_non_manifold_edges(self) -> None:
+        faces = {
+            90: [(4, 3), (6, 7)],
+            50: [(11, 12)],
+            45: [(7, 6)],
+            12: [(3, 4)],
+            2: [(4, 3), (3, 4)],
+            1: [],
+        }
+        self.assertEqual(connected_face_islands(faces), [[1], [2, 12, 45, 90], [50]])
+
+    def test_connected_face_islands_handle_many_disjoint_faces_and_one_shared_edge(self) -> None:
+        faces = {face: [(face * 2, face * 2 + 1)] for face in range(20000, 0, -1)}
+        self.assertEqual(connected_face_islands(faces), [[face] for face in range(1, 20001)])
+        faces = {face: [(1, 2)] for face in range(20000, 0, -1)}
+        self.assertEqual(connected_face_islands(faces), [list(range(1, 20001))])
 
     def test_boundary_removes_shared_edges(self) -> None:
         loops = boundary_vertex_loops(

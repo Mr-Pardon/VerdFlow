@@ -1,5 +1,9 @@
 """Versioned public contracts shared across VerdFlow packages."""
 
+from .adapter_workflows import (
+    CapabilityRef, InputRecipe, ResolvedPlantWorkflow, SamplingBinding, SamplingSourceRef,
+)
+
 from .strategy_versions import require_strategy_version, stable_strategy_version, strategy_version_accepts
 
 from .assignment_previews import (
@@ -142,6 +146,7 @@ from .region_jobs import (
     REGION_EXTRACTION_COMMAND_VERSION,
 )
 from .region_source_jobs import (
+    REGION_SOURCE_AUTO_PUBLISH_VERSION,
     REGION_SOURCE_COMMAND_SCHEMA,
     REGION_SOURCE_COMMAND_VERSION,
 )
@@ -188,6 +193,11 @@ __all__ = [
     "ASSET_ASSIGNMENT_COMMAND",
     "ASSET_ASSIGNMENT_COMMAND_SCHEMA",
     "ASSET_ASSIGNMENT_COMMAND_VERSION",
+    "CapabilityRef",
+    "InputRecipe",
+    "ResolvedPlantWorkflow",
+    "SamplingBinding",
+    "SamplingSourceRef",
     "ArtifactRef",
     "AssetAssignmentSetInfo",
     "AssetAssignmentSummary",
@@ -281,6 +291,7 @@ __all__ = [
     "RegionSummary",
     "REGION_EXTRACTION_COMMAND_SCHEMA",
     "REGION_EXTRACTION_COMMAND_VERSION",
+    "REGION_SOURCE_AUTO_PUBLISH_VERSION",
     "REGION_SOURCE_COMMAND_SCHEMA",
     "REGION_SOURCE_COMMAND_VERSION",
     "RoleBindingProfileDocument",

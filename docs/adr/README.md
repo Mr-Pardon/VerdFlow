@@ -28,6 +28,7 @@
 | [0021](0021-bounded-live-geospatial-input.md) | 有界实时地理输入、内环与语义化错误 |
 | [0022](0022-typed-path-input-and-paired-placement.md) | 路径输入、双角色共位置与旧面链路兼容 |
 | [0023](0023-native-resource-center.md) | 内嵌资源预览与只读策略更新发现 |
+| [0024](0024-adapter-recipes-and-sampling-bindings.md) | 多能力适配器、推荐输入链路与显式采样绑定；契约已接受，运行迁移待实现 |
 
 ## 阅读原则
 

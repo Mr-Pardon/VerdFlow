@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import copy
 import json
 import math
 from threading import RLock
-from typing import Any, Protocol, Sequence
+from time import monotonic
+from typing import Any, BinaryIO, Callable, Protocol, Sequence
 import uuid
 
 from verdflow.contracts import (
@@ -40,6 +40,8 @@ DTS_LIVE_SUPPORTED_COMMANDS = (
     DTS_LIVE_PATH_SELECTION_COMMAND,
     DTS_LIVE_ELEVATION_COMMAND,
 )
+_ELEVATION_STREAM_ROWS = 16_384
+_ELEVATION_WRITE_BATCH_ROWS = 1024
 
 
 class DtsLiveWorkerPort(Protocol):
@@ -313,10 +315,20 @@ class DtsLiveCoreWorker:
         self._validate_provider_command(
             command,
             schema=ELEVATION_SAMPLING_COMMAND_SCHEMA,
-            version=ELEVATION_SAMPLING_COMMAND_VERSION,
+            version="2" if command.get("version") == "2" else ELEVATION_SAMPLING_COMMAND_VERSION,
             operation="sample_elevation",
         )
         context = self._live_context(command.get("options"))
+        if command.get("version") == "2":
+            from verdflow.contracts import SamplingBinding
+            binding = SamplingBinding.from_document(command["sampling_binding"])
+            source = binding.source
+            if (source.kind != "session" or source.connector_session_id != context["connector_session_id"]
+                    or source.operation_id != context["operation_id"]
+                    or source.generation_token != context["generation_token"]
+                    or source.scene_revision_id != command.get("scene_revision_id")
+                    or source.source_id != command.get("source_id")):
+                raise ValueError("DTS Live session differs from the frozen sampling binding")
         parent = self.runtime.store.get_point_set(
             _text(command, "parent_point_set_id")
         )
@@ -347,49 +359,52 @@ class DtsLiveCoreWorker:
                 raise ValueError("DTS Live point must belong to a selected region")
             by_region[point[key]].append(point)
         batches: list[DtsLiveElevationBatch] = []
-        ordered_points = []
+        shared_sample_ids: dict[str, str] = {}
+        half_range = _positive_float(context.get("ray_half_range", 5000.0))
         for region in geometries:
             group = by_region[getattr(region, key)]
             if not group:
                 continue
+            start = len(point_ids)
+            # Keep each selection independent, even when its rays overlap another selection.
+            first_sample_ids: dict[tuple[float, float, float], str] = {}
+            for point in group:
+                point_id = _text(point, "id")
+                position = _vector3(point.get("generated_position"), "generated_position")
+                sample_id = first_sample_ids.setdefault(position, point_id)
+                if sample_id != point_id:
+                    shared_sample_ids[point_id] = sample_id
+                    continue
+                x, y, z = position
+                point_ids.append(point_id)
+                lines.append({"start": [x, y, z + half_range], "end": [x, y, z - half_range]})
+            first_sample_ids.clear()
             batches.append(
                 DtsLiveElevationBatch(
                     None if path_input else region.region_id,
                     region.name,
                     region.bbox,
-                    len(ordered_points),
-                    len(group),
+                    start,
+                    len(point_ids) - start,
                     path_id=region.path_id if path_input else None,
                 )
             )
-            ordered_points.extend(group)
-        half_range = _positive_float(context.get("ray_half_range", 5000.0))
-        for point in ordered_points:
-            if not isinstance(point, dict):
-                raise ValueError("DTS Live point row must be an object")
-            point_ids.append(_text(point, "id"))
-            position = _vector3(point.get("generated_position"), "generated_position")
-            lines.append(
-                {
-                    "start": [position[0], position[1], position[2] + half_range],
-                    "end": [position[0], position[1], position[2] - half_range],
-                }
-            )
-        request = self.port.request_elevation(
+        correlation = self.port.request_elevation(
             operation_id=context["operation_id"],
             generation_token=context["generation_token"],
             point_set_id=parent.point_set_id,
             point_ids=point_ids,
             lines=lines,
             batches=batches,
-        )
+        ).correlation
+        del point_ids, lines, batches, by_region
         samples = None
         while samples is None:
             if self._is_cancelled(lease.job_id):
                 self.port.cancel()
                 raise _DtsLiveCancelled
             samples = self.port.wait_for_elevation(
-                request.correlation,
+                correlation,
                 timeout_seconds=self.callback_poll_seconds,
             )
             if samples is None:
@@ -401,20 +416,28 @@ class DtsLiveCoreWorker:
         by_id = {sample.point_id: sample for sample in samples}
         if not any(sample.position is not None for sample in samples):
             raise ValueError("All selected regions failed elevation sampling; no XML was generated")
-        resolved = copy.deepcopy(points_document)
-        resolved["kind"] = "elevation_resolved"
-        resolved["resolution_policy"] = "sample_hit_else_generated"
-        # Identical rays must resolve identically for co-located role instances.
-        samples_by_position = {}
-        for point in points:
-            samples_by_position.setdefault(
-                tuple(point["generated_position"]), by_id[point["id"]]
-            )
-        for point in resolved["points"]:
-            sample = samples_by_position[tuple(point["generated_position"])]
+        points_document["kind"] = "elevation_resolved"
+        points_document["resolution_policy"] = "sample_hit_else_generated"
+        last_heartbeat = monotonic()
+
+        def check_progress() -> None:
+            nonlocal last_heartbeat
+            if self._is_cancelled(lease.job_id):
+                self.port.cancel()
+                raise _DtsLiveCancelled
+            now = monotonic()
+            if now - last_heartbeat >= 5.0:
+                self.runtime.heartbeat(lease, progress=0.8, stage="persisting_dts_elevation")
+                last_heartbeat = now
+
+        for index, point in enumerate(points):
+            if index % _ELEVATION_WRITE_BATCH_ROWS == 0:
+                check_progress()
+            point_id = point["id"]
+            sample = by_id[shared_sample_ids.get(point_id, point_id)]
             if sample.position is None:
                 point["terrain_sample"] = {"hit": False, "target": "dts_region_sampling_failed"}
-                point["resolved_position"] = list(point["generated_position"])
+                point["resolved_position"] = point["generated_position"]
                 continue
             position = list(sample.position)
             point["terrain_sample"] = {
@@ -424,12 +447,20 @@ class DtsLiveCoreWorker:
                 "target": "dts_lines_intersect",
             }
             point["resolved_position"] = position
-        point_artifact = self._put_json(
-            resolved,
-            media_type="application/vnd.verdflow.points+json",
-            schema_id="verdflow.points",
-            schema_version=resolved["version"],
-        )
+        artifact_options = {
+            "media_type": "application/vnd.verdflow.points+json",
+            "schema_id": "verdflow.points",
+            "schema_version": points_document["version"],
+        }
+        check_progress()
+        if len(points) < _ELEVATION_STREAM_ROWS:
+            point_artifact = self._put_json(points_document, **artifact_options)
+        else:
+            point_artifact = self.runtime.store.write_artifact(
+                lambda stream: _write_elevation_json(stream, points_document, check_progress),
+                on_chunk=check_progress,
+                **artifact_options,
+            ).artifact_id
         return self._result(
             "elevation_sampling",
             source_id=_text(command, "source_id"),
@@ -520,13 +551,7 @@ class DtsLiveCoreWorker:
         schema_version: str = "1",
     ) -> str:
         artifact = self.runtime.store.put_bytes(
-            json.dumps(
-                document,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-                allow_nan=False,
-            ).encode("utf-8"),
+            _json_bytes(document),
             media_type=media_type,
             schema_id=schema_id,
             schema_version=schema_version,
@@ -543,6 +568,29 @@ class DtsLiveCoreWorker:
     def _is_cancelled(self, job_id: str) -> bool:
         with self._cancel_lock:
             return job_id in self._cancel_requests
+
+
+def _json_bytes(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+
+
+def _write_elevation_json(stream: BinaryIO, document: dict[str, Any], check_progress: Callable[[], None]) -> None:
+    # Keep the exact compact JSON used by the small-result path, including float spelling.
+    stream.write(b"{")
+    for ordinal, key in enumerate(sorted(document)):
+        stream.write((b"," if ordinal else b"") + _json_bytes(key) + b":")
+        if key != "points":
+            stream.write(_json_bytes(document[key]))
+            continue
+        points = document[key]
+        stream.write(b"[")
+        for start in range(0, len(points), _ELEVATION_WRITE_BATCH_ROWS):
+            check_progress()
+            if start:
+                stream.write(b",")
+            stream.write(_json_bytes(points[start:start + _ELEVATION_WRITE_BATCH_ROWS])[1:-1])
+        stream.write(b"]")
+    stream.write(b"}")
 
 
 def _live_context(value: object) -> dict[str, Any]:

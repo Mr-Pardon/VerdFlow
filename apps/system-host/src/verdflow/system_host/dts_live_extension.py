@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from verdflow.contracts import CapabilityRef, InputRecipe
 
 from verdflow.core import (
     ElevationProviderDefinition,
@@ -52,6 +53,19 @@ class DtsLiveCoreHostExtensionFactory:
                     command_type=DTS_LIVE_ELEVATION_COMMAND,
                     command_version="1",
                     max_attempts=1,
+                    sampling_source_kind="session",
+                    configuration_schema="verdflow.dts-live-elevation.config/1",
+                    failure_policy="export-terrain-hits",
+                    point_schema_versions=("2", "3"),
                 ),
             ),
+            input_recipes=(InputRecipe(
+                recipe_id="verdflow.dts-live-selection", version="1", adapter_id=DTS_LIVE_ADAPTER_ID,
+                preparation=CapabilityRef("region_extraction", DTS_LIVE_ADAPTER_ID, DTS_LIVE_ADAPTER_VERSION, DTS_LIVE_REGION_SELECTION_COMMAND, "1"),
+                sampling=CapabilityRef("elevation", DTS_LIVE_ADAPTER_ID, DTS_LIVE_ADAPTER_VERSION, DTS_LIVE_ELEVATION_COMMAND, "1"),
+                geometry_kinds=("polygon", "polyline"), sampling_source_kind="session",
+                configuration_schema="verdflow.dts-live-elevation.config/1",
+                failure_policy="export-terrain-hits",
+                legacy_importer_ids=(DTS_LIVE_ADAPTER_ID,),
+            ),),
         )

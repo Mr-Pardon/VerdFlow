@@ -52,6 +52,12 @@ const statePresentation: Record<
     tone: "warning",
     actionLabel: "继续处理",
   },
+  awaiting_region_confirmation: {
+    filter: "pending",
+    stateLabel: "待区域确认",
+    tone: "warning",
+    actionLabel: "确认区域",
+  },
   ready_to_plant: {
     filter: "pending",
     stateLabel: "可种植",
@@ -85,6 +91,9 @@ const statePresentation: Record<
 };
 
 const stageLabels: Record<string, string> = {
+  copying_project_sources: "登记源文件",
+  starting_project_workflow: "启动项目流程",
+  imagery_preparation: "影像识别",
   inspection: "模型检查",
   material_flow: "绿地识别",
   analysis: "材质分析",
@@ -153,7 +162,9 @@ export const projectCardModel = (
     sessionId: project.active_session_id,
     workspace: project.last_workspace,
     sourceLabel:
-      summary.scene_importer_id === "verdflow.geospatial"
+      summary.scene_importer_id === "verdflow.geospatial.imagery" || summary.execution_kind === "imagery_preparation"
+        ? "影像 GeoTIFF"
+        : summary.scene_importer_id === "verdflow.geospatial"
         ? "SHP / GeoJSON"
         : summary.scene_importer_id === "verdflow-blender-worker"
           ? "FBX"

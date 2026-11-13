@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { PortableUpdater } from "../src/portable-updater.mjs";
@@ -186,6 +186,59 @@ test("check/download stages a verified update without modifying current app or d
     await f.updater.apply();
     assert.equal(f.launches(), 1);
     assert.equal(f.updater.snapshot().stage, "applying");
+  } finally { await f.cleanup(); }
+});
+
+test("startup cleans only successful backups for this installation whose files match the manifest", async () => {
+  const f = await fixture();
+  try {
+    const installRoot = await realpath(f.install);
+    const cache = path.join(f.data, "Updates");
+    const program = "original program";
+    const backups = new Map();
+    for (const [index, kind] of [
+      "applied", "older-applied", "foreign", "failed", "future", "no-manifest",
+      "extra", "edited", "unconfirmed", "linked", "no-record",
+    ].entries()) {
+      const id = index.toString(16).repeat(32);
+      const backup = path.join(f.root, `.verdflow-backup-${id}`);
+      backups.set(kind, backup);
+      if (kind === "linked") await symlink(f.install, backup, "junction");
+      else {
+        await mkdir(backup);
+        await writeFile(path.join(backup, "VerdFlow Studio.exe"), kind === "edited" ? "modified program" : program);
+        if (kind !== "no-manifest") await writeFile(path.join(backup, "update-manifest.json"), JSON.stringify({
+          schema: "verdflow.portable-files", version: "1", product_version: "0.3.0", platform: "windows-x64",
+          files: [{ path: "VerdFlow Studio.exe", bytes: program.length, sha256: createHash("sha256").update(program).digest("hex") }],
+        }));
+        if (kind === "extra") await writeFile(path.join(backup, "my-project"), "keep");
+      }
+      if (kind === "no-record") continue;
+      const job = path.join(cache, id);
+      const targetVersion = kind === "future" ? "0.5.0" : kind === "older-applied" ? "0.3.1" : "0.4.0";
+      await mkdir(job);
+      await writeFile(path.join(job, "plan.json"), JSON.stringify({
+        id, repository, installRoot: kind === "foreign" ? path.join(f.root, "another-install") : installRoot,
+        targetVersion, parentPid: 12345,
+      }));
+      await writeFile(path.join(job, "result.json"), JSON.stringify({ status: kind === "failed" ? "failed" : "applied", version: targetVersion }));
+      if (kind !== "unconfirmed") await writeFile(path.join(job, "helper-accepted.json"), JSON.stringify({ id, parentPid: 12345 }));
+    }
+    await f.updater.cleanupAppliedBackups();
+    assert.equal(await readFile(path.join(backups.get("applied"), "VerdFlow Studio.exe"), "utf8"), program);
+    const restarted = new PortableUpdater({ portable: f.updater.portable, version: "0.4.0", scriptRoot: "unused" });
+    try {
+      await restarted.initialize();
+      await restarted.backupCleanup;
+      const remaining = new Set(await readdir(f.root));
+      for (const [kind, backup] of backups) {
+        assert.equal(remaining.has(path.basename(backup)), !["applied", "older-applied"].includes(kind), kind);
+      }
+      assert.equal(await readFile(path.join(backups.get("extra"), "my-project"), "utf8"), "keep");
+      assert.equal(await readFile(path.join(backups.get("edited"), "VerdFlow Studio.exe"), "utf8"), "modified program");
+      assert.equal(await readFile(path.join(f.install, "original"), "utf8"), "keep-old-app");
+      assert.equal(await readFile(path.join(f.data, "project"), "utf8"), "keep-project-data");
+    } finally { restarted.dispose(); }
   } finally { await f.cleanup(); }
 });
 

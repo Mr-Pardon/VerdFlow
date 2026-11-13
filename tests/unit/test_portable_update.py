@@ -4,8 +4,10 @@ import hashlib
 import importlib.util
 import json
 from pathlib import Path
+import os
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 
@@ -28,6 +30,26 @@ class PortableUpdateTests(unittest.TestCase):
         self.assertEqual(builder.build_parser().parse_args([]).update_repository, "Mr-Pardon/VerdFlow")
         self.assertIsNone(builder.build_parser().parse_args(["--no-updates"]).update_repository)
         self.assertEqual(builder.build_parser().parse_args(["--update-repository", "example/fork"]).update_repository, "example/fork")
+        args = builder.build_parser().parse_args(["--imagery-model", "model.onnx"])
+        self.assertEqual((args.imagery_model, args.update_repository), (Path("model.onnx"), "Mr-Pardon/VerdFlow"))
+
+    def test_build_rejects_missing_or_wrong_model_before_staging(self):
+        wrong_model = self.root / "wrong.onnx"
+        wrong_model.write_bytes(b"not the pinned model")
+        with patch.dict(os.environ, {"VERDFLOW_IMAGERY_MODEL_PATH": ""}), patch.object(builder, "_run") as run:
+            for args in ([], ["--imagery-model", str(wrong_model)]):
+                with self.subTest(args=args), patch("sys.stderr"), self.assertRaises(SystemExit) as error:
+                    builder.main(args)
+                self.assertEqual(error.exception.code, 2)
+            run.assert_not_called()
+
+    def test_portable_onnx_excludes_deep_conversion_tools_but_keeps_runtime_notices(self):
+        keep = ["onnxruntime/capi/onnxruntime.dll", "onnxruntime/LICENSE", "onnxruntime/ThirdPartyNotices.txt",
+                "onnxruntime-1.24.4.dist-info/RECORD"]
+        names = keep + ["onnxruntime/tools/ort_format_model/ort_flatbuffers_py/fbs/DeprecatedNodeIndexAndKernelDefHash.py",
+                        "onnxruntime/quantization/__init__.py", "onnxruntime/transformers/__init__.py"]
+        self.assertEqual(builder._portable_wheel_members(Path("onnxruntime-1.24.4.whl"), names), keep)
+        self.assertEqual(builder._portable_wheel_members(Path("other.whl"), names), names)
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="verdflow-update-test-")
@@ -63,6 +85,8 @@ class PortableUpdateTests(unittest.TestCase):
         updater.stage_update(plan)
         self.assertEqual((self.install / "original.txt").read_text(), "original")
         self.assertEqual((self.stage / "VerdFlow Studio.exe").read_bytes(), b"test-program-file")
+        self.assertEqual((self.stage / "update-manifest.json").read_bytes(),
+                         (self.bundle / "update-manifest.json").read_bytes())
         self.assertEqual(json.loads((self.stage / ".verdflow-update-ready.json").read_text())["version"], "0.4.0")
         builder._write_update_descriptor(self.archive, "0.4.0")
         descriptor = json.loads((self.root / "VerdFlow-update-win-x64.json").read_text())

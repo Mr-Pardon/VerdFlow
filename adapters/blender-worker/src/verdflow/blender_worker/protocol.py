@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 
 
@@ -38,7 +39,7 @@ class BlenderWorkerConfig:
     ready_timeout_seconds: float = 20.0
     heartbeat_timeout_seconds: float = 5.0
     blocking_operation_timeout_seconds: float = 300.0
-    execution_timeout_seconds: float = 600.0
+    execution_timeout_seconds: float | None = None
     termination_grace_seconds: float = 3.0
 
     def validate(self) -> None:
@@ -54,8 +55,12 @@ class BlenderWorkerConfig:
                 "blocking_operation_timeout_seconds",
                 self.blocking_operation_timeout_seconds,
             ),
-            ("execution_timeout_seconds", self.execution_timeout_seconds),
             ("termination_grace_seconds", self.termination_grace_seconds),
         ):
-            if value <= 0:
-                raise ValueError(f"{field} must be positive")
+            if not math.isfinite(value) or value <= 0:
+                raise ValueError(f"{field} must be finite and positive")
+        if self.execution_timeout_seconds is not None and (
+            not math.isfinite(self.execution_timeout_seconds)
+            or self.execution_timeout_seconds <= 0
+        ):
+            raise ValueError("execution_timeout_seconds must be finite and positive, or None")

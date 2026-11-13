@@ -1,5 +1,5 @@
-import { createWriteStream } from "node:fs";
-import { access, lstat, mkdir, readFile, realpath, rmdir, rm, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { access, lstat, mkdir, readdir, readFile, realpath, rmdir, rm, unlink, writeFile } from "node:fs/promises";
 import { createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { Readable, Transform } from "node:stream";
@@ -56,7 +56,10 @@ export class PortableUpdater {
         for (const key of ["autoCheck", "autoDownload"]) if (typeof preferences[key] === "boolean") this.state[key] = preferences[key];
       } catch (error) { if (error.code !== "ENOENT") this.state.message = "更新偏好读取失败，使用默认设置"; }
       this.update({ configured: this.repository !== null });
-      if (this.repository) await this.restorePrepared();
+      if (this.repository) {
+        await this.restorePrepared();
+        this.backupCleanup = this.cleanupAppliedBackups();
+      }
       this.schedule(3000);
     } catch { this.update({ message: "当前程序包未配置有效的更新源" }); }
   }
@@ -183,6 +186,33 @@ export class PortableUpdater {
     } catch { /* A stale or incomplete cache cannot become an installable update. */ }
   }
 
+  async cleanupAppliedBackups() {
+    try {
+      const install = await realpath(this.portable.rootPath);
+      if (!await isOwnedDirectory(this.cache)) return;
+      for (const entry of await readdir(this.cache, { withFileTypes: true })) {
+        if (this.closed) return;
+        const id = entry.name;
+        if (!entry.isDirectory() || !/^[a-f0-9]{32}$/.test(id)) continue;
+        const backup = path.join(path.dirname(install), `.verdflow-backup-${id}`);
+        const job = path.join(this.cache, id);
+        try {
+          if (!await isOwnedDirectory(backup) || !await isOwnedDirectory(job)) continue;
+          const [plan, result, accepted] = await Promise.all([
+            readOwnedJson(path.join(job, "plan.json")),
+            readOwnedJson(path.join(job, "result.json")),
+            readOwnedJson(path.join(job, "helper-accepted.json")),
+          ]);
+          if (plan.id !== id || plan.repository !== this.repository || plan.installRoot !== install ||
+              accepted.id !== id || !Number.isSafeInteger(plan.parentPid) || accepted.parentPid !== plan.parentPid ||
+              result.status !== "applied" || result.version !== plan.targetVersion ||
+              newerVersion(plan.targetVersion, this.version)) continue;
+          await removeVerifiedBackup(backup, plan.targetVersion, () => this.closed);
+        } catch { /* Leave incomplete, changed or temporarily locked backups alone. */ }
+      }
+    } catch { /* Backup cleanup is best-effort and never prevents startup. */ }
+  }
+
   cancel() { if (["downloading", "preparing"].includes(this.state.stage)) this.abort?.abort(); return this.snapshot(); }
 
   async apply() {
@@ -212,7 +242,67 @@ export class PortableUpdater {
 async function removeOwnedDirectory(target, expected) {
   if (path.resolve(target) !== path.resolve(expected)) return;
   try {
-    const info = await lstat(target);
-    if (info.isDirectory() && !info.isSymbolicLink() && await realpath(target) === target) await rm(target, { recursive: true });
+    if (await isOwnedDirectory(target)) await rm(target, { recursive: true });
   } catch { /* Failed cleanup must never widen its target or affect the installed app. */ }
+}
+
+async function isOwnedDirectory(target) {
+  const info = await lstat(target);
+  return info.isDirectory() && !info.isSymbolicLink() && await realpath(target) === target;
+}
+
+async function readOwnedJson(file, maxBytes = 64 * 1024) {
+  const info = await lstat(file);
+  if (!info.isFile() || info.size > maxBytes) throw new Error("Invalid update record");
+  return JSON.parse(await readFile(file, "utf8"));
+}
+
+async function removeVerifiedBackup(backup, targetVersion, stopped) {
+  const manifestPath = path.join(backup, "update-manifest.json");
+  const manifest = await readOwnedJson(manifestPath, 8 * 1024 ** 2);
+  if (manifest.schema !== "verdflow.portable-files" || manifest.version !== "1" ||
+      manifest.platform !== "windows-x64" || !newerVersion(targetVersion, manifest.product_version) ||
+      !Array.isArray(manifest.files) || manifest.files.length > 20_000) return;
+  const expected = new Map(manifest.files.map(file => [file.path, file]));
+  if (expected.size !== manifest.files.length || !expected.has("VerdFlow Studio.exe")) return;
+  const directories = [backup];
+  const files = [];
+  // Manifest paths are lookup keys only. Never derive deletion paths from the manifest.
+  for (const directory of directories) {
+    if (stopped() || !await isOwnedDirectory(directory)) return;
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const file = path.join(directory, entry.name);
+      if (file === manifestPath) continue;
+      if (entry.isDirectory()) { directories.push(file); continue; }
+      const record = expected.get(path.relative(backup, file).split(path.sep).join("/"));
+      if (!entry.isFile() || !record) return;
+      files.push({ file, record });
+    }
+  }
+  for (const entry of files) {
+    if (stopped()) return;
+    const { file, record } = entry;
+    const info = await lstat(file);
+    if (!info.isFile() || info.size !== record.bytes) return;
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(file)) hash.update(chunk);
+    if (hash.digest("hex") !== record.sha256) return;
+    entry.verified = info;
+  }
+  if (stopped() || !await isOwnedDirectory(backup)) return;
+  // Delete only verified files and empty directories, keeping the manifest for retries.
+  for (const { file, verified } of files) {
+    if (stopped() || await realpath(file) !== file) return;
+    const current = await lstat(file);
+    if (!current.isFile() || current.ino !== verified.ino ||
+        current.size !== verified.size || current.mtimeMs !== verified.mtimeMs) return;
+    await unlink(file);
+  }
+  for (const directory of directories.slice(1).reverse()) {
+    if (!await isOwnedDirectory(directory)) return;
+    await rmdir(directory);
+  }
+  if ((await readdir(backup)).length !== 1) return;
+  await unlink(manifestPath);
+  await rmdir(backup);
 }

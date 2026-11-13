@@ -12,7 +12,9 @@ import shutil
 
 
 PROJECT_FILES = ("LICENSE", "NOTICE", "AUTHORS.md", "THIRD_PARTY_NOTICES.md")
-NOTICE_NAME = re.compile(r"^(licen[sc]e|copying|copyright|notice|authors)([._-]|$)", re.I)
+NOTICE_NAME = re.compile(
+    r"^(licen[sc]e|copying|copyright|notice|authors|third[-_ ]?party[-_ ]?notices?)([._-]|$)", re.I,
+)
 
 
 def _required(path: Path, boundary: Path) -> Path:

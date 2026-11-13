@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,17 +20,20 @@ sys.path[:0] = [
 
 from verdflow.contracts import (  # noqa: E402
     JobCommandRef,
+    JobStatus,
     SourceAssemblyMemberSpec,
     SourceKind,
 )
 from verdflow.core import (  # noqa: E402
     JobRuntime,
+    RegionConfirmationWorker,
     RegionSourceImportService,
     RegionSourceProviderDefinition,
     RegionSourceRequest,
     RegionSourceService,
 )
 from verdflow.project_store import ProjectStore  # noqa: E402
+from verdflow.core.region_import import RegionSetImportError, RegionSetImportService  # noqa: E402
 
 
 IDENTITY = (
@@ -39,6 +45,95 @@ IDENTITY = (
 
 
 class RegionSourceTests(unittest.TestCase):
+    def test_selection_spools_exact_large_boundary_and_cleans_unpublished_output(self) -> None:
+        from verdflow.core.region_source_import import _region_json
+
+        rings = [
+            [[-0.0, 2, 1e-10], [3.25, 4, 0], [3.25, 2, 0], [-0.0, 2, 1e-10]],
+            [[1.125, 2, 0], [1.25, 3, 0], [1.25, 2, 0], [1.125, 2, 0]],
+        ]
+        big = {"id": "r1", "label": "Region 1", "footprint_boundary_xyz": rings}
+        small = {"id": "r2", "footprint_boundary_xyz": []}
+        header = {
+            "schema": "verdflow.regions", "version": "1",
+            "coordinate_space": "source_scene_world", "offset_applied": False,
+            "region_count": 2,
+        }
+        payload = _region_json({**header, "regions": [big, small]}).encode("utf-8")
+        with (
+            tempfile.TemporaryDirectory() as temporary,
+            ProjectStore.create(Path(temporary) / "spooled.verdflow", "Spool") as store,
+            patch("verdflow.core.region_import._INLINE_REGION_DOCUMENT_BYTES", 0),
+            patch("verdflow.core.region_source_import._INLINE_SELECTION_BYTES", 0),
+            patch("verdflow.core.region_source_import._BOUNDARY_SPOOL_DOCUMENT_BYTES", 0),
+            patch("verdflow.core.region_boundary_spool._BOUNDARY_PREFIX_EVENTS", 12),
+            patch("verdflow.core.region_boundary_spool._COPY_CHARACTERS", 8),
+        ):
+            importer = RegionSourceImportService(store)
+
+            def put(content):
+                return store.put_bytes(content, media_type="application/json")
+
+            source = put(payload)
+            for kept in (big, small):
+                checks = []
+                result = importer._filter_region_artifact(
+                    source.artifact_id, "verdflow.regions", {kept["id"]}, lambda: checks.append(1),
+                )
+                with store.open_artifact(result.artifact_id) as output:
+                    self.assertEqual(output.read(), _region_json({
+                        **header, "region_count": 1, "regions": [kept],
+                    }).encode("utf-8"))
+                if kept is big:
+                    self.assertGreater(len(checks), 8)
+            before = store.artifact_count()
+            checks = []
+
+            def cancel_during_copy():
+                checks.append(1)
+                if len(checks) == 2:
+                    raise RuntimeError("cancelled during boundary copy")
+
+            with self.assertRaisesRegex(RuntimeError, "cancelled during boundary copy"):
+                importer._filter_region_artifact(source.artifact_id, "verdflow.regions", {"r1"}, cancel_during_copy)
+            self.assertEqual(store.artifact_count(), before)
+            invalid = put(payload + b"{}")
+            before = store.artifact_count()
+            with self.assertRaises(RegionSetImportError):
+                importer._filter_region_artifact(invalid.artifact_id, "verdflow.regions", {"r1"}, None)
+            self.assertEqual(store.artifact_count(), before)
+            self.assertFalse(list(store.staging_path.glob("region-selection-*")))
+
+    def test_large_region_artifact_checks_suffix_and_projects_only_summary_fields(self) -> None:
+        header = {
+            "schema": "verdflow.regions", "version": "1",
+            "coordinate_space": "source_scene_world", "offset_applied": False,
+            "region_count": 1,
+        }
+        row = {"id": "r1", "bbox": [-1.125, 2, 0, 3, 4, 0], "footprint_boundary_xyz": [[[0, 0, 0]]]}
+        with tempfile.TemporaryDirectory() as temporary, ProjectStore.create(
+            Path(temporary) / "region-stream.verdflow", "Region stream",
+        ) as store:
+            importer = RegionSetImportService(store)
+            with patch("verdflow.core.region_import._INLINE_REGION_DOCUMENT_BYTES", 0):
+                document = {"regions": [row], **header}
+                def read(value):
+                    artifact = store.put_bytes(value, media_type="application/json")
+                    return list(importer.read_rows(
+                        artifact.artifact_id, schema="verdflow.regions", label="Region geometry",
+                        fields=frozenset({"id", "bbox"}),
+                    ))
+
+                payload = json.dumps(document).encode()
+                self.assertEqual(read(payload), [{"id": row["id"], "bbox": row["bbox"]}])
+                for invalid, error in (
+                    (payload + b"{}", "not valid"),
+                    (json.dumps({**document, "region_count": 2}).encode(), "count"),
+                    (json.dumps({**document, "offset_applied": True}).encode(), "unshifted"),
+                ):
+                    with self.subTest(error=error), self.assertRaisesRegex(RegionSetImportError, error):
+                        read(invalid)
+
     def test_submits_artifact_only_command_idempotently(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             with ProjectStore.create(
@@ -88,7 +183,8 @@ class RegionSourceTests(unittest.TestCase):
                 "Region source finalize",
             ) as store:
                 assembly, vector_member_id = _assembly(store)
-                runtime = JobRuntime(store)
+                now = datetime(2026, 1, 1, tzinfo=UTC)
+                runtime = JobRuntime(store, clock=SimpleNamespace(now=lambda: now))
                 command_artifact = store.put_bytes(
                     json.dumps(
                         {
@@ -200,6 +296,44 @@ class RegionSourceTests(unittest.TestCase):
                 runtime.succeed(claimed.lease, result_artifact_id=result.artifact_id)
 
                 service = RegionSourceImportService(store)
+                with (
+                    patch.object(store, "create_region_set", side_effect=RegionSetImportError("fixture failure")),
+                    self.assertRaisesRegex(RuntimeError, "fixture failure"),
+                ):
+                    service.finalize(job.job_id)
+                self.assertIsNone(store.project_workflow_state().region_set_id)
+                self.assertIsNone(store.get_region_set_by_job(job.job_id))
+                self.assertEqual(store.list_scene_revisions(), ())
+                def submit(identifier: int):
+                    # Deliberately reverse ID order while keeping one clock tick.
+                    ids = SimpleNamespace(uuid4=lambda: SimpleNamespace(hex=f"{identifier:032x}"))
+                    with patch("verdflow.project_store.jobs.uuid", ids):
+                        return service.submit_confirmation(runtime, job.job_id,
+                            included_region_ids=("region_0001_001",), expected_region_set_id=None)
+
+                worker = RegionConfirmationWorker(runtime)
+                queued = submit(9)
+                self.assertIs(queued.status, JobStatus.QUEUED)
+                self.assertEqual(submit(8).job_id, queued.job_id)
+                self.assertIsNone(store.project_workflow_state().region_set_id)
+                with patch.object(store, "create_region_set", side_effect=RegionSetImportError("fixture failure")):
+                    self.assertIs(worker.run_once().status, JobStatus.FAILED)
+                self.assertIsNone(store.project_workflow_state().region_set_id)
+                self.assertEqual(store.list_scene_revisions(), ())
+                retry = submit(7)
+                self.assertNotEqual(retry.job_id, queued.job_id)
+                self.assertEqual(submit(6).job_id, retry.job_id)
+                worker.request_cancel(retry.job_id)
+                self.assertIs(worker.run_once().status, JobStatus.CANCELLED)
+                self.assertIsNone(store.project_workflow_state().region_set_id)
+                confirmation = submit(5)
+                self.assertNotIn(confirmation.job_id, {queued.job_id, retry.job_id})
+                abandoned = runtime.claim_next("stopped-owner", only_job_id=confirmation.job_id)
+                self.assertIsNotNone(abandoned)
+                now += timedelta(minutes=1)
+                self.assertEqual(runtime.recover_expired().requeued_count, 1)
+                self.assertEqual(worker.run_once().job_id, confirmation.job_id)
+                self.assertIs(runtime.get(confirmation.job_id).status, JobStatus.SUCCEEDED)
                 scene, region_set = service.finalize(job.job_id)
                 repeated_scene, repeated_regions = service.finalize(job.job_id)
 
@@ -215,6 +349,7 @@ class RegionSourceTests(unittest.TestCase):
                 with store.open_artifact(scene.scene_manifest_artifact_id) as stream:
                     manifest = json.load(stream)
                 self.assertIn("region_source_manifest_artifact_id", manifest["facts"])
+                self.assertEqual(manifest["facts"]["region_confirmation_job_id"], confirmation.job_id)
                 self.assertNotIn("material_fact_report_artifact_id", manifest["facts"])
 
 

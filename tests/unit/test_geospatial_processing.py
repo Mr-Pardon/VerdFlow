@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import errno
+from io import BytesIO, StringIO
 import json
 from pathlib import Path
 import sys
 import tempfile
 import unittest
 import subprocess
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -35,6 +38,8 @@ from verdflow.geospatial_worker import package_shapefile, GeospatialDataError  #
 from verdflow.geospatial_worker.processing import (  # noqa: E402
     prepare_regions,
     sample_elevation,
+    write_prepared_regions,
+    write_sampled_elevation,
 )
 
 
@@ -51,6 +56,85 @@ IDENTITY = [
     "geospatial test dependencies are not installed",
 )
 class GeospatialProcessingTests(unittest.TestCase):
+    def test_streamed_geojson_preserves_order_multipart_holes_and_metrics(self) -> None:
+        polygon = [
+            [[0.2, 0.2], [3.8, 0.2], [3.8, 3.8], [0.2, 3.8], [0.2, 0.2]],
+            [[1, 1], [2, 1], [2, 2], [1, 2], [1, 1]],
+        ]
+        separate = [[[4.2, 0], [5, 0], [5, 1], [4.2, 1], [4.2, 0]]]
+        collection = {
+            "features": [
+                {"type": "Feature", "properties": {"name": "Courtyard", "tags": ["a", "b"]},
+                 "geometry": {"type": "MultiPolygon", "coordinates": [polygon, separate]}},
+                {"type": "Feature", "properties": None,
+                 "geometry": {"type": "Polygon", "coordinates": separate}},
+            ],
+            "type": "FeatureCollection",
+            "crs": {"type": "name", "properties": {"name": "local"}},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            vector = root / "regions.geojson"
+            vector.write_text(json.dumps(collection), encoding="utf-8")
+            command = _command(vector, "geojson", _write_raster(root / "elevation.tif"))
+            expected = prepare_regions(command, root)
+            geometry, metrics = StringIO(), StringIO()
+            with patch("verdflow.geospatial_worker.vector_json._SMALL_GEOJSON_BYTES", 0):
+                manifest = write_prepared_regions(command, root, geometry, metrics, lambda *_: None)
+            self.assertEqual(manifest, expected["source_manifest"])
+            self.assertEqual(json.loads(geometry.getvalue()), expected["regions"])
+            self.assertEqual(json.loads(metrics.getvalue()), expected["geometry_metrics"])
+            self.assertEqual(
+                [row["id"] for row in expected["regions"]["regions"]],
+                ["region_0001_001", "region_0001_002", "region_0002_001"],
+            )
+            self.assertEqual(expected["geometry_metrics"]["regions"][0]["hole_count"], 1)
+
+    def test_streamed_geojson_invalid_suffix_publishes_neither_output(self) -> None:
+        from verdflow.geospatial_worker.worker_entry import main
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            vector = root / "regions.geojson"
+            vector.write_text(
+                '{"type":"FeatureCollection","features":[{"type":"Feature","geometry":'
+                '{"type":"Polygon","coordinates":[[[0,0],[2,0],[2,2],[0,2],[0,0]]]}}]}{}',
+                encoding="utf-8",
+            )
+            command = root / "command.json"
+            command.write_text(json.dumps(_command(vector, "geojson", _write_raster(root / "height.tif"))), encoding="utf-8")
+            output, result = root / "outputs", root / "result.json"
+            with (
+                patch("sys.argv", ["worker_entry", "--command", str(command), "--output-dir", str(output), "--result", str(result)]),
+                patch("verdflow.geospatial_worker.vector_json._SMALL_GEOJSON_BYTES", 0),
+                patch("verdflow.geospatial_worker.worker_entry.traceback.print_exc"),
+            ):
+                self.assertEqual(main(), 1)
+            self.assertEqual(json.loads(result.read_text(encoding="utf-8"))["error_code"], "geo_invalid_json")
+            self.assertEqual(list(output.iterdir()), [])
+
+    def test_vector_disk_full_during_streaming_leaves_no_output(self) -> None:
+        from verdflow.geospatial_worker.worker_entry import main
+
+        def fail(_command, _workdir, geometry, metrics, _report):
+            geometry.write("partial geometry")
+            metrics.write("partial metrics")
+            raise OSError(errno.ENOSPC, "injected disk full")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            command = root / "command.json"
+            command.write_text(json.dumps({"operation": "prepare_regions"}), encoding="utf-8")
+            output, result = root / "outputs", root / "result.json"
+            with (
+                patch("sys.argv", ["worker_entry", "--command", str(command), "--output-dir", str(output), "--result", str(result)]),
+                patch("verdflow.geospatial_worker.worker_entry.write_prepared_regions", side_effect=fail),
+                patch("verdflow.geospatial_worker.worker_entry.traceback.print_exc"),
+            ):
+                self.assertEqual(main(), 1)
+            self.assertEqual(json.loads(result.read_text(encoding="utf-8"))["error_code"], "geo_disk_budget")
+            self.assertEqual(list(output.iterdir()), [])
+
     def test_geojson_with_different_crs_metadata_is_not_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -154,6 +238,119 @@ class GeospatialProcessingTests(unittest.TestCase):
             self.assertEqual(caught.exception.code, "geo_point_outside_raster")
             self.assertIn("第 1 个", str(caught.exception))
             self.assertIn("覆盖范围", str(caught.exception))
+
+    def test_chunked_sampling_matches_rasterio_order_with_rotated_pixels(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            transform = from_origin(100, 200, 2, 3) * rasterio.Affine.rotation(17)
+            values = numpy.arange(20, dtype="float32").reshape(4, 5)
+            raster = root / "elevation.tif"
+            with rasterio.open(
+                raster, "w", driver="GTiff", width=5, height=4, count=1,
+                dtype="float32", transform=transform,
+            ) as dataset:
+                dataset.write(values, 1)
+            xy = [transform * pixel for pixel in ((4.5, 3.5), (0.5, 0.5), (2.5, 1.5), (4.5, 3.5))]
+            doc = _point_set([*xy[0], 0.0])
+            doc["points"] = [
+                {**doc["points"][0], "id": f"point-{i}", "generated_position": [x, y, 0.0]}
+                for i, (x, y) in enumerate(xy)
+            ]
+            doc["point_count"] = len(xy)
+            path = root / "points.json"
+            path.write_text(json.dumps(doc), encoding="utf-8")
+            command = _command(root / "unused.geojson", "geojson", raster)
+            command["points_path"] = str(path)
+            command["point_count"] = len(xy)
+            progress = []
+            streamed = BytesIO()
+            with (
+                patch("verdflow.geospatial_worker.processing.ELEVATION_POINT_CHUNK", 2),
+                patch("verdflow.geospatial_worker.processing.ELEVATION_WINDOW_SIZE", 2),
+            ):
+                result = sample_elevation(command, lambda _, done, total: progress.append((done, total)))
+                write_sampled_elevation(command, streamed, lambda *_: None)
+            with rasterio.open(raster) as dataset:
+                expected = [float(z[0]) for z in dataset.sample(xy, indexes=1, masked=True)]
+            self.assertEqual([point["resolved_position"][2] for point in result["points"]], expected)
+            self.assertEqual([point["id"] for point in result["points"]], [p["id"] for p in doc["points"]])
+            self.assertEqual(progress, [(2, 4), (4, 4)])
+            self.assertEqual(
+                streamed.getvalue(),
+                json.dumps(result, sort_keys=True, ensure_ascii=False, allow_nan=False).encode("utf-8"),
+            )
+
+    def test_streamed_worker_does_not_publish_when_later_input_fails(self) -> None:
+        from verdflow.geospatial_worker.worker_entry import main
+
+        for error in ("outside", "trailing_json"):
+            with self.subTest(error=error), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                points = root / "points.json"
+                first = _point_set([0.5, 3.5, 0.0])
+                second = {**first["points"][0], "id": "later"}
+                if error == "outside":
+                    second["generated_position"] = [9.0, 9.0, 0.0]
+                first["points"].append(second)
+                first["point_count"] = 2
+                points.write_text(json.dumps(first) + (" {}" if error == "trailing_json" else ""), encoding="utf-8")
+                command = _command(root / "unused.geojson", "geojson", _write_raster(root / "height.tif"))
+                command.update(operation="sample_elevation", points_path=str(points), point_count=2)
+                command_file = root / "command.json"
+                command_file.write_text(json.dumps(command), encoding="utf-8")
+                output = root / "out"
+                result = root / "result.json"
+                with (
+                    patch("sys.argv", ["worker_entry", "--command", str(command_file), "--output-dir", str(output), "--result", str(result)]),
+                    patch("verdflow.geospatial_worker.processing.ELEVATION_POINT_CHUNK", 1),
+                    patch("verdflow.geospatial_worker.worker_entry.traceback.print_exc"),
+                ):
+                    self.assertEqual(main(), 1)
+                failure = json.loads(result.read_text(encoding="utf-8"))
+                self.assertEqual(failure["status"], "failed")
+                self.assertEqual(list(output.iterdir()), [])
+                if error == "outside":
+                    self.assertEqual(failure["error_code"], "geo_point_outside_raster")
+                    self.assertIn("第 2 个", failure["message"])
+
+    def test_elevation_uses_first_invalid_point_not_raster_window_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            raster = _write_raster(root / "elevation.tif")
+            with rasterio.open(raster, "r+") as dataset:
+                heights = dataset.read(1)
+                heights[3, 3] = float("nan")
+                dataset.write(heights, 1)
+                mask = numpy.full(heights.shape, 255, dtype="uint8")
+                mask[0, 0] = 0
+                dataset.write_mask(mask)
+            points = root / "points.json"
+            command = _command(root / "unused.geojson", "geojson", raster)
+            command.update(points_path=str(points), point_count=3)
+            valid, nonfinite, masked, outside = (
+                [2.5, 2.5, 0], [3.5, 0.5, 0], [0.5, 3.5, 0], [9, 9, 0],
+            )
+            for first, second, code, message in (
+                (nonfinite, masked, "geo_raster_nodata", "高程为空或无效"),
+                (masked, outside, "geo_raster_nodata", "NoData 空洞"),
+                (outside, masked, "geo_point_outside_raster", "超出 TIF 覆盖范围"),
+            ):
+                with self.subTest(first=first, second=second):
+                    document = _point_set(valid)
+                    document["points"] = [
+                        {**document["points"][0], "id": f"p{i}", "generated_position": xyz}
+                        for i, xyz in enumerate((valid, first, second))
+                    ]
+                    document["point_count"] = 3
+                    points.write_text(json.dumps(document), encoding="utf-8")
+                    with (
+                        patch("verdflow.geospatial_worker.processing.ELEVATION_WINDOW_SIZE", 2),
+                        self.assertRaises(GeospatialDataError) as caught,
+                    ):
+                        write_sampled_elevation(command, BytesIO(), lambda *_: None)
+                    self.assertEqual(caught.exception.code, code)
+                    self.assertIn("第 2 个", str(caught.exception))
+                    self.assertIn(message, str(caught.exception))
 
     def test_worker_result_retains_semantic_geometry_error_without_exposing_local_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

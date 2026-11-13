@@ -1,5 +1,7 @@
 """VerdFlow application Core public API."""
 
+from .sampling_bindings import validate_sampling_binding
+
 from typing import TYPE_CHECKING, Any
 
 from .assignment_preview import AssignmentPreviewService
@@ -55,9 +57,14 @@ from .region_import import RegionSetImportError, RegionSetImportService
 from .path_import import PathSetImportService
 from .region_providers import RegionSetProducerDefinition
 from .region_source_import import (
+    REGION_SOURCE_CONFIRM_ACTIVE,
+    REGION_SOURCE_CONFIRM_COMMAND,
+    RegionSelectionRefiner,
     RegionSourceImportError,
     RegionSourceImportService,
+    region_source_revision_lock,
 )
+from .region_confirmation_worker import RegionConfirmationWorker
 from .scene_import import SceneImportError, SceneImportService
 from .service_loop import (
     ServiceCycleResult,
@@ -150,6 +157,7 @@ if TYPE_CHECKING:
     )
 
 __all__ = [
+    "validate_sampling_binding",
     "AssignmentPreviewService",
     "StrategyPreviewPort",
     "StrategyPreviewService",
@@ -219,6 +227,11 @@ __all__ = [
     "RegionExtractionService",
     "RegionSourceImportError",
     "RegionSourceImportService",
+    "RegionSelectionRefiner",
+    "region_source_revision_lock",
+    "REGION_SOURCE_CONFIRM_ACTIVE",
+    "REGION_SOURCE_CONFIRM_COMMAND",
+    "RegionConfirmationWorker",
     "RegionSourceProviderDefinition",
     "RegionSourceRequest",
     "RegionSourceService",

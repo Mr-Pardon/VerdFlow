@@ -25,6 +25,7 @@ from verdflow.contracts import JobInfo  # noqa: E402
 from verdflow.core import (  # noqa: E402
     CommandDocument,
     ElevationProviderDefinition,
+    ExportProviderDefinition,
     JobRuntime,
     RegionExtractionProviderDefinition,
     RegionSetProducerDefinition,
@@ -44,6 +45,7 @@ class _Driver:
         command_types=(
             "verdflow.test.live-region",
             "verdflow.test.live-elevation",
+            "verdflow.test.export",
         ),
     )
 
@@ -92,6 +94,10 @@ class _ExtensionFactory:
                     max_attempts=1,
                 ),
             ),
+            export_providers=(ExportProviderDefinition(
+                "test-export", "1", "test-target", "verdflow.test.export", "1",
+                "application/json", "verdflow.test-output", "1",
+            ),),
         )
 
 
@@ -137,6 +143,8 @@ class CoreHostExtensionTests(unittest.TestCase):
                 self.assertIsNotNone(host.application._region_extraction)
                 self.assertIsNotNone(host.application._elevation_sampling)
                 self.assertIsNotNone(host.application._region_source)
+                self.assertEqual(host.workflows.output_for_target("test-target").provider_id, "test-export")
+                self.assertEqual(host.workflows.output_for_target("dts").kind, "output")
                 with self.assertRaisesRegex(
                     RuntimeError,
                     "not owned by an installed CoreHost extension",

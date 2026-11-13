@@ -78,9 +78,10 @@ class JobRuntimeTests(unittest.TestCase):
                 repeated = runtime.submit(
                     first_command,
                     idempotency_key="request-1",
-                    max_attempts=2,
+                    max_attempts=3,
                 )
                 self.assertEqual(first.job_id, repeated.job_id)
+                self.assertEqual(repeated.max_attempts, 2)
 
                 with self.assertRaises(JobIdempotencyConflictError):
                     runtime.submit(

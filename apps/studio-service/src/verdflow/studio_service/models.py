@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal, NamedTuple
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +43,7 @@ class RegionViewerItem:
     footprint_area_xy: float | None
     bounds: Bounds3D
     footprint_boundary_xyz: tuple[tuple[tuple[float, float, float], ...], ...]
+    boundary_mode: Literal["detail", "overview", "extent"] = "detail"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +51,28 @@ class RegionViewportChunk:
     items: tuple[RegionViewerItem, ...]
     next_after_ordinal: int | None
     truncated: bool
+    overview_recommended: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class RegionSelectionPage:
+    region_ids: tuple[str, ...]
+    next_after_ordinal: int | None
+
+
+class RegionOverviewItem(NamedTuple):
+    region_id: str
+    classification: str | None
+    footprint_area_xy: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class RegionOverview:
+    bounds: Bounds3D
+    width: int
+    height: int
+    pixels: str
+    items: tuple[RegionOverviewItem, ...]
 
 
 @dataclass(frozen=True, slots=True)

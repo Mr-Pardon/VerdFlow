@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from queue import Empty, Queue
 from threading import RLock, Thread
+from time import monotonic
 from typing import Callable, TypeVar, cast
 from uuid import uuid4
 
@@ -33,6 +34,7 @@ from verdflow.contracts import (
 )
 
 from .models import ProjectSessionInfo, ProjectSessionState
+from .source_intake import SourceIntakeStore, SourceIntakeWorker
 
 
 ResultT = TypeVar("ResultT")
@@ -169,6 +171,7 @@ class ProjectRuntime:
         model_api_provider_registry: ModelApiProviderRegistry | None = None,
         model_api_secret_resolver: SecretResolver | None = None,
         extension_factories: tuple[CoreHostExtensionFactory, ...] = (),
+        source_intake: SourceIntakeStore | None = None,
     ) -> None:
         self.session_id = str(uuid4())
         self._config = config
@@ -178,6 +181,7 @@ class ProjectRuntime:
         self._model_api_provider_registry = model_api_provider_registry
         self._model_api_secret_resolver = model_api_secret_resolver
         self._extension_factories = extension_factories
+        self._source_intake = source_intake
         self._queue: Queue[object] = Queue()
         self._ready: Future[ProjectSessionInfo] = Future()
         self._state_lock = RLock()
@@ -470,6 +474,8 @@ class ProjectRuntime:
                     model_api_secret_resolver=self._model_api_secret_resolver,
                     extension_factories=self._extension_factories,
                 )
+            if self._source_intake is not None:
+                host.registry.register(SourceIntakeWorker(host, self._source_intake))
             host.start()
             with self._control_lock:
                 self._cancel_signal = host.service_loop.registry.request_cancel
@@ -486,11 +492,14 @@ class ProjectRuntime:
                 self._info = info
             self._ready.set_result(info)
 
+            next_cycle = monotonic() + self._idle_cycle_seconds
             while True:
-                try:
-                    item = self._queue.get(timeout=self._idle_cycle_seconds)
-                except Empty:
+                if monotonic() >= next_cycle:
                     host.service_loop.run_once()
+                    next_cycle = monotonic() + self._idle_cycle_seconds
+                try:
+                    item = self._queue.get(timeout=max(0.0, next_cycle - monotonic()))
+                except Empty:
                     continue
                 if item is _STOP:
                     break

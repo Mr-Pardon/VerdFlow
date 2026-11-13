@@ -17,7 +17,7 @@ from verdflow.profile_package import ProfilePackageInspection, inspect_role_bind
 from verdflow.strategy_worker import StrategyPackage, open_strategy_package_archive
 
 from .plan_import_library import PlanImportLibrary
-from .resource_downloads import DownloadCancelled, MAX_PACKAGE_BYTES, StarterResource, download_package
+from .resource_downloads import DownloadCancelled, StarterResource, download_package, package_byte_limit
 from .resource_index import (
     IndexedResource, PlanMetadata, ResourceIndex, ResourceSelection, accepts_dependency, choose_strategy, load_index, plan_metadata,
 )
@@ -72,7 +72,7 @@ class PlanImportService(StarterResourceService):
     def _stage(self, source: str, suffix: str) -> Path:
         self._check_cancel()
         path = Path(source).expanduser().resolve(strict=True)
-        limit = 8 * 1024 * 1024 if suffix == ".vfp" else MAX_PACKAGE_BYTES
+        limit = package_byte_limit({".vfp": "plans", ".vfs": "strategies"}[suffix])
         if not path.is_file() or path.stat().st_size > limit:
             raise ValueError("导入文件超出大小限制。")
         if sum(p.stat().st_size for p in Path(self._temporary.name).iterdir()) + path.stat().st_size > 512 * 1024 * 1024:

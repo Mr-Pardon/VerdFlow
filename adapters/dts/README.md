@@ -42,9 +42,12 @@ XML Worker checks immutable Artifact IDs, lineage, Core counts and saved assignm
 hashes, then uses the adapter-internal persisted rendering path (ADR-0007). It does
 not repeat large JSON Schema walks or assignment hashing after Core acceptance.
 Exact point/assignment coverage, finite output values, model names and coordinate
-offset rules are still enforced. The public raw-document renderers retain full
-validation. Terrain/asset selection remains a target-neutral Planting capability;
-an unchanged selection reuses its input without copying or hashing it again.
+offset rules are still enforced. The Worker pairs rows by point order, using a
+temporary index only for older unordered assignments. The staged XML is published
+only after both input documents and the selected record count are verified.
+The public raw-document renderers retain full validation. Terrain/asset selection
+remains a target-neutral Planting capability; the Worker does not create filtered
+PointSet or AssignmentSet copies.
 
 ## 公共入口
 

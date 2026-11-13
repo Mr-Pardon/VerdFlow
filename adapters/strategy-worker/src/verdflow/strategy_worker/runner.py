@@ -2,19 +2,28 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from dataclasses import dataclass
+import errno
 import hashlib
+from itertools import chain
 import json
 import math
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
+from threading import Event
 import time
-from typing import Any, Callable, Collection
+from typing import Any, Callable, Collection, Generator, cast
 
-from verdflow.planting import canonical_json_bytes, validate_point_set
+from verdflow.planting import (
+    PointSetReader, canonical_json_bytes, canonical_point_document, encoded_point_rows,
+    validate_point_header, validate_point_set, validated_point_rows,
+)
 from verdflow.worker_runtime import ProcessTreeGuard
 
 from .errors import (
@@ -26,11 +35,15 @@ from .errors import (
 from .package import StrategyPackage, inspect_strategy_package
 
 
+_IN_MEMORY_RESULT_LIMIT = 256 * 1024**2
+_FREE_DISK_RESERVE = 64 * 1024**2
+
+
 @dataclass(frozen=True)
 class StrategyWorkerConfig:
     python_executable: Path = Path(sys.executable)
     timeout_seconds: float | None = None
-    max_output_bytes: int = 256 * 1024 * 1024
+    max_output_bytes: int | None = None
     poll_interval_seconds: float = 0.1
     termination_grace_seconds: float = 3.0
 
@@ -58,6 +71,34 @@ class StrategyWorker:
         workdir_parent: Path | None = None,
         workdir_prefix: str = "verdflow-strategy-",
     ) -> dict[str, Any]:
+        steps = self.run_steps(
+            package, context, heartbeat=heartbeat,
+            cancellation_requested=cancellation_requested,
+            process_started=process_started, process_finished=process_finished,
+            workdir_parent=workdir_parent, workdir_prefix=workdir_prefix,
+        )
+        try:
+            while True:
+                next(steps)
+                time.sleep(self._config.poll_interval_seconds)
+        except StopIteration as done:
+            return cast(dict[str, Any], done.value)
+        finally:
+            steps.close()
+
+    def run_steps(
+        self,
+        package: StrategyPackage,
+        context: dict[str, Any],
+        *,
+        heartbeat: Callable[[], None] | None = None,
+        cancellation_requested: Callable[[], bool] | None = None,
+        process_started: Callable[[int], None] | None = None,
+        process_finished: Callable[[int | None, bool], None] | None = None,
+        workdir_parent: Path | None = None,
+        workdir_prefix: str = "verdflow-strategy-",
+        normalized_output: Path | None = None,
+    ) -> Generator[None, None, dict[str, Any] | str]:
         current = inspect_strategy_package(package.root)
         if current.package_hash != package.package_hash:
             raise StrategyPackageError(
@@ -72,8 +113,11 @@ class StrategyWorker:
             not math.isfinite(timeout_seconds) or timeout_seconds <= 0
         ):
             raise ValueError("timeout_seconds must be finite and positive, or None")
-        if self._config.max_output_bytes <= 0:
-            raise ValueError("max_output_bytes must be positive")
+        output_limit = self._config.max_output_bytes
+        if output_limit is not None and output_limit <= 0:
+            raise ValueError("max_output_bytes must be positive or None")
+        if output_limit is None and normalized_output is None:
+            output_limit = _IN_MEMORY_RESULT_LIMIT
         if self._config.poll_interval_seconds <= 0:
             raise ValueError("poll_interval_seconds must be positive")
         if self._config.termination_grace_seconds <= 0:
@@ -86,6 +130,7 @@ class StrategyWorker:
             dir=workdir_parent,
         ) as temporary:
             workdir = Path(temporary)
+            _check_disk_budget(workdir)
             staged_root = workdir / "package"
             _stage_verified_package(current, staged_root)
             command_path = workdir / "command.json"
@@ -150,6 +195,7 @@ class StrategyWorker:
                     if process_started is not None:
                         process_started(process.pid)
                     start_gate_path.write_bytes(b"start")
+                    next_disk_check = 0.0
                     while process.poll() is None:
                         if (
                             cancellation_requested is not None
@@ -165,7 +211,8 @@ class StrategyWorker:
                             raise StrategyExecutionCancelled(
                                 "Strategy worker was cancelled"
                             )
-                        if deadline is not None and time.monotonic() >= deadline:
+                        now = time.monotonic()
+                        if deadline is not None and now >= deadline:
                             terminated = True
                             guard.terminate(
                                 process,
@@ -177,9 +224,14 @@ class StrategyWorker:
                                 "Strategy worker exceeded "
                                 f"{self._config.timeout_seconds} seconds"
                             )
+                        if now >= next_disk_check:
+                            _check_disk_budget(workdir)
+                            if output_limit is not None and output_path.is_file() and output_path.stat().st_size > output_limit:
+                                raise StrategyExecutionError("Strategy worker output exceeds configured limit")
+                            next_disk_check = now + 1.0
                         if heartbeat is not None:
                             heartbeat()
-                        time.sleep(self._config.poll_interval_seconds)
+                        yield
                 except BaseException:
                     if process.poll() is None:
                         terminated = True
@@ -207,15 +259,97 @@ class StrategyWorker:
                 )
             if not output_path.is_file():
                 raise StrategyExecutionError("Strategy worker did not produce a PointSet")
-            if output_path.stat().st_size > self._config.max_output_bytes:
+            output_bytes = output_path.stat().st_size
+            if output_limit is not None and output_bytes > output_limit:
                 raise StrategyExecutionError("Strategy worker output exceeds configured limit")
-            try:
-                value = json.loads(output_path.read_text(encoding="utf-8"))
-                return validate_point_set(value)
-            except Exception as error:
-                raise StrategyExecutionError(
-                    f"Strategy worker returned an invalid PointSet: {error}"
-                ) from error
+            if normalized_output is not None:
+                _check_disk_budget(normalized_output.parent, additional_bytes=output_bytes)
+            # Parsing and schema validation can outlast the child process lease.
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                stop = Event()
+                result = executor.submit(_validated_output, output_path, normalized_output, stop=stop)
+                try:
+                    while not result.done():
+                        if cancellation_requested is not None and cancellation_requested():
+                            raise StrategyExecutionCancelled("Strategy worker was cancelled")
+                        if heartbeat is not None:
+                            heartbeat()
+                        yield
+                    if cancellation_requested is not None and cancellation_requested():
+                        raise StrategyExecutionCancelled("Strategy worker was cancelled")
+                    return result.result()
+                finally:
+                    stop.set()
+
+
+def _validated_output(
+    path: Path, normalized_output: Path | None, *, stop: Event | None = None,
+) -> dict[str, Any] | str:
+    next_disk_check = 0.0
+
+    def check_cancelled() -> None:
+        nonlocal next_disk_check
+        if stop is not None and stop.is_set():
+            raise StrategyExecutionCancelled("Strategy worker was cancelled")
+        now = time.monotonic()
+        if now >= next_disk_check:
+            _check_disk_budget(path.parent)
+            if normalized_output is not None and normalized_output.parent != path.parent:
+                _check_disk_budget(normalized_output.parent)
+            next_disk_check = now + 1.0
+
+    try:
+        if normalized_output is None:
+            with path.open(encoding="utf-8") as stream:
+                return validate_point_set(json.load(stream))
+        with path.open("rb") as stream:
+            reader = PointSetReader(stream)
+            rows = reader.rows()
+            first = next(rows, None)
+            if first is None:
+                header = reader.header
+            elif (leading := reader.leading_header) is not None:
+                header = leading
+                rows = chain((first,), rows)
+            else:
+                # Older raw writers may put schema and strategy after the rows.
+                for index, _ in enumerate(rows):
+                    if index % 512 == 0:
+                        check_cancelled()
+                header = reader.header
+                stream.seek(0)
+                reader = PointSetReader(stream)
+                rows = reader.rows()
+            validate_point_header(header)
+            version = header["version"]
+            with tempfile.TemporaryDirectory(prefix="point-verify-", dir=path.parent) as scratch:
+                verified = validated_point_rows(
+                    rows, version=version, kind=header["kind"],
+                    scratch=Path(scratch) / "point-ids.sqlite", on_batch=check_cancelled,
+                )
+                with closing(verified), normalized_output.open("wb") as output:
+                    output.writelines(canonical_point_document(header, encoded_point_rows(verified)))
+            return version
+    except StrategyExecutionCancelled:
+        raise
+    except MemoryError as error:
+        raise StrategyExecutionError(
+            "点位结果校验时内存不足，已停止本次任务。"
+        ) from error
+    except OSError as error:
+        if error.errno == errno.ENOSPC:
+            raise
+        raise StrategyExecutionError(f"Strategy worker output I/O failed: {error}") from error
+    except Exception as error:
+        raise StrategyExecutionError(
+            f"Strategy worker returned an invalid PointSet: {error}"
+        ) from error
+
+
+def _check_disk_budget(path: Path, *, additional_bytes: int = 0) -> None:
+    if shutil.disk_usage(path).free < additional_bytes + _FREE_DISK_RESERVE:
+        raise OSError(errno.ENOSPC, "Insufficient free disk space for strategy output")
+
 
 def _stage_verified_package(package: StrategyPackage, destination: Path) -> None:
     destination.mkdir()

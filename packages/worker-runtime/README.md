@@ -7,19 +7,22 @@
 ## 职责
 
 提供外部 Worker 共用的跨平台进程树约束：Windows Job Object、POSIX process group、
-受控终止和按已验证 PID 回收。它只处理操作系统进程，不认识 Job、Attempt、
+受控终止、按已验证 PID 回收与 Windows 系统内存遥测。它只处理操作系统进程与资源，不认识 Job、Attempt、
 ProjectStore、Blender、Strategy 或 Agent 协议。
 
 ## 公共入口
 
 ```python
-from verdflow.worker_runtime import ProcessTreeGuard, terminate_process_by_pid
+from verdflow.worker_runtime import (
+    ProcessTreeGuard, WindowsMemoryHeadroom, read_windows_memory_headroom, terminate_process_by_pid,
+)
 ```
 
 ## 依赖边界
 
 - 只依赖 Python 标准库。
 - Adapter 负责在调用本包前验证进程身份，并负责 WorkerProcess provenance。
+- Adapter 决定内存预留、并发分配与无遥测时的行为；进程树约束只执行给定额度。
 - Core 和领域包不依赖本包，也不接触 PID 或平台进程句柄。
 
 ## 验证

@@ -14,6 +14,7 @@
 .guide-overview strong { font-size: 14px; margin-bottom: 6px; }
 .guide-overview span { color: var(--color-text-muted); font-size: 13px; }
 .guide-note { color: var(--color-text-muted); }
+.guide-finish-resource { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
 .guide-welcome__footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 12px; padding: 18px 28px; border-top: 1px solid var(--color-border); }
 .guide-welcome__footer > :first-child { margin-right: auto; }
 .guide-coach { position: fixed; right: 24px; bottom: 24px; z-index: 65; width: min(364px, calc(100vw - 32px)); max-height: calc(100dvh - 200px); display: flex; flex-direction: column; color: var(--color-text); background: var(--color-surface); border: 1px solid var(--color-border-strong); border-radius: 8px; box-shadow: 0 8px 38px #153b3029; overflow: hidden; }
@@ -33,7 +34,8 @@
 .guide-readiness svg { flex-shrink: 0; align-self: center; }
 .guide-readiness--ready { color: var(--color-success); }
 .guide-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-.guide-actions .secondary-button { font-size: 12px; min-height: 34px; padding: 7px 10px; }
+.guide-actions :is(.primary-button, .secondary-button) { font-size: 12px; min-height: 34px; padding: 7px 10px; }
+.guide-actions a { text-decoration: none; }
 .guide-coach__footer { display: flex; align-items: center; gap: 10px; padding: 14px 16px; border-top: 1px solid var(--color-border); flex: 0 0 auto; }
 .guide-coach__footer > span { font-size: 11px; color: var(--color-text-muted); margin-right: auto; }
 .guide-coach__footer .primary-button { font-size: 13px; padding: 9px 12px; min-height: 36px; }

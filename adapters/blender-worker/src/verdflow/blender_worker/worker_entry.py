@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sys
 import threading
 import time
+from contextlib import ExitStack, suppress
 from pathlib import Path
+from typing import Callable
 
 import bpy
 
@@ -25,6 +28,7 @@ from verdflow.blender_worker.capabilities import (  # noqa: E402
     save_scene_cache,
     sample_elevation,
 )
+from verdflow.blender_worker.point_transport import POINT_ROWS_ENCODING  # noqa: E402
 
 
 class Cancelled(RuntimeError):
@@ -37,6 +41,10 @@ def atomic_json(path: Path, payload: dict[str, object]) -> None:
         json.dumps(payload, ensure_ascii=False, sort_keys=True),
         encoding="utf-8",
     )
+    replace_json_file(temporary, path)
+
+
+def replace_json_file(temporary: Path, path: Path) -> None:
     deadline = time.monotonic() + 2.0
     while True:
         try:
@@ -47,6 +55,48 @@ def atomic_json(path: Path, payload: dict[str, object]) -> None:
                 temporary.unlink(missing_ok=True)
                 raise
             time.sleep(0.01)
+
+
+def atomic_sampled_points(
+    path: Path,
+    payload: dict[str, object],
+    input_bytes: int,
+    check_cancelled: Callable[[], None],
+    progress: Callable[[float], None],
+) -> None:
+    rows = payload["points"]
+    assert isinstance(rows, list)
+    if len(rows) <= 8192 and input_bytes <= 4 * 1024**2:
+        check_cancelled()
+        atomic_json(path, payload)
+        return
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    encoder = json.JSONEncoder(ensure_ascii=False, sort_keys=True)
+    batch_size = max(1, min(1024, 1024**2 * len(rows) // max(input_bytes, 1)))
+    next_report = time.monotonic() + 1.0
+    try:
+        with temporary.open("w", encoding="utf-8") as stream:
+            stream.write("{")
+            for index, key in enumerate(sorted(payload)):
+                stream.write((", " if index else "") + encoder.encode(key) + ": ")
+                if key != "points":
+                    stream.write(encoder.encode(payload[key]))
+                    continue
+                stream.write("[")
+                for start in range(0, len(rows), batch_size):
+                    check_cancelled()
+                    end = min(start + batch_size, len(rows))
+                    stream.write((", " if start else "") + encoder.encode(rows[start:end])[1:-1])
+                    if time.monotonic() >= next_report:
+                        progress(end / len(rows))
+                        next_report = time.monotonic() + 1.0
+                stream.write("]")
+            stream.write("}")
+        check_cancelled()
+        replace_json_file(temporary, path)
+    finally:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
 
 
 def arguments() -> tuple[Path, Path]:
@@ -146,6 +196,7 @@ def main() -> None:
                 "schema": "verdflow.blender-worker.result",
                 "version": PROTOCOL_VERSION,
                 "status": "failed",
+                "error_code": "BLENDER_DISK_FULL" if isinstance(error, OSError) and error.errno == errno.ENOSPC else None,
                 "error_type": type(error).__name__,
                 "message": str(error),
             },
@@ -353,6 +404,15 @@ def run_operation(
 
     if operation == "sample_elevation":
         points_path = Path(str(command["points_path"]))
+        points_output_path = outputs / "points.json"
+        points_encoding = command.get("points_encoding")
+        if points_encoding is not None and points_encoding != POINT_ROWS_ENCODING:
+            raise ValueError("Unsupported staged PointSet encoding")
+        framed = points_encoding == POINT_ROWS_ENCODING
+        point_header = command.get("points_header")
+        if framed != isinstance(point_header, dict):
+            raise ValueError("Staged PointSet encoding requires its verified header")
+        staged_points = outputs / ".points.streaming.tmp"
         set_progress(state, state_lock, "importing_fbx", 0.1)
 
         def report_progress(completed: int, total: int) -> None:
@@ -367,35 +427,44 @@ def run_operation(
         def report_stage(stage: str, progress: float) -> None:
             set_progress(state, state_lock, stage, progress)
 
-        sampled = sample_elevation(
-            source_path,
-            points_path,
-            source_members=source_members,
-            import_settings=dict(command.get("import_settings", {})),
-            target_object_names=list(
-                command.get("target_object_names", [])
-            ),
-            region_source_member_ids=dict(
-                command.get("region_source_member_ids", {})
-            ),
-            direction=str(command.get("direction", "Z_DOWN")),
-            ray_start_offset=float(
-                command.get("ray_start_offset", 500.0)
-            ),
-            ray_distance=float(command.get("ray_distance", 1500.0)),
-            include_hidden=bool(command.get("include_hidden", False)),
-            progress_callback=report_progress,
-            stage_callback=report_stage,
-            cancel_check=lambda: require_not_cancelled(cancel_path),
-            scene_cache_path=(
-                Path(str(command["scene_cache_path"]))
-                if command.get("scene_cache_path")
-                else None
-            ),
-        )
-        set_progress(state, state_lock, "writing_sampled_points", 0.92)
-        points_output_path = outputs / "points.json"
-        atomic_json(points_output_path, sampled.point_set)
+        try:
+            with ExitStack() as files:
+                point_rows_stream = files.enter_context(points_path.open("rb")) if framed else None
+                sampled_stream = files.enter_context(staged_points.open("w", encoding="utf-8")) if framed else None
+                sampled = sample_elevation(
+                    source_path,
+                    points_path,
+                    source_members=source_members,
+                    import_settings=dict(command.get("import_settings", {})),
+                    target_object_names=list(command.get("target_object_names", [])),
+                    region_source_member_ids=dict(command.get("region_source_member_ids", {})),
+                    direction=str(command.get("direction", "Z_DOWN")),
+                    ray_start_offset=float(command.get("ray_start_offset", 500.0)),
+                    ray_distance=float(command.get("ray_distance", 1500.0)),
+                    include_hidden=bool(command.get("include_hidden", False)),
+                    progress_callback=report_progress,
+                    stage_callback=report_stage,
+                    cancel_check=lambda: require_not_cancelled(cancel_path),
+                    scene_cache_path=Path(str(command["scene_cache_path"])) if command.get("scene_cache_path") else None,
+                    point_header=point_header,
+                    point_rows_stream=point_rows_stream,
+                    sampled_stream=sampled_stream,
+                )
+            set_progress(state, state_lock, "writing_sampled_points", 0.92)
+            if framed:
+                require_not_cancelled(cancel_path)
+                replace_json_file(staged_points, points_output_path)
+            else:
+                assert sampled.point_set is not None
+                atomic_sampled_points(
+                    points_output_path, sampled.point_set, points_path.stat().st_size,
+                    lambda: require_not_cancelled(cancel_path),
+                    lambda fraction: set_progress(state, state_lock, "writing_sampled_points", 0.92 + fraction * 0.06),
+                )
+        finally:
+            if framed:
+                with suppress(OSError):
+                    staged_points.unlink(missing_ok=True)
         return base_result(
             operation,
             source_id=command.get("source_id"),

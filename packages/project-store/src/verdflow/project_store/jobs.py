@@ -118,6 +118,7 @@ class JobRepository:
         self,
         *,
         statuses: tuple[JobStatus, ...] = (),
+        command_types: tuple[str, ...] = (),
         before: JobListCursor | None = None,
         limit: int = 50,
     ) -> JobListPage:
@@ -132,6 +133,10 @@ class JobRepository:
             placeholders = ", ".join("?" for _ in normalized_statuses)
             predicates.append(f"status IN ({placeholders})")
             parameters.extend(item.value for item in normalized_statuses)
+        if command_types:
+            placeholders = ", ".join("?" for _ in command_types)
+            predicates.append(f"command_type IN ({placeholders})")
+            parameters.extend(command_types)
         if before is not None:
             if not isinstance(before, JobListCursor):
                 raise ValueError("before cursor is invalid")
@@ -204,6 +209,7 @@ class JobRepository:
         now: str,
         lease_expires_at: str,
         command_types: tuple[str, ...] | None = None,
+        only_job_id: str | None = None,
     ) -> ClaimedJob | None:
         with self.database.transaction() as connection:
             parameters: list[str] = [JobStatus.QUEUED.value]
@@ -212,6 +218,9 @@ class JobRepository:
                 placeholders = ", ".join("?" for _ in command_types)
                 command_filter = f" AND command_type IN ({placeholders})"
                 parameters.extend(command_types)
+            if only_job_id is not None:
+                command_filter += " AND job_id = ?"
+                parameters.append(only_job_id)
             candidate = connection.execute(
                 f"""
                 SELECT job_id

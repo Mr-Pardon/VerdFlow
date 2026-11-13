@@ -13,6 +13,8 @@ const children = new Set();
 let shuttingDown = false;
 
 const main = async () => {
+  const python = process.env.VERDFLOW_PYTHON?.trim() || "python";
+  checkIsolatedPython(python);
   const defaultLibraryPath = path.join(
     repositoryRoot,
     "_work",
@@ -28,6 +30,7 @@ const main = async () => {
       libraryPath,
       path.resolve(defaultLibraryPath),
       pythonPath,
+      python,
     );
   }
   await mkdir(libraryPath, { recursive: true });
@@ -44,7 +47,7 @@ const main = async () => {
   print("studio", studioUrl);
 
   const localApi = spawnTracked(
-    process.env.VERDFLOW_PYTHON?.trim() || "python",
+    python,
     [
       "-m",
       "verdflow.local_api",
@@ -54,6 +57,7 @@ const main = async () => {
       "127.0.0.1",
       "--port",
       String(apiPort),
+      ...await devImageryArguments(),
     ],
     {
       cwd: repositoryRoot,
@@ -79,7 +83,6 @@ const main = async () => {
       "--filter",
       "@verdflow/studio",
       "dev",
-      "--",
       "--host",
       "127.0.0.1",
       "--port",
@@ -108,15 +111,43 @@ const main = async () => {
   process.exitCode = exitCode ?? 0;
 };
 
+const devImageryArguments = async () => {
+  if (process.env.VERDFLOW_IMAGERY_MODEL_PATH || process.env.VERDFLOW_IMAGERY_PYTHON) return [];
+  const trialRoot = path.join(repositoryRoot, "_work", "imagery-green-assessment");
+  const model = path.join(trialRoot, "semantic-models", "satlens-segformer", "segformer-probabilities.onnx");
+  const python = path.join(trialRoot, ".venv-onnx-only", "Scripts", "python.exe");
+  const files = await Promise.all([model, python].map(file => stat(file).catch(() => null)));
+  return files.every(file => file?.isFile()) ? ["--imagery-model", model, "--imagery-python", python] : [];
+};
+
+const checkIsolatedPython = (python) => {
+  const probe = spawnSync(
+    python,
+    ["-I", "-c", "import sys; print(sys.executable, flush=True); import ijson"],
+    { cwd: repositoryRoot, encoding: "utf8", windowsHide: true },
+  );
+  if (probe.error) {
+    throw new Error(`Could not start development Python (${python}): ${probe.error.message}`);
+  }
+  if (probe.status === 0) return;
+  const executable = probe.stdout?.trim() || python;
+  throw new Error(
+    `Python (${executable}) cannot import ijson in isolated mode. ` +
+      'With that interpreter, run: python -I -m pip install --no-user "ijson>=3.4.0.post0,<4". ' +
+      "Alternatively, set VERDFLOW_PYTHON to an interpreter with this dependency installed. " +
+      `\n${probe.stderr?.trim() || `Python exit code: ${probe.status}`}`,
+  );
+};
+
 const resetIncompatibleDefaultLibrary = async (
   libraryPath,
   expectedDefaultPath,
   pythonPath,
+  python,
 ) => {
   if (path.resolve(libraryPath) !== expectedDefaultPath) {
     throw new Error("Refusing to reset a development library outside _work/studio-dev");
   }
-  const python = process.env.VERDFLOW_PYTHON?.trim() || "python";
   const probe = spawnSync(
     python,
     [

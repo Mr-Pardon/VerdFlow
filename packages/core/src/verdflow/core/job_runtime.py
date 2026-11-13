@@ -84,6 +84,7 @@ class JobRuntime:
         worker_id: str,
         *,
         command_types: tuple[str, ...] | None = None,
+        only_job_id: str | None = None,
     ) -> ClaimedJob | None:
         self._require_text(worker_id, "worker_id")
         if command_types is not None:
@@ -97,6 +98,7 @@ class JobRuntime:
             now=now.isoformat(),
             lease_expires_at=(now + self.lease_duration).isoformat(),
             command_types=command_types,
+            only_job_id=only_job_id,
         )
 
     def heartbeat(

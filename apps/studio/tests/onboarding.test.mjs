@@ -82,6 +82,8 @@ test("skip survives restart, manual navigation collapses, page registrations cle
   const state = mount();
   try {
     await state.guide.start();
+    await state.guide.next();
+    await state.guide.next();
     const old = state.guide.registerPage("assets", () => ({ ready: false, status: "empty" }));
     const remove = state.guide.registerPage("assets", () => ({ ready: true, status: "loaded" }));
     old(); assert.equal(state.guide.page.value.status, "loaded");
@@ -91,7 +93,7 @@ test("skip survives restart, manual navigation collapses, page registrations cle
     assert.deepEqual(state.guide.progress.value.skipped, ["assets"]);
     state.path.value = "/dts/realtime"; await flush();
     assert.equal(state.guide.surface.value, "collapsed");
-    assert.equal(state.calls.length, 2);
+    assert.equal(state.calls.length, 4);
     const saved = state.data.get(guideStorageKey);
     const restored = mount({ storage: { getItem: () => saved, setItem() {} } });
     try { assert.equal(restored.guide.surface.value, "collapsed"); assert.equal(restored.guide.step.value.id, "strategies"); assert.deepEqual(restored.calls, []); }
@@ -106,6 +108,8 @@ test("business actions require an explicit click and prevent advancing while bus
     const action = { label: "Import", run: () => { executed++; return new Promise(done => { resolve = done; }); } };
     state.guide.registerPage("assets", () => ({ ready: false, status: "empty", actions: [action] }));
     await state.guide.start();
+    await state.guide.next();
+    await state.guide.next();
     assert.equal(executed, 0);
     await state.guide.run({ ...action, disabled: true }); assert.equal(executed, 0);
     const running = state.guide.run(action);
@@ -135,10 +139,10 @@ test("tour completion records skipped steps without asserting environment readin
     }
     assert.equal(state.guide.surface.value, "finish");
     assert.equal(state.guide.progress.value.status, "completed");
-    assert.equal(state.guide.progress.value.skipped.length, 7);
+    assert.equal(state.guide.progress.value.skipped.length, guideSteps.length);
     assert.ok(!state.calls.some(path => path.includes("realtime")));
     state.guide.open(); await state.guide.start();
-    assert.equal(state.guide.step.value.id, "assets");
+    assert.equal(state.guide.step.value.id, "runtimes");
     assert.deepEqual(state.guide.progress.value.skipped, []);
   } finally { state.app.unmount(); }
 });
@@ -154,9 +158,51 @@ test("existing setup detection includes both catalogs, user configuration and pr
 });
 
 test("author introductions distinguish optional agent tools from importable packages", () => {
-  assert.match(guideSteps[0].author.description, /Agent.*\.vfa/);
-  assert.match(guideSteps[1].author.description, /Agent.*\.vfs/);
-  for (const step of guideSteps.slice(0, 2)) assert.match(step.author.description, /ZIP.*不是/);
+  const assets = guideSteps.find(step => step.id === "assets");
+  const strategies = guideSteps.find(step => step.id === "strategies");
+  assert.match(assets.author.description, /Agent.*\.vfa/);
+  assert.match(strategies.author.description, /Agent.*\.vfs/);
+  for (const step of [assets, strategies]) assert.match(step.author.description, /ZIP.*不是/);
+});
+
+test("workflow setup precedes resources, and either can be left for later", async () => {
+  const state = mount();
+  try {
+    await state.guide.start();
+    assert.deepEqual(state.calls, ["/settings"]);
+    state.guide.setWorkflow("fbx");
+    await state.guide.next(true);
+    assert.equal(state.path.value, "/resources");
+    assert.equal(state.guide.page.value, undefined);
+    state.path.value = "/resources/sample";
+    await flush();
+    assert.equal(state.guide.surface.value, "collapsed");
+    await state.guide.go("resources");
+    await state.guide.next();
+    assert.equal(state.path.value, "/assets");
+    assert.deepEqual(state.guide.progress.value.visited, ["runtimes", "resources"]);
+    assert.deepEqual(state.guide.progress.value.skipped, ["runtimes"]);
+    assert.equal(state.guide.progress.value.workflow, "fbx");
+  } finally { state.app.unmount(); }
+});
+
+test("adding a first step preserves paused and completed v1 progress", async () => {
+  for (const status of ["paused", "completed"]) {
+    const saved = JSON.stringify({ ...initialProgress(), status, step: "strategies", visited: ["assets"] });
+    const state = mount({ storage: { getItem: () => saved, setItem() {} } });
+    try {
+      state.connected.value = true;
+      await flush();
+      assert.deepEqual(state.calls, []);
+      assert.equal(state.guide.surface.value, status === "paused" ? "collapsed" : "hidden");
+      assert.equal(state.guide.step.value.id, "strategies");
+      assert.deepEqual(state.guide.progress.value.visited, ["assets"]);
+      if (status === "paused") {
+        await state.guide.start();
+        assert.equal(state.path.value, "/strategies");
+      }
+    } finally { state.app.unmount(); }
+  }
 });
 
 test("blocked navigation and unavailable storage keep the guide usable", async () => {

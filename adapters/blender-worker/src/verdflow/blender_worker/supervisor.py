@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import threading
 import time
@@ -36,6 +38,7 @@ from verdflow.worker_runtime import ProcessTreeGuard, terminate_process_by_pid
 
 from .algorithms import validate_rule_pack
 from .asset_libraries import BlenderAssetLibraryRegistry
+from .point_transport import POINT_ROWS_ENCODING, stage_point_rows
 from .protocol import (
     BLENDER_EXTRACT_REGIONS_COMMAND,
     BLENDER_INSPECT_ASSET_LIBRARY_COMMAND,
@@ -58,6 +61,14 @@ BLOCKING_WORKER_STAGES = {
     "building_elevation_bvh",
     "opening_asset_library",
 }
+_INLINE_POINTSET_BYTES = 64 * 1024**2
+_DISK_FULL = (
+    "BLENDER_DISK_FULL", "项目磁盘空间不足，Blender 任务未发布结果。项目已保留，请释放空间后重试。", True,
+)
+
+
+class _CancelledDuringTransfer(Exception):
+    pass
 
 
 class BlenderWorkerSupervisor:
@@ -156,6 +167,7 @@ class BlenderWorkerSupervisor:
 
         stdout_stream = stdout_path.open("wb")
         stderr_stream = stderr_path.open("wb")
+        check_transfer = self._transfer_checkpoint(lease)
         try:
             self.runtime.heartbeat(
                 lease,
@@ -170,7 +182,9 @@ class BlenderWorkerSupervisor:
                 claimed.job.command.command_type,
                 control_dir,
                 lease=lease,
+                check_transfer=check_transfer,
             )
+            check_transfer()
             job_progress = max(job_progress, 0.02)
             self.runtime.heartbeat(
                 lease,
@@ -230,6 +244,7 @@ class BlenderWorkerSupervisor:
             launched_at = time.monotonic()
             ready_at: float | None = None
             last_heartbeat_at = launched_at
+            last_progress_at = launched_at
             heartbeat_sequence = -1
             progress_sequence = 0
             last_worker_stage = (
@@ -273,6 +288,7 @@ class BlenderWorkerSupervisor:
                     )
                     ready_at = now
                     last_heartbeat_at = now
+                    last_progress_at = now
 
                 progress_dir = control_dir / "progress-events"
                 if ready_at is not None and progress_dir.is_dir():
@@ -294,7 +310,10 @@ class BlenderWorkerSupervisor:
                             raise BlenderWorkerError(
                                 "Blender progress moved backwards"
                             )
-                        last_worker_stage = str(update["stage"])
+                        stage = str(update["stage"])
+                        if stage != last_worker_stage or next_value > job_progress:
+                            last_progress_at = now
+                        last_worker_stage = stage
                         self.runtime.heartbeat(
                             lease,
                             progress=next_value,
@@ -314,7 +333,6 @@ class BlenderWorkerSupervisor:
                     if sequence > heartbeat_sequence:
                         heartbeat_sequence = sequence
                         last_heartbeat_at = now
-                        last_worker_stage = str(heartbeat["stage"])
                         heartbeat_time = _now_text()
                         self.runtime.store.heartbeat_worker_process(
                             lease.job_id,
@@ -324,18 +342,15 @@ class BlenderWorkerSupervisor:
                         if progress_dir.is_dir():
                             self.runtime.heartbeat(lease)
                         else:
+                            stage = str(heartbeat["stage"])
+                            next_value = max(job_progress, float(heartbeat["progress"]))
+                            if stage != last_worker_stage or next_value > job_progress:
+                                last_progress_at = now
+                            last_worker_stage = stage
                             self.runtime.heartbeat(
-                                lease,
-                                progress=max(
-                                    job_progress,
-                                    float(heartbeat["progress"]),
-                                ),
-                                stage=str(heartbeat["stage"]),
+                                lease, progress=next_value, stage=stage,
                             )
-                            job_progress = max(
-                                job_progress,
-                                float(heartbeat["progress"]),
-                            )
+                            job_progress = next_value
                         last_lease_refresh_at = now
 
                 if now - last_lease_refresh_at >= lease_refresh_interval:
@@ -356,7 +371,7 @@ class BlenderWorkerSupervisor:
                     break
                 if (
                     ready_at is not None
-                    and now - last_heartbeat_at
+                    and now - max(last_heartbeat_at, last_progress_at)
                     > (
                         self.config.blocking_operation_timeout_seconds
                         if last_worker_stage in BLOCKING_WORKER_STAGES
@@ -371,8 +386,19 @@ class BlenderWorkerSupervisor:
                     final_process_status = WorkerProcessStatus.TERMINATED
                     break
                 if (
-                    now - launched_at
-                    > self.config.execution_timeout_seconds
+                    ready_at is not None
+                    and now - last_progress_at > self.config.blocking_operation_timeout_seconds
+                ):
+                    termination = (
+                        "BLENDER_NO_PROGRESS",
+                        f"Blender did not advance in stage {last_worker_stage}",
+                        True,
+                    )
+                    final_process_status = WorkerProcessStatus.TERMINATED
+                    break
+                if (
+                    self.config.execution_timeout_seconds is not None
+                    and now - launched_at > self.config.execution_timeout_seconds
                 ):
                     termination = (
                         "BLENDER_EXECUTION_TIMEOUT",
@@ -390,12 +416,10 @@ class BlenderWorkerSupervisor:
                 )
             else:
                 process.wait()
+        except _CancelledDuringTransfer:
+            cancelled = True
         except Exception as error:
-            termination = (
-                "BLENDER_SUPERVISOR_ERROR",
-                str(error),
-                True,
-            )
+            termination = _disk_failure(error) or ("BLENDER_SUPERVISOR_ERROR", str(error), True)
             final_process_status = WorkerProcessStatus.TERMINATED
             if process is not None and process.poll() is None:
                 guard.terminate(
@@ -437,19 +461,18 @@ class BlenderWorkerSupervisor:
                 )
             result_path = control_dir / "result.json"
             if exit_code != 0 or not result_path.is_file():
-                message = (
-                    f"Blender exited with code {exit_code} "
-                    "without a valid result"
+                code, message, retryable = _reported_disk_failure(result_path) or (
+                    "BLENDER_PROCESS_FAILED", f"Blender exited with code {exit_code} without a valid result", True,
                 )
                 return self.runtime.fail(
                     lease,
                     JobErrorInfo(
-                        code="BLENDER_PROCESS_FAILED",
+                        code=code,
                         message=message,
-                        retryable=True,
+                        retryable=retryable,
                         diagnostic_artifact_id=self._diagnostic_artifact(
                             control_dir,
-                            "BLENDER_PROCESS_FAILED",
+                            code,
                             message,
                             exit_code,
                         ),
@@ -460,16 +483,18 @@ class BlenderWorkerSupervisor:
                 "verdflow.blender-worker.result",
             )
             if result.get("status") != "succeeded":
-                message = str(result.get("message", "Blender worker failed"))
+                code, message, retryable = _reported_failure(result) or (
+                    "BLENDER_OPERATION_FAILED", str(result.get("message", "Blender worker failed")), False,
+                )
                 return self.runtime.fail(
                     lease,
                     JobErrorInfo(
-                        code="BLENDER_OPERATION_FAILED",
+                        code=code,
                         message=message,
-                        retryable=False,
+                        retryable=retryable,
                         diagnostic_artifact_id=self._diagnostic_artifact(
                             control_dir,
-                            "BLENDER_OPERATION_FAILED",
+                            code,
                             message,
                             exit_code,
                         ),
@@ -493,25 +518,31 @@ class BlenderWorkerSupervisor:
                 result,
                 job_id=lease.job_id,
                 attempt_number=lease.attempt_count,
+                check_transfer=check_transfer,
             )
+            check_transfer()
             return self.runtime.succeed(
                 lease,
                 result_artifact_id=result_artifact_id,
             )
+        except _CancelledDuringTransfer:
+            return self.runtime.acknowledge_cancel(lease)
         except Exception as error:
             current = self.runtime.get(lease.job_id)
             if current.status is not JobStatus.RUNNING:
                 raise
-            message = str(error) or type(error).__name__
+            code, message, retryable = _disk_failure(error) or (
+                "BLENDER_RESULT_INVALID", str(error) or type(error).__name__, False,
+            )
             return self.runtime.fail(
                 lease,
                 JobErrorInfo(
-                    code="BLENDER_RESULT_INVALID",
+                    code=code,
                     message=message,
-                    retryable=False,
+                    retryable=retryable,
                     diagnostic_artifact_id=self._diagnostic_artifact(
                         control_dir,
-                        "BLENDER_RESULT_INVALID",
+                        code,
                         message,
                         exit_code,
                     ),
@@ -548,7 +579,9 @@ class BlenderWorkerSupervisor:
             expected_version = WORKER_PROTOCOL_VERSION
         if command.get("schema") != expected_schema:
             raise BlenderWorkerError("Blender command schema is unsupported")
-        if str(command.get("version")) != expected_version:
+        if str(command.get("version")) != expected_version and not (
+            command_type == BLENDER_SAMPLE_ELEVATION_COMMAND and str(command.get("version")) == "2"
+        ):
             raise BlenderWorkerError("Blender command version is unsupported")
         return command
 
@@ -559,6 +592,7 @@ class BlenderWorkerSupervisor:
         control_dir: Path,
         *,
         lease: Any | None = None,
+        check_transfer: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         expected_operation = _operation_for_command_type(command_type)
         if command.get("operation") != expected_operation:
@@ -573,6 +607,8 @@ class BlenderWorkerSupervisor:
                 "scene_cache_path",
                 "rule_pack_path",
                 "points_path",
+                "points_encoding",
+                "points_header",
                 "library_path",
             )
         ):
@@ -626,6 +662,7 @@ class BlenderWorkerSupervisor:
                 source.source_id,
                 inputs,
                 lease=lease,
+                check_transfer=check_transfer,
             )
         elif source.kind is SourceKind.FBX:
             source_path = inputs / "source.fbx"
@@ -634,6 +671,7 @@ class BlenderWorkerSupervisor:
             self.runtime.store.materialize_artifact(
                 source_artifact_id,
                 source_path,
+                on_chunk=check_transfer,
             )
             if lease is not None:
                 self.runtime.heartbeat(lease)
@@ -645,6 +683,12 @@ class BlenderWorkerSupervisor:
         prepared["source_name"] = source.original_name
         option_source = command
         if expected_operation == "sample_elevation":
+            if str(command.get("version")) == "2":
+                from verdflow.contracts import SamplingBinding
+                binding = SamplingBinding.from_document(command["sampling_binding"])
+                if (binding.source.kind != "scene" or binding.source.source_id != source_id
+                        or binding.source.scene_revision_id != command.get("scene_revision_id")):
+                    raise BlenderWorkerError("Blender sampling requires its explicitly bound prepared scene")
             options = command.get("options", {})
             if not isinstance(options, dict):
                 raise BlenderWorkerError("options must be an object")
@@ -776,11 +820,15 @@ class BlenderWorkerSupervisor:
                 raise BlenderWorkerError(
                     "Elevation input Artifact must be verdflow.points v2"
                 )
-            points_path = inputs / "points.json"
-            self.runtime.store.materialize_artifact(
-                points_artifact_id,
-                points_path,
-            )
+            if points_artifact.byte_size > _INLINE_POINTSET_BYTES:
+                points_path = inputs / "point-rows.ndjson"
+                prepared["points_header"] = self._stage_large_point_set(
+                    points_artifact_id, parent.point_count, points_path, check_transfer,
+                )
+                prepared["points_encoding"] = POINT_ROWS_ENCODING
+            else:
+                points_path = inputs / "points.json"
+                self.runtime.store.materialize_artifact(points_artifact_id, points_path, on_chunk=check_transfer)
             prepared["points_path"] = str(points_path)
             if source.kind is SourceKind.ASSEMBLY:
                 regions = self.runtime.store.list_regions(
@@ -816,6 +864,23 @@ class BlenderWorkerSupervisor:
                 if field in option_source:
                     prepared[field] = option_source[field]
         return prepared
+
+    def _stage_large_point_set(
+        self, artifact_id: str, point_count: int, path: Path, check_transfer: Callable[[], None] | None,
+    ) -> dict[str, Any]:
+        from verdflow.planting import PointSetReader, validate_point_header
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with self.runtime.store.open_artifact(artifact_id) as source, path.open(
+            "w", encoding="utf-8", newline="\n",
+        ) as output:
+            reader = PointSetReader(source, expected_point_count=point_count)
+            stage_point_rows(output, reader.rows(), check_transfer or (lambda: None))
+            header = reader.header
+            validate_point_header(header)
+            if header["kind"] != "generated" or header["resolution_policy"] != "generated_position":
+                raise BlenderWorkerError("Elevation input must use generated positions")
+            return header
 
     def _scene_cache_for_revision(self, scene_revision: Any) -> Path | None:
         if self.config.scene_cache_root is None:
@@ -873,6 +938,7 @@ class BlenderWorkerSupervisor:
         inputs: Path,
         *,
         lease: Any | None = None,
+        check_transfer: Callable[[], None] | None = None,
     ) -> list[dict[str, object]]:
         staged: list[dict[str, object]] = []
         for member in self.runtime.store.list_source_assembly_members(
@@ -893,6 +959,7 @@ class BlenderWorkerSupervisor:
             self.runtime.store.materialize_artifact(
                 source.artifact_id,
                 source_path,
+                on_chunk=check_transfer,
             )
             if lease is not None:
                 self.runtime.heartbeat(lease)
@@ -918,6 +985,7 @@ class BlenderWorkerSupervisor:
         *,
         job_id: str,
         attempt_number: int,
+        check_transfer: Callable[[], None] | None = None,
     ) -> str:
         descriptors = result.get("output_files", [])
         if not isinstance(descriptors, list):
@@ -960,6 +1028,7 @@ class BlenderWorkerSupervisor:
                 media_type=media_type,
                 schema_id=schema_id,
                 schema_version=schema_version,
+                on_chunk=check_transfer,
             )
             registered.append(
                 {
@@ -1048,6 +1117,23 @@ class BlenderWorkerSupervisor:
             self._cancel_requests.remove(job_id)
             return True
 
+    def _transfer_checkpoint(self, lease: Any) -> Callable[[], None]:
+        last = time.monotonic()
+        interval = min(1.0, self.runtime.lease_duration.total_seconds() / 3)
+
+        def check() -> None:
+            nonlocal last
+            if self._take_cancel_request(lease.job_id):
+                if self.runtime.get(lease.job_id).status is JobStatus.RUNNING:
+                    self.runtime.request_cancel(lease.job_id)
+                raise _CancelledDuringTransfer
+            now = time.monotonic()
+            if now - last >= interval:
+                self.runtime.heartbeat(lease)
+                last = now
+
+        return check
+
     def _remove_attempt_control_dirs(
         self,
         job_id: str,
@@ -1064,7 +1150,7 @@ class BlenderWorkerSupervisor:
         code: str,
         message: str,
         exit_code: int | None,
-    ) -> str:
+    ) -> str | None:
         payload = {
             "schema": "verdflow.blender-worker.diagnostic",
             "version": WORKER_PROTOCOL_VERSION,
@@ -1082,19 +1168,41 @@ class BlenderWorkerSupervisor:
                 )
             except (OSError, json.JSONDecodeError):
                 pass
-        artifact = self.runtime.store.put_bytes(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-            ).encode("utf-8"),
-            media_type=(
-                "application/vnd.verdflow.blender-worker-diagnostic+json"
-            ),
-            schema_id="verdflow.blender-worker.diagnostic",
-            schema_version=WORKER_PROTOCOL_VERSION,
-        )
+        try:
+            artifact = self.runtime.store.put_bytes(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                ).encode("utf-8"),
+                media_type="application/vnd.verdflow.blender-worker-diagnostic+json",
+                schema_id="verdflow.blender-worker.diagnostic",
+                schema_version=WORKER_PROTOCOL_VERSION,
+            )
+        except (OSError, sqlite3.OperationalError):
+            return None
         return artifact.artifact_id
+
+
+def _disk_failure(error: Exception) -> tuple[str, str, bool] | None:
+    if ((isinstance(error, OSError) and error.errno == errno.ENOSPC)
+            or (isinstance(error, sqlite3.Error) and getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_FULL)):
+        return _DISK_FULL
+    return None
+
+
+def _reported_disk_failure(result_path: Path) -> tuple[str, str, bool] | None:
+    if not result_path.is_file():
+        return None
+    try:
+        result = _read_protocol_json(result_path, "verdflow.blender-worker.result")
+    except (OSError, BlenderWorkerError, ValueError):
+        return None
+    return _reported_failure(result)
+
+
+def _reported_failure(result: dict[str, Any]) -> tuple[str, str, bool] | None:
+    return _DISK_FULL if result.get("status") == "failed" and result.get("error_code") == _DISK_FULL[0] else None
 
 
 def _blender_environment() -> dict[str, str]:
@@ -1266,10 +1374,13 @@ def _required_text(payload: dict[str, Any], field: str) -> str:
 
 def _tail(path: Path, limit: int = 12000) -> str:
     try:
-        data = path.read_bytes()
+        with path.open("rb") as stream:
+            size = stream.seek(0, os.SEEK_END)
+            stream.seek(max(0, size - limit))
+            data = stream.read(limit)
     except OSError:
         return ""
-    return data[-limit:].decode("utf-8", errors="replace")
+    return data.decode("utf-8", errors="replace")
 
 
 def _now_text() -> str:

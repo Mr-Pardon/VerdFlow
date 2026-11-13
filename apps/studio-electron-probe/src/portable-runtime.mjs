@@ -19,6 +19,7 @@ export const portableLayout = ({ executablePath, resourcesPath, dataRootPath }) 
     resourcesPath: resolvedResources,
     rendererEntryPath: path.join(resolvedResources, "studio", "index.html"),
     pythonExecutablePath: path.join(resolvedResources, "python", "python.exe"),
+    imageryModelPath: path.join(resolvedResources, "imagery", "segformer-probabilities.onnx"),
     userDataPath,
     electronDataPath: path.join(userDataPath, "Electron"),
     libraryPath: path.join(userDataPath, "Library"),

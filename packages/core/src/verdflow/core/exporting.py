@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from verdflow.contracts import (
+    CapabilityRef,
     AssetAssignmentSetInfo,
     CompositionExportInputInfo,
     CompositionExportRecordInfo,
@@ -21,7 +22,13 @@ from verdflow.contracts import (
     PointSetInfo,
     PointSetKind,
 )
-from verdflow.planting import canonical_json_bytes, semantic_hash, normalize_asset_selection
+from verdflow.planting import (
+    canonical_json_bytes,
+    normalize_asset_selection,
+    output_row_selected,
+    paired_planting_rows,
+    semantic_hash,
+)
 from verdflow.project_store import ProjectStore
 
 from .job_runtime import JobRuntime
@@ -54,6 +61,7 @@ class OutputExportRequest:
     offset: tuple[float, float, float]
     selected_asset_ids: tuple[str, ...] | None = None
     require_terrain_hit: bool = False
+    capability: CapabilityRef | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +79,7 @@ class CompositionOutputExportRequest:
     provider_id: str
     offset: tuple[float, float, float]
     inputs: tuple[CompositionOutputExportInput, ...]
+    capability: CapabilityRef | None = None
 
 
 class OutputExportService:
@@ -110,21 +119,14 @@ class OutputExportService:
                 "asset_assignment_set_id",
             )
         )
-        points, assignments = self._validate_assignment_compatibility(point_set, assignment)
+        self._validate_assignment_compatibility(point_set, assignment)
         selected = normalize_asset_selection(request.selected_asset_ids)
-        expected_count = points["point_count"]
-        if selected is not None:
-            selected_set = set(selected)
-            available = {row["asset_id"] for row in assignments["assignments"]}
-            unknown = selected_set - available
-            if unknown:
-                raise ValueError("Output references unknown assets: " + ", ".join(sorted(unknown)))
-            expected_count = sum(row["asset_id"] in selected_set for row in assignments["assignments"])
         provider = self._providers.get(
             self._required(request.provider_id, "provider_id")
         )
         if provider is None:
             raise ValueError(f"Export provider is not registered: {request.provider_id}")
+        self._validate_capability(request.capability, provider)
         if provider.target_type != assignment.target_type:
             raise ValueError("Export provider target differs from AssignmentSet")
         if selected is not None and not provider.supports_asset_selection:
@@ -134,13 +136,7 @@ class OutputExportService:
         if request.require_terrain_hit:
             if not provider.supports_terrain_hit_selection:
                 raise ValueError("Export provider does not support terrain hit selection")
-            eligible = {point["id"] for point in points["points"]
-                        if point.get("terrain_sample", {}).get("hit") is True}
-            expected_count = sum(row["point_id"] in eligible and
-                                 (selected is None or row["asset_id"] in selected)
-                                 for row in assignments["assignments"])
-            if not expected_count:
-                raise ValueError("No terrain hits are available for export")
+        expected_count = self._selected_count(point_set, assignment, selected, request.require_terrain_hit)
         binding = self._store.get_effective_binding_snapshot(
             assignment.effective_binding_snapshot_id
         )
@@ -307,6 +303,7 @@ class OutputExportService:
             raise ValueError(
                 f"Export provider is not registered: {request.provider_id}"
             )
+        self._validate_capability(request.capability, provider)
         command_inputs: list[dict[str, Any]] = []
         expected_count = 0
         seen: set[str] = set()
@@ -332,33 +329,15 @@ class OutputExportService:
             assignment = self._store.get_asset_assignment_set(
                 item.asset_assignment_set_id
             )
-            points, assignments = self._validate_assignment_compatibility(
-                point_set, assignment
-            )
+            self._validate_assignment_compatibility(point_set, assignment)
             if provider.target_type != assignment.target_type:
                 raise ValueError(
                     "Export provider target differs from a batch AssignmentSet"
                 )
             selected = normalize_asset_selection(item.selected_asset_ids)
-            count = points["point_count"]
-            if selected is not None:
-                if not provider.supports_asset_selection:
-                    raise ValueError(
-                        "Export provider does not support asset selection"
-                    )
-                available = {
-                    row["asset_id"] for row in assignments["assignments"]
-                }
-                unknown = set(selected) - available
-                if unknown:
-                    raise ValueError(
-                        "Output references unknown assets: "
-                        + ", ".join(sorted(unknown))
-                    )
-                count = sum(
-                    row["asset_id"] in set(selected)
-                    for row in assignments["assignments"]
-                )
+            if selected is not None and not provider.supports_asset_selection:
+                raise ValueError("Export provider does not support asset selection")
+            count = self._selected_count(point_set, assignment, selected, False)
             binding = self._store.get_effective_binding_snapshot(
                 assignment.effective_binding_snapshot_id
             )
@@ -433,11 +412,11 @@ class OutputExportService:
             raise OutputExportError(f"{label} must be a JSON object")
         return value
 
+    @staticmethod
     def _validate_assignment_compatibility(
-        self,
         point_set: PointSetInfo,
         assignment: AssetAssignmentSetInfo,
-    ) -> tuple[dict[str, Any], dict[str, Any]]:
+    ) -> None:
         if assignment.point_set_id not in {
             point_set.point_set_id,
             point_set.parent_point_set_id,
@@ -448,37 +427,55 @@ class OutputExportService:
             )
         if assignment.point_count != point_set.point_count:
             raise ValueError("AssignmentSet point count differs from export PointSet")
-        point_document = self._read_json(
-            point_set.point_artifact_id,
-            "Export PointSet",
-        )
-        assignment_document = self._read_json(
-            assignment.assignment_artifact_id,
-            "AssetAssignmentSet",
-        )
-        points = point_document.get("points")
-        assignments = assignment_document.get("assignments")
-        if not isinstance(points, list) or not isinstance(assignments, list):
-            raise ValueError("Export inputs do not contain point collections")
-        point_ids = {
-            item.get("id")
-            for item in points
-            if isinstance(item, dict) and isinstance(item.get("id"), str)
-        }
-        assignment_ids = {
-            item.get("point_id")
-            for item in assignments
-            if isinstance(item, dict) and isinstance(item.get("point_id"), str)
-        }
-        if (
-            len(point_ids) != len(points)
-            or len(assignment_ids) != len(assignments)
-            or point_ids != assignment_ids
+
+    def _selected_count(
+        self, point_set: PointSetInfo, assignment: AssetAssignmentSetInfo,
+        selected: tuple[str, ...] | None, require_terrain_hit: bool,
+    ) -> int:
+        count = point_set.point_count
+        if selected is not None:
+            available = {
+                row.asset_id: row.point_count
+                for row in self._store.list_asset_assignment_summaries(assignment.asset_assignment_set_id)
+            }
+            unknown = set(selected) - available.keys()
+            if unknown:
+                raise ValueError("Output references unknown assets: " + ", ".join(sorted(unknown)))
+            count = sum(available[asset_id] for asset_id in selected)
+        if not require_terrain_hit:
+            return count
+        if not count or not point_set.hit_count:
+            raise ValueError("No terrain hits are available for export")
+        if selected is None or count == point_set.point_count:
+            return point_set.hit_count
+        if point_set.hit_count == point_set.point_count:
+            return count
+
+        # Only an intersection of two partial filters needs the row data.
+        selected_set = frozenset(selected)
+        with (
+            self._store.open_artifact(point_set.point_artifact_id) as points,
+            self._store.open_artifact(assignment.assignment_artifact_id) as assignments,
         ):
-            raise ValueError(
-                "AssignmentSet point identities differ from export PointSet"
+            count = sum(
+                output_row_selected(point, row, selected_set, require_terrain_hit=True)
+                for point, row in paired_planting_rows(
+                    points, assignments, point_count=point_set.point_count, point_kind=point_set.kind.value,
+                    assignment_hash=assignment.semantic_hash, target_type=assignment.target_type,
+                    scratch_root=self._store.root / "runtime",
+                )
             )
-        return point_document, assignment_document
+        if not count:
+            raise ValueError("No terrain hits are available for export")
+        return count
+
+    @staticmethod
+    def _validate_capability(reference: CapabilityRef | None, provider: ExportProviderDefinition) -> None:
+        if reference is not None and reference != CapabilityRef(
+            "output", provider.provider_id, provider.provider_version,
+            provider.command_type, provider.command_version,
+        ):
+            raise ValueError("Frozen output capability is no longer available")
 
     @staticmethod
     def _validate_command(value: dict[str, Any]) -> None:

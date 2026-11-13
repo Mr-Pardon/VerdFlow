@@ -12,7 +12,7 @@
 ```powershell
 python -m venv .venv
 .venv\Scripts\Activate.ps1
-python -m pip install "jsonschema>=4.22,<5" "PyYAML>=6,<7" "pyshp>=2.3" "rasterio>=1.4" "shapely>=2"
+python -m pip install "ijson>=3.4.0.post0,<4" "jsonschema>=4.22,<5" "PyYAML>=6,<7" "pyshp>=2.3" "rasterio>=1.4" "shapely>=2"
 $env:PYTHONPATH = ((Get-ChildItem -Path packages,apps,adapters -Directory |
     ForEach-Object { Join-Path $_.FullName 'src' } |
     Where-Object { Test-Path -LiteralPath $_ }) -join [IO.Path]::PathSeparator)
@@ -21,16 +21,16 @@ node apps/studio-electron-probe/node_modules/electron/install.js
 ```
 
 Windows 虚拟环境的 Python 可能是转发启动器，导致依赖原生进程身份的 Worker 测试观察到
-父子 PID 不同。完整测试应使用实际 CPython 可执行文件；以下方式仍从虚拟环境加载依赖，
-不放宽 PID 校验，也不更换正式 Worker 协议：
+父子 PID 不同。完整测试应使用装有上述依赖的实际 CPython 可执行文件，和 CI 保持一致。
+地理 Worker 使用 `-I`，不会继承宿主通过 `PYTHONPATH` 临时添加的第三方依赖；不要只把
+虚拟环境的 `site-packages` 加到 `PYTHONPATH` 来替代安装。保留上一步的源码路径设置：
 
 ```powershell
-$basePython = python -c "import sys; print(getattr(sys, '_base_executable', sys.executable))"
-$env:PYTHONPATH += [IO.Path]::PathSeparator + (Join-Path $PWD '.venv/Lib/site-packages')
-& $basePython -S -m unittest discover -s tests/unit
+$python = '<装有测试依赖的实际 CPython 可执行文件>'
+& $python -I -c 'import ijson, jsonschema, yaml, numpy, rasterio, shapefile, shapely'
+if ($LASTEXITCODE -ne 0) { throw 'Missing isolated worker dependencies' }
+& $python -m unittest discover -s tests/unit
 ```
-
-此处 `Lib/site-packages` 是 Windows 虚拟环境布局；其他平台按其环境布局配置。
 
 Electron 的官方安装脚本会检查并下载当前锁定版本的原生运行文件。首次安装或复用包管理器
 缓存时仍执行此步，不能仅凭 `pnpm install` 成功就认为 `electron.exe` 已就绪。

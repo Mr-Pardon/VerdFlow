@@ -60,6 +60,28 @@ def write_lock(path: Path, record: LockRecord) -> None:
 
 
 class ProjectStoreTests(unittest.TestCase):
+    def test_generated_artifact_never_publishes_partial_output(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "project"
+            with ProjectStore.create(root, "Streaming") as store:
+                before = store.artifact_count(), store.object_count()
+
+                def fail(stream):
+                    stream.write(b"partial")
+                    raise OSError("injected write failure")
+
+                with self.assertRaisesRegex(OSError, "injected"):
+                    store.write_artifact(fail, media_type="application/xml")
+                self.assertEqual((store.artifact_count(), store.object_count()), before)
+                self.assertEqual(list((root / "objects" / ".staging").iterdir()), [])
+                expected = store.put_bytes(b"same bytes", media_type="application/xml")
+
+                def write(stream):
+                    stream.write(b"same ")
+                    stream.write(b"bytes")
+
+                self.assertEqual(store.write_artifact(write, media_type="application/xml"), expected)
+
     def test_database_uses_durable_sqlite_profile_by_default(self) -> None:
         with tempfile.TemporaryDirectory(dir=TEST_TEMP_ROOT) as directory:
             database = ProjectDatabase(Path(directory) / "durable.db")

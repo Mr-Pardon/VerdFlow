@@ -128,7 +128,7 @@ class ServiceLoop:
             raise RuntimeError(f"ServiceLoop cannot run from {self._state}")
         try:
             completed_jobs = self.registry.run_once()
-            application_task_count = sum(
+            application_task_count = 0 if self.registry.active else sum(
                 1 for task in self.application_tasks if task.run_once()
             )
             return ServiceCycleResult(
@@ -136,7 +136,7 @@ class ServiceLoop:
                 job_recovery=self.runtime.recover_expired(),
                 maintenance_executions=(
                     self.maintenance_scheduler.run_due()
-                    if self.maintenance_scheduler is not None
+                    if self.maintenance_scheduler is not None and not self.registry.active
                     else ()
                 ),
                 application_task_count=application_task_count,

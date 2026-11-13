@@ -1,20 +1,25 @@
 export const guideSteps = [
   {
+    id: "runtimes", route: "/settings", title: "选择工作方式，检查环境", section: "系统 / 设置",
+    description: "在 DTS 场景中直接种植，使用 Explorer；从 FBX 模型提取绿地，使用 Blender。",
+    hint: "只需准备所选路径的环境。已经可用的不必重复配置，也可以稍后再补齐。",
+  },
+  {
+    id: "resources", route: "/resources", title: "准备第一套种植资源", section: "发现与创作 / 资源中心",
+    description: "先准备本次要用的资产库和策略。打开卡片可以查看说明与版本，再按需导入。",
+    hint: "不必全部导入，种植方案也是可选的。已有本地资源包，或暂时离线，都可以直接继续。",
+  },
+  {
     id: "assets", route: "/assets", title: "准备植被资产", section: "基础资源 / 资产库",
-    description: "先导入 DTS 的 .vfa 资产包，让 VerdFlow 知道有哪些植被可供搭配。资产库记录模型索引与缩略图，不会安装 DTS 中的模型本体。",
-    hint: "可从资源中心一键导入推荐资产与策略，也可以导入本地文件或稍后配置。配套 PAK 可在资源中心获取。",
+    description: "查看已导入的植被，或导入本地 .vfa 文件。资产库保存模型索引和缩略图，不会安装 DTS 中的模型本体。",
+    hint: "在 DTS 中种植还需要相应的模型。需要配套 PAK 时，请查看该资产库的资源详情。",
     author: { name: "VFA Author", description: "供 Agent 整理植被资料、制作 .vfa 资产包的创作工具包。普通种植无需使用；导出的 ZIP 是创作工具，不是可直接导入的资产包。" },
   },
   {
-    id: "strategies", route: "/strategies", title: "导入并信任策略", section: "基础资源 / 策略库",
-    description: "策略决定植被如何分布。导入准备好的 .vfs 策略包后，对确认来源可靠的策略执行批量信任。",
+    id: "strategies", route: "/strategies", title: "检查并信任策略", section: "基础资源 / 策略库",
+    description: "查看已导入的策略，或导入本地 .vfs 文件。确认来源可靠后，再信任要使用的策略。",
     hint: "信任会允许策略代码在本机执行，并不代表它已通过安全审查。撤销信任的包不会被批量重新信任。",
     author: { name: "VFS Author", description: "供 Agent 设计空间算法、检查并打包 .vfs 策略的创作工具包。普通种植无需使用；导出的 ZIP 不是可直接导入的策略包。" },
-  },
-  {
-    id: "runtimes", route: "/settings", title: "准备运行环境", section: "系统 / 设置",
-    description: "只配置你要使用的路径。FBX 工作流使用 Blender 解析模型；DTS 实时种植使用 Explorer。已自动发现的可用环境无需重复设置。",
-    hint: "选择 Blender 程序或 Explorer 7.1 安装文件夹即可。设置页还可以管理软件更新，或重新打开本次引导。",
   },
   {
     id: "models", route: "/model-services", title: "让 AI 辅助识别绿地", section: "运行 / 模型服务 · 可选",
@@ -50,7 +55,7 @@ export interface GuideProgress {
   skipped: GuideStepId[];
 }
 export const initialProgress = (): GuideProgress => ({
-  version: 1, status: "paused", step: "assets", workflow: "live", visited: [], skipped: [],
+  version: 1, status: "paused", step: guideSteps[0].id, workflow: "live", visited: [], skipped: [],
 });
 const isStep = (value: unknown): value is GuideStepId => guideSteps.some(step => step.id === value);
 export function readProgress(raw: string | null): GuideProgress | null {

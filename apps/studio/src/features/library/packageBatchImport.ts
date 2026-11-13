@@ -11,14 +11,15 @@ export interface PackageImportOutcome<Value> {
 
 export const importPackagesSequentially = async <Value>(
   sourcePaths: readonly string[],
-  importOne: (sourcePath: string) => Promise<Value>,
+  importOne: (sourcePath: string) => Promise<Value | undefined>,
   readableError: (error: unknown) => string,
 ): Promise<PackageImportOutcome<Value>> => {
   const imported: Value[] = [];
   const failures: PackageImportFailure[] = [];
   for (const [index, sourcePath] of sourcePaths.entries()) {
     try {
-      imported.push(await importOne(sourcePath));
+      const result = await importOne(sourcePath);
+      if (result !== undefined) imported.push(result);
     } catch (error) {
       failures.push({
         ordinal: index + 1,

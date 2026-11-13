@@ -6,7 +6,6 @@ import {
   LocalApiError,
   type ModelProviderInfo,
   type ProjectSession,
-  type SourceInfo,
 } from "../../api";
 import { platformBridge } from "../../platform";
 import { requireProjectsState } from "../projects/state";
@@ -14,8 +13,7 @@ import { requireProjectsState } from "../projects/state";
 type CreationStage =
   | "idle"
   | "creating_project"
-  | "importing_source"
-  | "starting_inspection";
+  | "submitting_intake";
 
 export const useDtsProjectCreation = () => {
   const bridge = platformBridge();
@@ -36,7 +34,6 @@ export const useDtsProjectCreation = () => {
   const stage = ref<CreationStage>("idle");
   const errorMessage = ref<string | null>(null);
   const createdSession = ref<ProjectSession | null>(null);
-  const importedSource = ref<SourceInfo | null>(null);
   const idempotencyKey = ref("");
 
   const configuredProviders = computed(() =>
@@ -132,22 +129,13 @@ export const useDtsProjectCreation = () => {
           enableModelApiWorker: selectionMode.value === "ai_assisted",
         });
       }
-      if (!importedSource.value) {
-        stage.value = "importing_source";
-        importedSource.value = await client.addFbxSource(
-          createdSession.value.session_id,
-          sourcePath.value,
-        );
-      }
-      stage.value = "starting_inspection";
-      await client.submitScenePreparation({
-        sessionId: createdSession.value.session_id,
-        sourceId: importedSource.value.source_id,
-        selectionMode: selectionMode.value,
-        confirmationMode: confirmationMode.value,
-        analysisProviderId:
-          selectionMode.value === "ai_assisted" ? providerId.value : null,
-        idempotencyKey: idempotencyKey.value,
+      stage.value = "submitting_intake";
+      await client.submitSourceIntake(createdSession.value.session_id, {
+        workflow: "fbx", source_path: sourcePath.value,
+        selection_mode: selectionMode.value,
+        confirmation_mode: confirmationMode.value,
+        analysis_provider_id: selectionMode.value === "ai_assisted" ? providerId.value : null,
+        idempotency_key: idempotencyKey.value,
       });
       const projectId = createdSession.value.project_id;
       dialogOpen.value = false;
@@ -171,7 +159,6 @@ export const useDtsProjectCreation = () => {
   const resetProgress = () => {
     projectPath.value = "";
     createdSession.value = null;
-    importedSource.value = null;
     stage.value = "idle";
   };
 

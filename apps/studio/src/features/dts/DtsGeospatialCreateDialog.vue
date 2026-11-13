@@ -4,6 +4,7 @@ import DismissibleNotice from "../../components/DismissibleNotice.vue";
 
 defineProps<{
   vectorPath: string;
+  imagery?: boolean;
   elevationPath: string;
   projectName: string;
   projectPath: string;
@@ -13,10 +14,7 @@ defineProps<{
   stage:
     | "idle"
     | "creating_project"
-    | "importing_vector"
-    | "importing_elevation"
-    | "assembling_sources"
-    | "preparing_regions";
+    | "submitting_intake";
   errorMessage: string | null;
 }>();
 
@@ -33,10 +31,7 @@ defineEmits<{
 const stageLabel = {
   idle: "创建并准备区域",
   creating_project: "正在创建项目",
-  importing_vector: "正在导入区域数据",
-  importing_elevation: "正在导入高程数据",
-  assembling_sources: "正在建立输入组合",
-  preparing_regions: "正在准备种植区域",
+  submitting_intake: "正在提交源文件登记",
 };
 </script>
 
@@ -45,7 +40,7 @@ const stageLabel = {
     <section class="creation-dialog" role="dialog" aria-modal="true" aria-labelledby="geospatial-create-title">
       <header>
         <div>
-          <span>DTS · 地理空间种植</span>
+          <span>DTS · {{ imagery ? "影像种植" : "地理空间种植" }}</span>
           <h2 id="geospatial-create-title">创建种植项目</h2>
         </div>
         <button type="button" title="关闭" :disabled="busy" @click="$emit('close')">
@@ -55,10 +50,10 @@ const stageLabel = {
 
       <div class="creation-dialog__body">
         <div class="form-field">
-          <span>种植区域 <em>必填</em></span>
+          <span>{{ imagery ? "RGB 影像" : "种植区域" }} <em>必填</em></span>
           <div class="path-picker">
             <div :title="vectorPath">
-              {{ vectorPath || "选择 .shp、.geojson 或 .json 文件" }}
+              {{ vectorPath || (imagery ? "选择影像 .tif 或 .tiff" : "选择 .shp、.geojson 或 .json 文件") }}
             </div>
             <button type="button" :disabled="busy" @click="$emit('chooseVector')">
               <FolderSearch :size="17" />
@@ -104,7 +99,7 @@ const stageLabel = {
         </div>
 
         <p class="dialog-note">
-          VerdFlow 按输入数值直接处理；请确保区域与 GeoTIFF 已使用相同的米制坐标。
+          {{ imagery ? "影像与单波段高程须使用同一米制投影。" : "VerdFlow 按输入数值直接处理；请确保区域与 GeoTIFF 已使用相同的米制坐标。" }}
         </p>
         <DismissibleNotice class="dialog-warning" :message="!managementAvailable ? '当前服务为只读模式，无法导入本地地理数据。' : null" />
         <DismissibleNotice class="dialog-error" :message="errorMessage" @dismiss="$emit('dismissError')" />
@@ -116,7 +111,7 @@ const stageLabel = {
         </button>
         <button class="primary-button" type="button" :disabled="!canSubmit || busy" @click="$emit('submit')">
           <LoaderCircle v-if="busy" :size="17" class="spinning" />
-          {{ stageLabel[stage] }}
+          {{ imagery && stage === "idle" ? "开始识别" : stageLabel[stage] }}
         </button>
       </footer>
     </section>

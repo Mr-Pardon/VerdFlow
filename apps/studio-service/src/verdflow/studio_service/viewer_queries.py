@@ -3,17 +3,26 @@
 from __future__ import annotations
 
 from collections import Counter, OrderedDict, defaultdict
+from contextlib import AbstractContextManager, closing, nullcontext, suppress
 from dataclasses import dataclass
+import errno
 import json
+from itertools import chain
 import math
-from typing import Callable, Generic, TypeVar
+from pathlib import Path
+import sqlite3
+from tempfile import TemporaryDirectory
+from typing import TYPE_CHECKING, Callable, Generic, Iterator, TypeVar
+from uuid import uuid4
 
 from verdflow.contracts import (
     AssetAssignmentSetInfo,
     PointSetInfo,
+    RegionSetInfo,
     RegionSummary,
 )
 from verdflow.project_store import ProjectQueryStore
+from verdflow.planting import AssignmentSetReader, PlantingDocumentError, paired_planting_rows
 
 from .models import (
     Bounds3D,
@@ -22,13 +31,29 @@ from .models import (
     PointReviewManifest,
     PointViewportChunk,
     RegionClassificationSummary,
+    RegionOverview,
+    RegionSelectionPage,
     RegionViewerItem,
     RegionViewerManifest,
     RegionViewportChunk,
 )
+from .point_review_index import DiskPointReviewIndex, point_review_page
+from .region_review_index import DiskRegionReviewIndex, RegionIndexError
+from .region_overview import RegionOverviewBuilder
+
+if TYPE_CHECKING:
+    from shapely.geometry.base import BaseGeometry
 
 
 CacheValue = TypeVar("CacheValue")
+_POINT_INDEX_MEMORY_ROWS = 100_000
+_POINT_INDEX_MEMORY_BYTES = 32 * 1024**2
+_POINT_INDEX_CACHE_BYTES = 768 * 1024**2
+_POINT_PAGE_MAX_ROWS = 5_000
+_REGION_INDEX_MEMORY_BYTES = 32 * 1024**2
+_REGION_ITEM_VERTICES = 20_000
+_REGION_PAGE_VERTICES = 60_000
+_REGION_PAGE_BYTES = 8 * 1024**2
 
 
 class ViewerProjectionError(RuntimeError):
@@ -42,10 +67,12 @@ class _LruCache(Generic[CacheValue]):
         *,
         max_weight: int | None = None,
         weight: Callable[[CacheValue], int] | None = None,
+        dispose: Callable[[CacheValue], None] | None = None,
     ) -> None:
         self._capacity = capacity
         self._max_weight = max_weight
         self._weight = weight or (lambda _value: 1)
+        self._dispose = dispose or (lambda _value: None)
         self._total_weight = 0
         self._values: OrderedDict[str, CacheValue] = OrderedDict()
 
@@ -59,6 +86,8 @@ class _LruCache(Generic[CacheValue]):
         previous = self._values.pop(key, None)
         if previous is not None:
             self._total_weight -= self._weight(previous)
+            if previous is not value:
+                self._dispose(previous)
         self._values[key] = value
         self._total_weight += self._weight(value)
         self._values.move_to_end(key)
@@ -69,7 +98,14 @@ class _LruCache(Generic[CacheValue]):
         ):
             _, evicted = self._values.popitem(last=False)
             self._total_weight -= self._weight(evicted)
+            self._dispose(evicted)
         return value
+
+    def clear(self) -> None:
+        for value in self._values.values():
+            self._dispose(value)
+        self._values.clear()
+        self._total_weight = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,18 +181,58 @@ class _AssetPresentation:
 class ProjectViewerQueries:
     """Build UI-safe projections without exposing Artifact paths or documents."""
 
-    def __init__(self, store: ProjectQueryStore) -> None:
+    def __init__(
+        self, store: ProjectQueryStore, *, cache_root: Path | None = None,
+        cancelled: Callable[[], bool] = lambda: False,
+    ) -> None:
         self._store = store
+        self._cache_root = cache_root
+        self._cancelled = cancelled
+        self._temporary: TemporaryDirectory[str] | None = None
+        self._region_temporary: TemporaryDirectory[str] | None = None
         self._region_summaries = _LruCache[tuple[RegionSummary, ...]](4)
+        self._region_overviews = _LruCache[RegionOverview](2)
         self._region_geometry = _LruCache[dict[str, object]](2)
-        self._region_items = _LruCache[dict[str, RegionViewerItem]](8)
+        self._region_items = _LruCache[RegionViewerItem](
+            2048, max_weight=_REGION_PAGE_BYTES * 2, weight=_region_item_weight,
+        )
+        self._region_polygons: _LruCache[tuple[BaseGeometry, int]] = _LruCache(
+            128, max_weight=1_000_000, weight=lambda entry: entry[1],
+        )
+        self._region_indexes = _LruCache[DiskRegionReviewIndex](
+            4, max_weight=512 * 1024**2, weight=lambda index: index.byte_size,
+            dispose=DiskRegionReviewIndex.close,
+        )
         self._point_indexes = _LruCache[_PointIndex](
-            16, max_weight=500_000, weight=lambda index: len(index.points),
+            8, max_weight=250_000, weight=lambda index: len(index.points),
         )
         self._assignment_maps = _LruCache[dict[str, _Assignment]](
-            16, max_weight=500_000, weight=len,
+            8, max_weight=250_000, weight=len,
+        )
+        self._scale_maxima = _LruCache[dict[str, float]](16)
+        self._disk_indexes = _LruCache[DiskPointReviewIndex](
+            8, max_weight=_POINT_INDEX_CACHE_BYTES, weight=lambda index: index.byte_size,
+            dispose=DiskPointReviewIndex.close,
         )
         self._asset_presentations = _LruCache[dict[str, _AssetPresentation]](4)
+
+    def close(self) -> None:
+        self._region_indexes.clear()
+        self._region_geometry.clear()
+        self._region_items.clear()
+        self._region_polygons.clear()
+        self._region_summaries.clear()
+        self._region_overviews.clear()
+        self._disk_indexes.clear()
+        self._point_indexes.clear()
+        self._assignment_maps.clear()
+        self._scale_maxima.clear()
+        if self._temporary is not None:
+            self._temporary.cleanup()
+            self._temporary = None
+        if self._region_temporary is not None:
+            self._region_temporary.cleanup()
+            self._region_temporary = None
 
     def region_manifest(self, region_set_id: str) -> RegionViewerManifest:
         region_set = self._store.get_region_set(region_set_id)
@@ -198,6 +274,7 @@ class ProjectViewerQueries:
         after_ordinal: int = -1,
         limit: int = 1000,
         simplification_tolerance: float = 0.0,
+        overview_threshold: int = 0,
     ) -> RegionViewportChunk:
         _validate_viewport(min_x, min_y, max_x, max_y)
         _validate_page(after_ordinal, limit)
@@ -218,36 +295,205 @@ class ProjectViewerQueries:
             )
         )
         page = []
-        for region in matches:
-            page.append(region)
-            if len(page) > limit:
+        for count, region in enumerate(matches, 1):
+            if count <= limit + 1:
+                page.append(region)
+            if overview_threshold and after_ordinal == -1:
+                if count > overview_threshold:
+                    return RegionViewportChunk((), None, True, overview_recommended=True)
+            elif count > limit:
                 break
         truncated = len(page) > limit
         if truncated:
             page.pop()
-        geometry = self._geometry_by_id(region_set.geometry_artifact_id)
+        if not page:
+            return RegionViewportChunk((), None, False)
+
+        artifact_id = region_set.geometry_artifact_id
         tolerance = _lod_tolerance(simplification_tolerance)
-        item_cache = self._region_item_cache(
-            region_set.geometry_artifact_id,
-            tolerance,
-        )
         items_list: list[RegionViewerItem] = []
-        for region in page:
-            item = item_cache.get(region.region_id)
-            if item is None:
-                item = _region_item(
-                    region,
-                    geometry.get(region.region_id),
-                    simplification_tolerance=tolerance,
-                )
-                item_cache[region.region_id] = item
-            items_list.append(item)
+        remaining_vertices = _REGION_PAGE_VERTICES
+        remaining_bytes = _REGION_PAGE_BYTES
+        with self._region_lookup(region_set) as geometry:
+            for region in page:
+                if self._cancelled():
+                    raise ViewerProjectionError("Region review was closed")
+                key = f"{artifact_id}:{tolerance:.12g}:{region.region_id}"
+                item = self._region_items.get(key)
+                if item is None:
+                    raw = geometry(region.region_id)
+                    rings = raw.get("footprint_boundary_xyz") if isinstance(raw, dict) else None
+                    if (overview_threshold and isinstance(rings, list) and all(isinstance(ring, list) for ring in rings)
+                            and sum(map(len, rings)) > _REGION_ITEM_VERTICES):
+                        return RegionViewportChunk((), None, True, overview_recommended=True)
+                    item = _region_item(
+                        region, raw, simplification_tolerance=tolerance,
+                    )
+                    self._region_items.put(key, item)
+                if overview_threshold and item.boundary_mode != "detail":
+                    return RegionViewportChunk((), None, True, overview_recommended=True)
+                vertices = _region_vertices(item)
+                weight = _region_item_weight(item)
+                if vertices > remaining_vertices or weight > remaining_bytes:
+                    if not items_list:
+                        raise ViewerProjectionError("Region metadata exceeds the preview response budget")
+                    truncated = True
+                    break
+                items_list.append(item)
+                remaining_vertices -= vertices
+                remaining_bytes -= weight
         items = tuple(items_list)
         return RegionViewportChunk(
             items=items,
             next_after_ordinal=(items[-1].ordinal if truncated and items else None),
             truncated=truncated,
         )
+
+    def region_overview(
+        self, region_set_id: str, *, min_x: float, min_y: float, max_x: float, max_y: float,
+        classifications: tuple[str, ...] = (),
+    ) -> RegionOverview:
+        _validate_viewport(min_x, min_y, max_x, max_y)
+        if not all(1e-12 <= span < float("inf") for span in (max_x - min_x, max_y - min_y)):
+            raise ValueError("Region overview requires a finite non-empty viewport")
+        region_set = self._store.get_region_set(region_set_id)
+        summaries = self._regions(region_set_id)
+        allowed = set(classifications)
+        bounds = Bounds3D(min_x, min_y, 0.0, max_x, max_y, 0.0)
+        key = repr((region_set_id, bounds, sorted(allowed)))
+        cached = self._region_overviews.get(key)
+        if cached is not None:
+            return cached
+        matches = (
+            (index, region.region_id) for index, region in enumerate(summaries)
+            if (not allowed or region.classification in allowed)
+            and region.max_x >= min_x and region.min_x <= max_x
+            and region.max_y >= min_y and region.min_y <= max_y
+        )
+        builder = RegionOverviewBuilder(bounds, cancelled=self._cancelled)
+        first = next(matches, None)
+        if first is not None:
+            pairs = chain((first,), matches)
+            artifact_id = region_set.geometry_artifact_id
+            existing_index = self._region_indexes.get(artifact_id)
+            if (
+                (existing_index is None or not existing_index.path.is_file())
+                and self._store.get_artifact(artifact_id).byte_size > _REGION_INDEX_MEMORY_BYTES
+            ):
+                by_id = {region_id: index for index, region_id in pairs}
+                last_index, seen, in_order = -1, 0, True
+
+                def project_boundary(region_id: str, rings: list[object]) -> None:
+                    nonlocal last_index, seen, in_order
+                    index = by_id.get(region_id)
+                    if index is None or not in_order:
+                        return
+                    if index <= last_index:
+                        in_order = False
+                        return
+                    self._paint_region_overview(builder, artifact_id, region_id, index, lambda _: {"footprint_boundary_xyz": rings})
+                    last_index = index
+                    seen += 1
+
+                # Project from the initial index scan, provided Artifact and summary order agree.
+                self._disk_region_index(artifact_id, region_set.region_count, on_boundary=project_boundary)
+                if in_order and seen == len(by_id):
+                    return self._region_overviews.put(key, builder.finish(summaries))
+                builder = RegionOverviewBuilder(bounds, cancelled=self._cancelled)
+                pairs = ((index, region_id) for region_id, index in by_id.items())
+            with self._region_lookup(region_set) as geometry:
+                for index, region_id in pairs:
+                    if self._cancelled():
+                        raise ViewerProjectionError("Region review was closed")
+                    self._paint_region_overview(builder, artifact_id, region_id, index, geometry)
+        return self._region_overviews.put(key, builder.finish(summaries))
+
+    def _region_polygon(self, artifact_id: str, region_id: str, geometry, *, complex_only: bool = False):
+        from shapely import prepare
+        from shapely.geometry import Polygon
+
+        key = f"{artifact_id}:{region_id}"
+        cached = self._region_polygons.get(key)
+        if cached is not None:
+            polygon, vertices = cached
+            if not complex_only or vertices > _REGION_ITEM_VERTICES:
+                return polygon, None
+        rings = _exact_region_boundary(geometry(region_id))
+        vertices = sum(map(len, rings))
+        if (complex_only and vertices <= _REGION_ITEM_VERTICES) or not rings or any(len(ring) < 3 for ring in rings):
+            return None, rings
+        polygon = Polygon(rings[0], rings[1:])
+        if polygon.is_empty or not polygon.is_valid:
+            return None, rings
+        prepare(polygon)
+        self._region_polygons.put(key, (polygon, vertices))
+        return polygon, None
+
+    def _paint_region_overview(self, builder, artifact_id, region_id, index, geometry) -> None:
+        polygon, rings = self._region_polygon(artifact_id, region_id, geometry, complex_only=True)
+        if polygon is not None:
+            builder.add_polygon(index, polygon)
+        else:
+            builder.add(index, rings)
+
+    def region_selection(
+        self, region_set_id: str, *, corners: tuple[tuple[float, float], ...],
+        classifications: tuple[str, ...] = (), after_ordinal: int = -1,
+    ) -> RegionSelectionPage:
+        """Hit test original geometry, including Regions omitted from display pages."""
+        from shapely.geometry import MultiPoint, Point
+
+        _validate_page(after_ordinal, 5000)
+        if len(corners) not in {1, 4} or not all(
+            len(xy) == 2 and all(math.isfinite(n) for n in xy) for xy in corners
+        ):
+            raise ValueError("Selection requires a point or four finite corners")
+        point_only = len(corners) == 1
+        probe = Point(corners[0]) if point_only else MultiPoint(corners).convex_hull
+        min_x, min_y, max_x, max_y = probe.bounds
+        region_set = self._store.get_region_set(region_set_id)
+        composition = self._store.current_planting_composition()
+        occupied = (
+            {region_id for batch in self._store.list_planting_batches() for region_id in batch.selected_region_ids}
+            if composition is not None and composition.region_set_id == region_set_id else set()
+        )
+        allowed = set(classifications)
+        summaries = self._regions(region_set_id)
+        selected: list[str] = []
+        next_after = None
+        remaining = _REGION_PAGE_BYTES
+        with self._region_lookup(region_set) as geometry:
+            for region in (reversed(summaries) if point_only else iter(summaries)):
+                if self._cancelled():
+                    raise ViewerProjectionError("Region review was closed")
+                if (
+                    region.ordinal <= after_ordinal or region.region_id in occupied
+                    or (allowed and region.classification not in allowed)
+                    or not _intersects(_bounds_from_region(region), min_x=min_x, min_y=min_y, max_x=max_x, max_y=max_y)
+                ):
+                    continue
+                polygon, rings = self._region_polygon(region_set.geometry_artifact_id, region.region_id, geometry)
+                if polygon is None:
+                    hit = _exact_region_hit(rings, probe, point_only)
+                elif not point_only:
+                    hit = polygon.intersects(probe)
+                else:
+                    hit = polygon.contains(probe)
+                    if not hit and polygon.intersects(probe):
+                        hit = _exact_region_hit(_exact_region_boundary(geometry(region.region_id)), probe, point_only)
+                if not hit:
+                    continue
+                weight = 16 + 6 * len(region.region_id)
+                if len(selected) == 5000 or weight > remaining:
+                    if not selected:
+                        raise ViewerProjectionError("Region ID exceeds the selection response budget")
+                    return RegionSelectionPage(tuple(selected), next_after)
+                selected.append(region.region_id)
+                if point_only:
+                    break
+                remaining -= weight
+                next_after = region.ordinal
+        return RegionSelectionPage(tuple(selected), None)
 
     def point_manifest(
         self,
@@ -259,13 +505,11 @@ class ProjectViewerQueries:
         _validate_assignment_lineage(point_set, assignment)
         planting_run = self._store.get_planting_run(point_set.planting_run_id)
         asset_presentations = self._asset_presentations_for(assignment)
-        max_scale_by_asset: defaultdict[str, float] = defaultdict(float)
-        for row in self._assignments(assignment.assignment_artifact_id).values():
-            max_scale_by_asset[row.asset_id] = max(
-                max_scale_by_asset[row.asset_id],
-                abs(row.target_scale_xyz[0]),
-                abs(row.target_scale_xyz[1]),
-            )
+        asset_summaries = self._store.list_assignment_assets(assignment_set_id)
+        max_scale_by_asset = self._max_scales(
+            assignment, {item.asset_id for item in asset_summaries},
+            stream=self._uses_disk_index(point_set, assignment),
+        )
         asset_legends = tuple(
             _asset_legend(
                 item.asset_id,
@@ -273,9 +517,7 @@ class ProjectViewerQueries:
                 asset_presentations.get(item.asset_id),
                 max_scale_by_asset.get(item.asset_id, 0.0),
             )
-            for item in self._store.list_assignment_assets(
-                assignment_set_id
-            )
+            for item in asset_summaries
         )
         return PointReviewManifest(
             point_set_id=point_set.point_set_id,
@@ -380,6 +622,8 @@ class ProjectViewerQueries:
     ) -> PointViewportChunk:
         _validate_viewport(min_x, min_y, max_x, max_y)
         _validate_page(after_ordinal, limit)
+        if limit > _POINT_PAGE_MAX_ROWS:
+            raise ValueError(f"Point preview limit must not exceed {_POINT_PAGE_MAX_ROWS}")
         point_set = self._store.get_point_set(point_set_id)
         assignment_set = self._store.get_assignment_set(assignment_set_id)
         _validate_assignment_lineage(point_set, assignment_set)
@@ -395,6 +639,14 @@ class ProjectViewerQueries:
             )
         ):
             return PointViewportChunk(items=(), next_after_ordinal=None, truncated=False)
+        if self._uses_disk_index(point_set, assignment_set):
+            try:
+                return self._disk_index(point_set, assignment_set).chunk(
+                    (min_x, min_y, max_x, max_y),
+                    roles=roles, assets=assets, after_ordinal=after_ordinal, limit=limit,
+                )
+            except sqlite3.Error as error:
+                raise ViewerProjectionError("Unable to query the point review cache") from error
         index = self._point_index(point_set.point_artifact_id)
         assignments = self._assignments(
             assignment_set.assignment_artifact_id
@@ -407,51 +659,129 @@ class ProjectViewerQueries:
             )
         allowed_roles = set(roles)
         allowed_assets = set(assets)
-        items: list[PointReviewItem] = []
-        truncated = False
-        for ordinal in index.ordinals_in_viewport(
-            min_x=min_x,
-            min_y=min_y,
-            max_x=max_x,
-            max_y=max_y,
+        def visible() -> Iterator[PointReviewItem]:
+            for ordinal in index.ordinals_in_viewport(
+                min_x=min_x, min_y=min_y, max_x=max_x, max_y=max_y,
+            ):
+                if ordinal <= after_ordinal:
+                    continue
+                point = index.points[ordinal]
+                x, y, _ = point.position
+                if not (min_x <= x <= max_x and min_y <= y <= max_y):
+                    continue
+                if allowed_roles and point.role_key not in allowed_roles:
+                    continue
+                assignment = assignments.get(point.point_id)
+                if assignment is None:
+                    raise ViewerProjectionError(f"Assignment is missing for point: {point.point_id}")
+                if not allowed_assets or assignment.asset_id in allowed_assets:
+                    yield _review_item(point, assignment)
+
+        return point_review_page(visible(), limit=limit)
+
+    def _uses_disk_index(self, point: PointSetInfo, assignment: AssetAssignmentSetInfo) -> bool:
+        if point.point_count > _POINT_INDEX_MEMORY_ROWS:
+            return True
+        size = self._store.get_artifact(point.point_artifact_id).byte_size
+        size += self._store.get_artifact(assignment.assignment_artifact_id).byte_size
+        return size > _POINT_INDEX_MEMORY_BYTES
+
+    def _max_scales(
+        self, assignment: AssetAssignmentSetInfo, allowed_assets: set[str], *, stream: bool,
+    ) -> dict[str, float]:
+        artifact = assignment.assignment_artifact_id
+        cached = self._scale_maxima.get(artifact)
+        if cached is not None:
+            return cached
+        maxima: defaultdict[str, float] = defaultdict(float)
+        try:
+            if stream:
+                with self._store.open_artifact(artifact) as source:
+                    reader = AssignmentSetReader(source, expected_point_count=assignment.point_count)
+                    for ordinal, row in enumerate(reader.rows()):
+                        if ordinal % 2048 == 0:
+                            self._check_cancelled()
+                        item = _assignment_item(row)
+                        if item.asset_id not in allowed_assets:
+                            raise ViewerProjectionError("Assignment asset differs from its Core summary")
+                        x, y, _ = item.target_scale_xyz
+                        maxima[item.asset_id] = max(maxima[item.asset_id], abs(x), abs(y))
+                    header = reader.header
+                    if (
+                        header["schema"] != "verdflow.asset-assignment-set"
+                        or header["version"] != "1"
+                        or header["semantic_hash"] != assignment.semantic_hash
+                        or header["target_type"] != assignment.target_type
+                    ):
+                        raise ViewerProjectionError("AssignmentSet header differs from its Core record")
+            else:
+                for item in self._assignments(artifact).values():
+                    x, y, _ = item.target_scale_xyz
+                    maxima[item.asset_id] = max(maxima[item.asset_id], abs(x), abs(y))
+        except PlantingDocumentError as error:
+            raise ViewerProjectionError(str(error)) from error
+        return self._scale_maxima.put(artifact, dict(maxima))
+
+    def _disk_index(self, point: PointSetInfo, assignment: AssetAssignmentSetInfo) -> DiskPointReviewIndex:
+        key = f"{point.point_artifact_id}:{assignment.assignment_artifact_id}"
+        cached = self._disk_indexes.get(key)
+        if cached is not None and cached.path.is_file():
+            return cached
+        if self._cache_root is None:
+            raise ViewerProjectionError("Large point reviews require a project cache directory")
+        path: Path | None = None
+        try:
+            if self._temporary is None:
+                self._cache_root.mkdir(exist_ok=True)
+                self._temporary = TemporaryDirectory(
+                    prefix="point-review-", dir=self._cache_root, ignore_cleanup_errors=True,
+                )
+            directory = Path(self._temporary.name).resolve()
+            path = directory / f"{uuid4().hex}.sqlite"
+            with closing(self._paired_items(point, assignment, directory)) as items:
+                index = DiskPointReviewIndex.build(
+                    path, items, bounds=_point_set_bounds(point), cancelled=self._cancelled,
+                )
+            return self._disk_indexes.put(key, index)
+        except (OSError, sqlite3.Error, PlantingDocumentError) as error:
+            if path is not None:
+                with suppress(OSError):
+                    path.unlink(missing_ok=True)
+            if self._cancelled():
+                raise ViewerProjectionError("Point review was closed") from error
+            if (
+                isinstance(error, OSError) and error.errno == errno.ENOSPC
+                or getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_FULL
+            ):
+                raise ViewerProjectionError("Point review cache has insufficient disk space") from error
+            if isinstance(error, PlantingDocumentError):
+                raise ViewerProjectionError(str(error)) from error
+            raise ViewerProjectionError("Unable to build the point review cache") from error
+        except BaseException:
+            if path is not None:
+                with suppress(OSError):
+                    path.unlink(missing_ok=True)
+            raise
+
+    def _paired_items(
+        self, point: PointSetInfo, assignment: AssetAssignmentSetInfo, scratch: Path,
+    ) -> Iterator[PointReviewItem]:
+        with (
+            self._store.open_artifact(point.point_artifact_id) as points_file,
+            self._store.open_artifact(assignment.assignment_artifact_id) as assignments_file,
+            closing(paired_planting_rows(
+                points_file, assignments_file, point_count=point.point_count,
+                point_kind=point.kind.value, assignment_hash=assignment.semantic_hash,
+                target_type=assignment.target_type, scratch_root=scratch,
+                on_rows=self._check_cancelled,
+            )) as pairs,
         ):
-            if ordinal <= after_ordinal:
-                continue
-            point = index.points[ordinal]
-            x, y, _ = point.position
-            if not (min_x <= x <= max_x and min_y <= y <= max_y):
-                continue
-            if allowed_roles and point.role_key not in allowed_roles:
-                continue
-            assignment = assignments.get(point.point_id)
-            if assignment is None:
-                raise ViewerProjectionError(
-                    f"Assignment is missing for point: {point.point_id}"
-                )
-            if allowed_assets and assignment.asset_id not in allowed_assets:
-                continue
-            if len(items) == limit:
-                truncated = True
-                break
-            items.append(
-                PointReviewItem(
-                    point_id=point.point_id,
-                    ordinal=point.ordinal,
-                    region_id=point.region_id,
-                    role_key=point.role_key,
-                    position=point.position,
-                    asset_id=assignment.asset_id,
-                    target_scale_xyz=assignment.target_scale_xyz,
-                    group_id=point.group_id,
-                )
-            )
-        return PointViewportChunk(
-            items=tuple(items),
-            next_after_ordinal=(
-                items[-1].ordinal if truncated and items else None
-            ),
-            truncated=truncated,
-        )
+            for ordinal, (row, mapping) in enumerate(pairs):
+                yield _review_item(_indexed_point(ordinal, row), _assignment_item(mapping))
+
+    def _check_cancelled(self) -> None:
+        if self._cancelled():
+            raise ViewerProjectionError("Point review was closed")
 
     def _regions(self, region_set_id: str) -> tuple[RegionSummary, ...]:
         cached = self._region_summaries.get(region_set_id)
@@ -489,16 +819,52 @@ class ProjectViewerQueries:
             result[region_id] = row
         return self._region_geometry.put(artifact_id, result)
 
-    def _region_item_cache(
-        self,
-        artifact_id: str,
-        simplification_tolerance: float,
-    ) -> dict[str, RegionViewerItem]:
-        key = f"{artifact_id}:{simplification_tolerance:.12g}"
-        cached = self._region_items.get(key)
-        if cached is not None:
+    def _disk_region_index(
+        self, artifact_id: str, count: int, *, on_boundary: Callable[[str, list[object]], None] | None = None,
+    ) -> DiskRegionReviewIndex:
+        cached = self._region_indexes.get(artifact_id)
+        if cached is not None and cached.path.is_file():
             return cached
-        return self._region_items.put(key, {})
+        if self._cache_root is None:
+            raise ViewerProjectionError("Large region reviews require a project cache directory")
+        path: Path | None = None
+        try:
+            if self._region_temporary is None:
+                self._cache_root.mkdir(exist_ok=True)
+                self._region_temporary = TemporaryDirectory(
+                    prefix="region-review-", dir=self._cache_root, ignore_cleanup_errors=True,
+                )
+            path = Path(self._region_temporary.name).resolve() / f"{uuid4().hex}.sqlite"
+            with self._store.open_artifact(artifact_id) as source:
+                index = DiskRegionReviewIndex.build(
+                    path, source, count=count, cancelled=self._cancelled, on_boundary=on_boundary,
+                )
+            self._region_indexes.put(artifact_id, index)
+            path = None
+            return index
+        except (OSError, sqlite3.Error, RegionIndexError) as error:
+            if self._cancelled():
+                raise ViewerProjectionError("Region review was closed") from error
+            if (
+                isinstance(error, OSError) and error.errno == errno.ENOSPC
+                or getattr(error, "sqlite_errorcode", None) == sqlite3.SQLITE_FULL
+            ):
+                raise ViewerProjectionError("Region review cache has insufficient disk space") from error
+            if isinstance(error, RegionIndexError):
+                raise ViewerProjectionError(str(error)) from error
+            raise ViewerProjectionError("Unable to build the region review cache") from error
+        finally:
+            if path is not None:
+                with suppress(OSError):
+                    path.unlink(missing_ok=True)
+
+    def _region_lookup(
+        self, region_set: RegionSetInfo,
+    ) -> AbstractContextManager[Callable[[str], object]]:
+        artifact_id = region_set.geometry_artifact_id
+        if self._store.get_artifact(artifact_id).byte_size > _REGION_INDEX_MEMORY_BYTES:
+            return self._disk_region_index(artifact_id, region_set.region_count).lookup()
+        return nullcontext(self._geometry_by_id(artifact_id).get)
 
     def _point_index(self, artifact_id: str) -> _PointIndex:
         cached = self._point_indexes.get(artifact_id)
@@ -538,13 +904,7 @@ class ProjectViewerQueries:
                 raise ViewerProjectionError(
                     f"Assignment is duplicated for point: {point_id}"
                 )
-            result[point_id] = _Assignment(
-                asset_id=_required_text(row, "asset_id", "Assignment"),
-                target_scale_xyz=_vector3(
-                    row.get("target_scale_xyz"),
-                    "Assignment target_scale_xyz",
-                ),
-            )
+            result[point_id] = _assignment_item(row)
         return self._assignment_maps.put(artifact_id, result)
 
     def _read_document(self, artifact_id: str) -> dict[str, object]:
@@ -556,6 +916,20 @@ class ProjectViewerQueries:
         if not isinstance(value, dict):
             raise ViewerProjectionError("Viewer Artifact must be an object")
         return value
+
+
+def _assignment_item(row: dict[str, object]) -> _Assignment:
+    return _Assignment(
+        asset_id=_required_text(row, "asset_id", "Assignment"),
+        target_scale_xyz=_vector3(row.get("target_scale_xyz"), "Assignment target_scale_xyz"),
+    )
+
+
+def _review_item(point: _IndexedPoint, assignment: _Assignment) -> PointReviewItem:
+    return PointReviewItem(
+        point.point_id, point.ordinal, point.region_id, point.role_key, point.position,
+        assignment.asset_id, assignment.target_scale_xyz, point.group_id,
+    )
 
 
 def _asset_legend(
@@ -594,27 +968,13 @@ def _region_item(
     *,
     simplification_tolerance: float = 0.0,
 ) -> RegionViewerItem:
-    if not isinstance(value, dict):
-        raise ViewerProjectionError(
-            f"Region geometry is missing: {region.region_id}"
-        )
-    loops = value.get("footprint_boundary_xyz", [])
-    if not isinstance(loops, list):
-        raise ViewerProjectionError(
-            f"Region boundary is invalid: {region.region_id}"
-        )
-    boundaries: list[tuple[tuple[float, float, float], ...]] = []
-    for loop in loops:
-        if not isinstance(loop, list):
-            raise ViewerProjectionError(
-                f"Region boundary loop is invalid: {region.region_id}"
-            )
-        boundary = tuple(
-            _vector3(vertex, "Region boundary vertex") for vertex in loop
-        )
-        boundaries.append(
-            _simplify_closed_ring(boundary, simplification_tolerance)
-        )
+    boundaries = _exact_region_boundary(value)
+    boundary_mode = "detail"
+    if sum(map(len, boundaries)) > _REGION_ITEM_VERTICES:
+        bounded = _overview_boundary(boundaries, simplification_tolerance)
+        boundary_mode = "overview" if bounded else "extent"
+    else:
+        bounded = tuple(_simplify_closed_ring(ring, simplification_tolerance) for ring in boundaries)
     return RegionViewerItem(
         region_id=region.region_id,
         ordinal=region.ordinal,
@@ -623,8 +983,81 @@ def _region_item(
         strategy_hint=region.strategy_hint,
         footprint_area_xy=region.footprint_area_xy,
         bounds=_bounds_from_region(region),
-        footprint_boundary_xyz=tuple(boundaries),
+        footprint_boundary_xyz=bounded,
+        boundary_mode=boundary_mode,
     )
+
+
+def _exact_region_boundary(value: object) -> list[tuple[tuple[float, float, float], ...]]:
+    if not isinstance(value, dict):
+        raise ViewerProjectionError("Region geometry is missing")
+    loops = value.get("footprint_boundary_xyz", [])
+    if not isinstance(loops, list):
+        raise ViewerProjectionError("Region boundary is invalid")
+    boundaries: list[tuple[tuple[float, float, float], ...]] = []
+    for loop in loops:
+        if not isinstance(loop, list):
+            raise ViewerProjectionError("Region boundary loop is invalid")
+        boundary = tuple(
+            _vector3(vertex, "Region boundary vertex") for vertex in loop
+        )
+        boundaries.append(boundary)
+    return boundaries
+
+
+def _exact_region_hit(rings: list[tuple[tuple[float, float, float], ...]], probe: BaseGeometry, point_only: bool) -> bool:
+    from shapely.geometry import LinearRing, Polygon
+
+    sample = probe if point_only else probe.representative_point()
+    inside = False
+    for ring in rings:
+        if len(ring) < 3:
+            continue
+        boundary = LinearRing(ring)
+        if not point_only and boundary.intersects(probe):
+            return True
+        # Match the viewer's even-odd ring semantics, including detached exteriors.
+        inside ^= Polygon(boundary).contains(sample)
+    return inside
+
+
+def _region_vertices(item: RegionViewerItem) -> int:
+    return sum(map(len, item.footprint_boundary_xyz))
+
+
+def _region_item_weight(item: RegionViewerItem) -> int:
+    return 512 + _region_vertices(item) * 128 + 6 * sum(map(len, (
+        item.region_id, item.label, item.classification or "", item.strategy_hint or "",
+    )))
+
+
+def _overview_boundary(
+    rings: list[tuple[tuple[float, float, float], ...]], tolerance: float,
+) -> tuple[tuple[tuple[float, float, float], ...], ...]:
+    from shapely.errors import GEOSException
+    from shapely.geometry import Polygon
+
+    if 4 * len(rings) > _REGION_ITEM_VERTICES or any(len(ring) < 3 for ring in rings):
+        return ()
+    try:
+        polygon = Polygon(rings[0], rings[1:])
+        if polygon.is_empty or not polygon.is_valid:
+            return ()
+        x0, y0, x1, y1 = polygon.bounds
+        span = max(x1 - x0, y1 - y0)
+        if not 0 < span < float("inf"):
+            return ()
+        step = max(tolerance, span / 16_384)
+        for _ in range(8):
+            outline = polygon.simplify(step, preserve_topology=True)
+            if outline.geom_type == "Polygon" and not outline.is_empty:
+                parts = (outline.exterior, *outline.interiors)
+                if len(parts) == len(rings) and sum(len(part.coords) for part in parts) <= _REGION_ITEM_VERTICES:
+                    return tuple(tuple(part.coords) for part in parts)
+            step *= 4
+    except (ValueError, GEOSException):
+        pass
+    return ()
 
 
 def _lod_tolerance(value: float) -> float:
@@ -824,6 +1257,8 @@ def _validate_assignment_lineage(
         point_set.parent_point_set_id,
     }:
         raise ValueError("assignment_set_id does not belong to point_set_id")
+    if assignment.point_count != point_set.point_count:
+        raise ViewerProjectionError("AssignmentSet point count differs from PointSet")
 
 
 def _validate_viewport(

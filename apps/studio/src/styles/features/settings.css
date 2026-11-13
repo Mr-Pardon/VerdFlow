@@ -1,4 +1,5 @@
 .settings-page {
+  container: studio-settings / inline-size;
   position: relative;
   display: flex;
   flex-direction: column;
@@ -101,7 +102,7 @@
 
 .runtime-setting-row {
   display: grid;
-  grid-template-columns: minmax(210px, 0.7fr) minmax(130px, 0.35fr) minmax(340px, 1.3fr) auto;
+  grid-template-columns: minmax(210px, 0.7fr) minmax(130px, 0.35fr) minmax(220px, 1.3fr) max-content;
   align-items: center;
   gap: 20px;
   padding: 20px 22px;
@@ -199,13 +200,24 @@
   gap: 8px;
 }
 
+.runtime-setting-row__actions button {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.runtime-setting-row__actions svg {
+  flex: 0 0 auto;
+}
+
 @media (max-width: 1180px) {
   .settings-page {
     padding: 22px;
   }
+}
 
+@container studio-settings (max-width: 1050px) {
   .runtime-setting-row {
-    grid-template-columns: minmax(210px, 1fr) minmax(130px, 0.5fr);
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.5fr);
   }
 
   .runtime-path-field,
@@ -214,6 +226,7 @@
   }
 
   .runtime-setting-row__actions {
+    flex-wrap: wrap;
     justify-content: flex-end;
   }
 }

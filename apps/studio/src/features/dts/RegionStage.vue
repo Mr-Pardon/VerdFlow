@@ -49,7 +49,7 @@ const filters = computed(() => [
 
 const visibleSelectedArea = computed(() => {
   const selected = new Set(viewer.selectedRegionIds.value);
-  return viewer.regions.value.reduce(
+  return (viewer.overview.value?.items ?? viewer.regions.value).reduce(
     (total, region) =>
       selected.has(region.region_id)
         ? total + (region.footprint_area_xy ?? 0)
@@ -118,11 +118,14 @@ const formatArea = (value: number) =>
         ref="canvas"
         :bounds="viewer.manifest.value?.bounds || null"
         :regions="viewer.regions.value"
-        :selected-region-ids="viewer.selectedRegionIds.value"
+        :region-overview="viewer.overview.value"
+        :selected-region-ids="viewer.displaySelectedRegionIds.value"
         :committed-region-ids="committedRegionIds"
         :loading="viewer.loadingGeometry.value"
+        :exact-selection="viewer.exactSelection.value"
         @viewport="viewer.loadViewport"
         @selection="applySelection"
+        @selection-query="(corners, mode, previewId) => viewer.selectByGeometry(corners, mode, () => committedRegionSet, previewId)"
       />
       <div class="region-viewer-actions">
         <button type="button" title="重置画幅旋转" @click="canvas?.resetRotation()">
@@ -131,9 +134,6 @@ const formatArea = (value: number) =>
         <button type="button" title="适配视图" @click="canvas?.fit()">
           <Maximize2 :size="17" />
         </button>
-      </div>
-      <div v-if="viewer.geometryCapped.value" class="region-viewer-notice">
-        当前画幅数据量已达显示上限，请放大后继续查看。
       </div>
     </div>
 
@@ -193,14 +193,14 @@ const formatArea = (value: number) =>
           已保存 {{ composition.batches.length }} 批，
           {{ committedPointCount.toLocaleString() }} 个点位
         </strong>
-        <p>灰色虚线区域已完成种植，不会再次进入框选；批次管理位于点位预览。</p>
+        <p>灰色区域已完成种植，不会再次进入框选；批次管理位于点位预览。</p>
       </section>
 
       <footer>
         <button
           class="secondary-button"
           type="button"
-          :disabled="viewer.selectedRegionIds.value.length === 0"
+          :disabled="!viewer.selecting.value && viewer.selectedRegionIds.value.length === 0"
           @click="viewer.clearSelection"
         >
           <Trash2 :size="16" />
@@ -209,7 +209,7 @@ const formatArea = (value: number) =>
         <button
           class="primary-button"
           type="button"
-          :disabled="viewer.selectedRegionIds.value.length === 0"
+          :disabled="viewer.selecting.value || viewer.selectedRegionIds.value.length === 0"
           @click="emit('continue')"
         >
           进入种植

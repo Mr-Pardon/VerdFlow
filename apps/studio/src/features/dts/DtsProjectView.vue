@@ -6,6 +6,7 @@ import {
   CircleAlert,
   Clock3,
   FileSearch,
+  Image,
   Layers3,
   MapPinned,
   RefreshCw,
@@ -13,6 +14,7 @@ import {
   Sprout,
   Trees,
   Upload,
+  X,
 } from "@lucide/vue";
 import { computed, ref, watch } from "vue";
 import { onBeforeRouteLeave, useRoute, useRouter } from "vue-router";
@@ -31,6 +33,7 @@ import PlantingStage from "./PlantingStage.vue";
 import PlantingTaskStatus from "./PlantingTaskStatus.vue";
 import PointReviewStage from "./PointReviewStage.vue";
 import RegionStage from "./RegionStage.vue";
+import ImageryReviewStage from "./ImageryReviewStage.vue";
 import CompositionOutputStage from "./CompositionOutputStage.vue";
 import type { PreviewBatchSelection } from "./compositionOutput";
 import { useOutputAssetSelection } from "./useOutputAssetSelection";
@@ -44,6 +47,7 @@ const searchQuery = ref("");
 type WorkspaceStage =
   | "model"
   | "green"
+  | "imagery"
   | "regions"
   | "planting"
   | "review"
@@ -68,15 +72,59 @@ const plantingActive = computed(
 onBeforeRouteLeave(() => !submittingPlantPreview.value);
 const outputSelection = useOutputAssetSelection(() => workspace.project.value?.sessionId, () => plantPreview.value);
 const client = new LocalApiClient(platformBridge());
+const sourceIntake = computed(() => workspace.summary.value?.execution_kind === "source_intake" ? workspace.summary.value : null);
+const sourceIntakeActive = computed(() => ["queued", "running", "cancelling"].includes(sourceIntake.value?.execution_status ?? ""));
+const sourceActionPending = ref(false);
+const sourceActionError = ref<string | null>(null);
+const sourceErrorDismissed = ref(false);
+const sourceCancelRequested = ref<string | null>(null);
+watch(() => sourceIntake.value?.execution_id, id => {
+  sourceErrorDismissed.value = false;
+  sourceActionError.value = null;
+  sourceCancelRequested.value = null;
+  if (id) activeStage.value = "model";
+});
+const manageSourceIntake = async (action: "cancel" | "retry") => {
+  const sessionId = workspace.project.value?.sessionId;
+  const jobId = sourceIntake.value?.execution_id;
+  if (!sessionId || !jobId || sourceActionPending.value) return;
+  sourceActionPending.value = true;
+  sourceActionError.value = null;
+  try {
+    if (action === "cancel") {
+      if ((await client.cancelJob(sessionId, jobId)).accepted) sourceCancelRequested.value = jobId;
+    } else await client.retrySourceIntake(sessionId, jobId);
+    await workspace.refresh();
+  } catch (error) {
+    if (jobId === sourceIntake.value?.execution_id) sourceActionError.value = error instanceof Error ? error.message : "源文件操作未完成。";
+  } finally {
+    sourceActionPending.value = false;
+  }
+};
 const currentSceneRevisionId = computed(
   () =>
     workspace.summary.value?.scene_revision_id ??
     workspace.preparation.value?.scene_revision_id ??
     null,
 );
-const usesDirectRegionSource = computed(
-  () => workspace.summary.value?.scene_importer_id === "verdflow.geospatial",
-);
+const imageryJob = computed(() => workspace.summary.value?.execution_kind === "imagery_preparation" ? workspace.summary.value : null);
+const imageryJobId = computed(() => workspace.summary.value?.imagery_job_id ?? imageryJob.value?.execution_id);
+const imageryTask = computed(() => workspace.tasks.value.find(task => task.job_id === imageryJobId.value));
+const vectorPreparation = computed(() => workspace.summary.value?.execution_kind === "vector_preparation" ? workspace.summary.value : null);
+const usesDirectRegionSource = computed(() => Boolean(vectorPreparation.value) ||
+  ["verdflow.geospatial", "verdflow.geospatial.imagery"].includes(workspace.summary.value?.scene_importer_id ?? ""));
+
+watch(() => imageryJob.value?.execution_id, (jobId) => {
+  if (jobId) activeStage.value = "imagery";
+});
+watch(() => vectorPreparation.value?.execution_id, (jobId) => {
+  if (jobId) activeStage.value = "regions";
+});
+const handleImageryConfirmed = async () => {
+  selectedRegionIds.value = [];
+  await workspace.refresh();
+  activeStage.value = "regions";
+};
 const currentCommittedBatch = computed(() => {
   const executionId = plantPreview.value?.execution_id;
   if (!executionId) return null;
@@ -153,6 +201,8 @@ const stages = computed(() => {
     icon: typeof FileSearch;
     enabled: boolean;
   }>;
+  if (sourceIntake.value) return [{ key: "model" as const, label: "源文件", icon: FileSearch, enabled: true }, ...plantingStages];
+  if (imageryJobId.value) return [{ key: "imagery" as const, label: "影像提取", icon: Image, enabled: true }, ...plantingStages];
   if (usesDirectRegionSource.value) return plantingStages;
   return [
     { key: "model", label: "模型", icon: FileSearch, enabled: true },
@@ -271,6 +321,20 @@ const candidateByName = computed(
 );
 
 const preparationMessage = computed(() => {
+  if (sourceIntake.value) {
+    if (sourceIntake.value.execution_status === "cancelled") return "源文件登记已取消";
+    if (!sourceIntakeActive.value) return "源文件登记未完成";
+    return "正在登记源文件";
+  }
+  if (vectorPreparation.value) {
+    if (vectorPreparation.value.execution_status === "cancelled") return "区域准备已取消";
+    return vectorPreparation.value.error_message ?? "正在准备种植区域";
+  }
+  if (imageryJob.value) {
+    if (imageryJob.value.execution_status === "succeeded") return "影像已识别，等待确认区域";
+    if (imageryJob.value.execution_status === "cancelled") return "影像识别已取消";
+    return imageryJob.value.error_message ?? "正在识别影像绿地";
+  }
   const currentMaterialFlow = workspace.materialFlow.value;
   if (
     workspace.summary.value?.execution_kind === "material_flow" &&
@@ -324,6 +388,7 @@ const businessStateLabel = computed(
       new: "待处理",
       running: "进行中",
       awaiting_material_confirmation: "等待确认",
+      awaiting_region_confirmation: "待区域确认",
       ready_to_plant: "可种植",
       awaiting_point_review: "待点位确认",
       completed: "已完成",
@@ -337,6 +402,7 @@ const statusTone = computed(() => {
   if (state === "failed" || state === "cancelled") return "danger";
   if (
     state === "awaiting_material_confirmation" ||
+    state === "awaiting_region_confirmation" ||
     state === "awaiting_point_review"
   ) {
     return "warning";
@@ -835,6 +901,19 @@ const taskStatusLabel = (task: ProjectTaskInfo) =>
           <strong>正在读取项目状态</strong>
         </div>
 
+        <ImageryReviewStage
+          v-else-if="activeStage === 'imagery' && imageryJobId && workspace.project.value.sessionId"
+          :key="`${imageryJobId}:${workspace.summary.value?.region_set_id ?? ''}`"
+          :session-id="workspace.project.value.sessionId"
+          :job-id="imageryJobId"
+          :status="imageryJob?.execution_status ?? 'succeeded'"
+          :stage="imageryTask?.stage"
+          :progress="imageryTask?.progress"
+          :failure="imageryJob?.error_message ?? null"
+          @refresh="workspace.refresh()"
+          @confirmed="handleImageryConfirmed"
+          @back="activateStage('regions')"
+        />
         <RegionStage
           v-else-if="
             activeStage === 'regions' &&
@@ -1018,15 +1097,25 @@ const taskStatusLabel = (task: ProjectTaskInfo) =>
           </footer>
         </template>
 
-        <div v-else-if="activeStage === 'model'" class="stage-overview">
+        <div v-else-if="activeStage === 'model' || vectorPreparation" class="stage-overview">
           <div class="stage-overview__icon" :data-tone="statusTone">
             <Check v-if="workspace.preparation.value?.status === 'succeeded'" :size="26" />
-            <CircleAlert v-else-if="workspace.preparation.value?.status === 'failed'" :size="26" />
+            <CircleAlert v-else-if="workspace.preparation.value?.status === 'failed' || vectorPreparation?.state === 'failed' || sourceIntake?.state === 'failed'" :size="26" />
             <Clock3 v-else :size="26" />
           </div>
-          <span>模型</span>
+          <span>{{ sourceIntake ? "项目输入" : vectorPreparation ? "区域选择" : "模型" }}</span>
           <h2>{{ preparationMessage }}</h2>
-          <p v-if="workspace.activeTask.value">
+          <template v-if="sourceIntake">
+            <DismissibleNotice :message="sourceActionError ?? (sourceErrorDismissed ? null : sourceIntake.error_message)"
+              @dismiss="sourceActionError ? sourceActionError = null : sourceErrorDismissed = true" />
+            <p v-if="sourceIntakeActive && workspace.activeTask.value">{{ Math.round(workspace.activeTask.value.progress * 100) }}%</p>
+            <button v-if="sourceIntakeActive" type="button" class="secondary-button"
+              :disabled="sourceActionPending || sourceCancelRequested === sourceIntake.execution_id || sourceIntake.execution_status === 'cancelling'"
+              @click="manageSourceIntake('cancel')"><X :size="16" /> 取消登记</button>
+            <button v-else type="button" class="secondary-button" :disabled="sourceActionPending"
+              @click="manageSourceIntake('retry')"><RefreshCw :size="16" /> 重试登记</button>
+          </template>
+          <p v-else-if="workspace.activeTask.value">
             {{ workspace.activeTask.value.business_name }}，进度
             {{ Math.round(workspace.activeTask.value.progress * 100) }}%。
           </p>

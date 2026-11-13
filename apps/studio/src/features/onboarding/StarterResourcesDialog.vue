@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onScopeDispose, ref, watch } from "vue";
-import { ArrowUpRight, BookOpen, Check, Download, FileInput, LoaderCircle, PackageOpen, RefreshCw, Sprout, X } from "@lucide/vue";
+import { ArrowUpRight, BookOpen, Check, ChevronRight, Download, FileInput, LoaderCircle, PackageOpen, RefreshCw, Sprout, X } from "@lucide/vue";
 import { useResourceImport } from "./useResourceImport";
-import type { StarterImportItem } from "../../api/starterResources";
+import type { ImportChoice, StarterImportItem } from "../../api/starterResources";
 import type { ResourceSelection } from "../../api/resourceCenter";
 import { platformBridge } from "../../platform";
 
@@ -18,6 +18,13 @@ const results = computed(() => new Map(state.operation.value?.items.map(item => 
 const successful = computed(() => state.operation.value?.items.filter(item => ["imported", "existing"].includes(item.status)).length ?? 0);
 const choices = computed(() => state.operation.value?.choices ?? []);
 const selected = computed(() => choices.value.filter(item => !item.blocked && (!item.optional || state.optionalIds.value.includes(item.id)) && (!item.conflict || state.overwriteIds.value.includes(item.id))));
+const confirmLabel = computed(() => !props.selection && props.paths.length === 0 ? "全部导入" : "确认导入");
+function resourceTarget(item: ImportChoice) {
+  // Choice IDs can have a dependency suffix; the published page identifies the resource.
+  const id = URL.canParse(item.page_url) ? new URL(item.page_url).searchParams.get("id") : null;
+  if (!id || !/^[a-z0-9][a-z0-9.-]{0,99}$/.test(id)) return { path: "/resources" };
+  return { path: `/resources/${id}`, query: { version: item.version } };
+}
 const totalBytes = computed(() => selected.value.reduce((sum, item) => sum + item.bytes, 0));
 const groups = computed(() => [
   { title: "本次导入", items: choices.value.filter(item => !item.optional) },
@@ -59,13 +66,13 @@ onScopeDispose(() => dialog.value?.close());
             <p v-if="results.get(item.id)?.message" :class="{ 'guide-error': results.get(item.id)?.status === 'failed' }">{{ results.get(item.id)?.message }}</p>
           </div>
           <span v-if="results.has(item.id) && !state.waiting.value" class="starter-resource__state" :class="{ 'guide-error': results.get(item.id)?.status === 'failed' }">{{ labels[results.get(item.id)!.status] }}</span>
-          <a v-if="item.page_url" :href="item.page_url" target="_blank" rel="noopener noreferrer" class="icon-button" :title="`查看 ${item.name} 资源说明`" :aria-label="`查看 ${item.name} 资源说明`"><ArrowUpRight :size="16" /></a>
+          <RouterLink v-if="item.page_url && !state.busy.value" :to="resourceTarget(item)" class="icon-button" :title="`查看 ${item.name} 资源说明`" :aria-label="`查看 ${item.name} 资源说明`" @click="close"><ChevronRight :size="16" /></RouterLink>
         </li>
       </ul>
       </section>
       <p v-for="warning in state.operation.value?.warnings" :key="warning" class="starter-dialog__note">{{ warning }}</p>
       <p class="starter-dialog__notice">策略导入后仍需确认信任。DTS 模型本体未包含在资产库中，配套 PAK 请从资产资源说明页获取。</p>
-      <RouterLink v-if="!selection" class="text-button" to="/resources" @click="close">浏览资源中心<ArrowUpRight :size="14" /></RouterLink>
+      <RouterLink v-if="!selection && !state.busy.value" class="text-button" to="/resources" @click="close">浏览资源中心<ChevronRight :size="14" /></RouterLink>
       <p v-if="state.error.value" role="alert" class="guide-error">{{ state.error.value }}</p>
       <p v-if="state.finished.value && successful" role="status" class="starter-dialog__result"><Check :size="17" />{{ successful }} 项资源已导入或已存在</p>
       <RouterLink v-if="state.finished.value && successful && choices.some(item => item.kind === 'strategies')" class="text-button" to="/strategies" @click="close">前往策略库确认信任<ArrowUpRight :size="14" /></RouterLink>
@@ -77,7 +84,7 @@ onScopeDispose(() => dialog.value?.close());
       <template v-else>
         <button v-if="choices.some(item => item.blocked) || (state.finished.value && ['partial', 'failed'].includes(state.operation.value?.status ?? '') && choices.some(item => item.kind === 'plans'))" class="secondary-button" :disabled="!bridge.capabilities.selectSourceFiles" @click="selectStrategy"><FileInput :size="16" />选择本地策略</button>
         <button v-if="!state.waiting.value || state.error.value" class="secondary-button" @click="state.prepare()"><RefreshCw :size="16" />重新检查</button>
-        <button v-if="state.waiting.value" class="primary-button" :disabled="!selected.length" @click="state.confirm"><Download :size="16" />确认导入</button>
+        <button v-if="state.waiting.value" class="primary-button" :disabled="!selected.length" @click="state.confirm"><Download :size="16" />{{ confirmLabel }}</button>
         <button v-else class="primary-button" @click="close">完成</button>
       </template>
     </footer>

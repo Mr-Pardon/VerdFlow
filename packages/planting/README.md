@@ -10,6 +10,9 @@
 Schema、Canonical JSON、semantic hash、EffectiveBindingSnapshot 构建、稀疏
 TargetAssetUseSnapshot 提取，以及固定 seed 的确定性 AssetAssignmentSet 生成。
 
+`PointSetReader` 使用增量 JSON 解析器读取既有 v2/v3 点集，按原顺序交付点位行。
+完整读取后方可取已核对的头部和点数；消费方在定版前仍需执行对应的领域校验。
+
 该包不执行几何撒点、高程采样、数据库持久化、DTS XML 导出或 Blender 实例化。
 `resolve_assignment_preview` 只为临时展示复用现有候选/缩放解析规则，接受稳定 ID 和
 候选策略，不接受半径、坐标或目标 locator，不生成正式 PointSet；参考范围由 Studio 绘制。
@@ -68,12 +71,19 @@ Core 的点数及 assignment hash，复核文档头和引用，不再全量 Sche
 无变化筛选原样返回；真正生成子集仍保持规范文档及语义 hash。原始文档入口继续严格校验。
 `validate_elevation_point_set` 对照已验收父点集检查高程增量：固定字段/顺序/数量不可改变，
 仅复核采样结果、有限坐标、命中/未命中语义和未偏移状态，不重复校验父点集所有字段。
+`PointSetReader` 和 `AssignmentSetReader` 为现有 PointSet v2/v3、AssignmentSet v1
+提供有界行读取：常规行走原生解码，复杂值用事件解析，完整头部和点数在读到文档结尾后
+可用。生成结果按行验收，ID 查重超过内存预算才使用调用方管理的临时 SQLite 文件。
+正式映射用 `write_persisted_asset_assignments` 计算原有语义哈希并写入调用方暂存流，
+映射顺序和字节与原有解析接口一致；不增加项目持久化格式。
+`paired_planting_rows` 在已定版 Artifact 之间按点位顺序关联映射，只有旧文件顺序不一致时
+才创建临时 ID 索引；`output_row_selected` 将资产和高程命中筛选用于同一行对。
 Catalog 只在作者流程中提供可选来源信息，不参与执行门禁。EffectiveBindingSnapshot
 记录本次 Profile 或当前 Catalog 来源，TargetAssetUseSnapshot 冻结真正使用的精确资产记录。
 
 ## 依赖边界
 
-- 允许依赖 `verdflow-contracts`、Python 标准库、PyYAML 和 jsonschema。
+- 允许依赖 `verdflow-contracts`、Python 标准库、PyYAML、jsonschema 和 ijson。
 - 不依赖 `verdflow-core`、`verdflow-project-store`、Apps、Bridges 或 Adapter。
 - 不导入 Blender、DTS 或其他目标 SDK 类型。
 - Provider-specific 字段只能位于 Catalog 的 `provider_metadata` 中。
@@ -89,6 +99,7 @@ effective.py    Profile/override/Catalog 到有效绑定快照
 snapshots.py    从有效绑定提取精确稀疏 Catalog 使用快照
 resolver.py     跨运行确定性资产选择和目标缩放
 validation.py   版本化 JSON Schema 校验与领域不变量
+point_stream.py 点集及映射的有界读取、行校验和规范写入
 schemas/        Phase 2A 版本化文档 Schema
 ```
 

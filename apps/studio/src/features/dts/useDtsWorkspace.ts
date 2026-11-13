@@ -22,6 +22,7 @@ const ACTIVE_EXECUTION_STATUSES = new Set([
   "queued",
   "running",
   "cancel_requested",
+  "cancelling",
 ]);
 
 export const useDtsWorkspace = (projectId: Ref<string>) => {

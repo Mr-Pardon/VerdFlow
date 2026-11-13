@@ -18,6 +18,7 @@ from verdflow.contracts import (
     PlantRunReviewPolicy,
     PlantRunExecutionStage,
     PlantRunExecutionStatus,
+    ResolvedPlantWorkflow,
 )
 from verdflow.planting import build_binding_draft, canonical_json_bytes, semantic_hash, normalize_asset_selection
 from verdflow.project_store import ProjectStore
@@ -27,6 +28,7 @@ from .elevation_sampling import ElevationSamplingRequest
 from .exporting import OutputExportRequest
 from .job_runtime import JobRuntime
 from .planting_generation import PlantingGenerationRequest
+from .sampling_bindings import validate_resolved_workflow, workflow_from_document
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +50,7 @@ class PlantRunExecutionRequest:
     elevation_options: dict[str, Any] = field(default_factory=dict)
     binding_overrides: dict[str, Any] = field(default_factory=dict)
     profile_snapshot: dict[str, Any] | None = None
+    workflow: ResolvedPlantWorkflow | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,6 +61,7 @@ class PlantRunContinuationRequest:
     elevation_options: dict[str, Any] = field(default_factory=dict)
     selected_asset_ids: tuple[str, ...] | None = None
     complete_after_elevation: bool = False
+    workflow: ResolvedPlantWorkflow | None = None
 
 
 class PlantRunExecutionReader(Protocol):
@@ -163,6 +167,7 @@ class PlantRunExecutionService:
         idempotency_key: str | None = None,
     ) -> PlantRunExecutionInfo:
         self._validate_request(request)
+        validate_resolved_workflow(self._store, request.workflow, request.scene_revision_id, request.target_type)
         request = replace(
             request,
             profile_snapshot=self._stages.freeze_profile(request.profile_id),
@@ -175,7 +180,7 @@ class PlantRunExecutionService:
             canonical_json_bytes(document),
             media_type="application/vnd.verdflow.request+json",
             schema_id=PLANT_RUN_EXECUTION_REQUEST_SCHEMA,
-            schema_version=PLANT_RUN_EXECUTION_REQUEST_VERSION,
+            schema_version=document["version"],
         )
         return self._store.create_plant_run_execution(
             idempotency_key=(
@@ -193,6 +198,10 @@ class PlantRunExecutionService:
     def get_request(self, execution_id: str) -> PlantRunExecutionRequest:
         return self._load_request(self.get(execution_id))
 
+    def get_output_parameters(self, execution_id: str) -> PlantRunContinuationRequest:
+        info = self.get(execution_id)
+        return self._output_parameters(info, self._load_request(info))
+
     def confirm(
         self,
         execution_id: str,
@@ -206,13 +215,15 @@ class PlantRunExecutionService:
                 raise RuntimeError(
                     "Plant Run was already confirmed with different output parameters"
                 )
-            return info
+            return self.resume_elevation(info) or info
         if (
             info.status is not PlantRunExecutionStatus.AWAITING_CONFIRMATION
             or info.stage is not PlantRunExecutionStage.REVIEW
         ):
             raise RuntimeError("Plant Run is not awaiting Review confirmation")
         self._validate_continuation(continuation)
+        frozen = self._load_request(info)
+        validate_resolved_workflow(self._store, continuation.workflow, frozen.scene_revision_id, frozen.target_type)
         selected_assets = normalize_asset_selection(continuation.selected_asset_ids)
         if selected_assets is not None:
             available = {item.asset_id for item in self._store.list_asset_assignment_summaries(
@@ -225,7 +236,7 @@ class PlantRunExecutionService:
             canonical_json_bytes(document),
             media_type="application/vnd.verdflow.confirmation+json",
             schema_id=PLANT_RUN_CONTINUATION_SCHEMA,
-            schema_version=PLANT_RUN_CONTINUATION_VERSION,
+            schema_version=document["version"],
         )
         return self._save(
             replace(
@@ -297,6 +308,32 @@ class PlantRunExecutionService:
             )
         )
 
+    def resume_elevation(self, info: PlantRunExecutionInfo) -> PlantRunExecutionInfo | None:
+        """Retry a failed sampling Job with its exact original input, not generation."""
+        if (
+            info.status is not PlantRunExecutionStatus.FAILED
+            or info.stage is not PlantRunExecutionStage.ELEVATION
+            or info.elevation_job_id is None
+            or info.generated_point_set_id is None
+            or info.asset_assignment_set_id is None
+        ):
+            return None
+        previous = self._runtime.get(info.elevation_job_id)
+        if previous.status is not JobStatus.INTERRUPTED and not (
+            previous.status is JobStatus.FAILED and previous.error and previous.error.retryable
+        ):
+            return None
+        job = self._runtime.submit(
+            previous.command,
+            idempotency_key=f"plant-run:{info.execution_id}:elevation-retry:{info.revision}",
+            max_attempts=previous.max_attempts,
+            retention_class=previous.retention_class,
+        )
+        return self._save(replace(
+            info, status=PlantRunExecutionStatus.QUEUED, elevation_job_id=job.job_id,
+            error_code=None, error_message=None,
+        ))
+
     def run_once(self) -> bool:
         active = self._store.list_active_plant_run_executions(limit=1)
         if not active:
@@ -353,7 +390,8 @@ class PlantRunExecutionService:
                         key for key, value in request.binding_overrides.items()
                         if value.get("enabled", True) is False
                     )),
-                )
+                ),
+                idempotency_key=f"plant-run:{info.execution_id}:generation",
             )
             self._save(
                 replace(
@@ -461,6 +499,7 @@ class PlantRunExecutionService:
                     parent_point_set_id=info.generated_point_set_id,
                     provider_id=output.elevation_provider_id,
                     options=output.elevation_options,
+                    binding=output.workflow.sampling if output.workflow else None,
                 )
             )
             self._save(replace(info, elevation_job_id=job.job_id))
@@ -510,6 +549,7 @@ class PlantRunExecutionService:
                     provider_id=output.export_provider_id,
                     offset=output.offset,
                     selected_asset_ids=output.selected_asset_ids,
+                    capability=output.workflow.output if output.workflow else None,
                 )
             )
             self._save(replace(info, export_job_id=job.job_id))
@@ -591,7 +631,8 @@ class PlantRunExecutionService:
     def _document(request: PlantRunExecutionRequest) -> dict[str, Any]:
         return {
             "schema": PLANT_RUN_EXECUTION_REQUEST_SCHEMA,
-            "version": PLANT_RUN_EXECUTION_REQUEST_VERSION,
+            "version": "6" if request.workflow else PLANT_RUN_EXECUTION_REQUEST_VERSION,
+            **({"workflow": request.workflow.to_document()} if request.workflow else {}),
             "scene_revision_id": request.scene_revision_id,
             "region_set_id": request.region_set_id,
             "selected_region_ids": list(request.selected_region_ids),
@@ -616,7 +657,7 @@ class PlantRunExecutionService:
         version = str(value.get("version"))
         if (
             value.get("schema") != PLANT_RUN_EXECUTION_REQUEST_SCHEMA
-            or version != PLANT_RUN_EXECUTION_REQUEST_VERSION
+            or version not in {PLANT_RUN_EXECUTION_REQUEST_VERSION, "6"}
         ):
             raise ValueError("Plant Run request schema is unsupported")
         selected = value.get("selected_region_ids")
@@ -656,6 +697,7 @@ class PlantRunExecutionService:
             elevation_options=dict(value.get("elevation_options", {})),
             binding_overrides=dict(value.get("binding_overrides", {})),
             profile_snapshot=value.get("profile_snapshot"),
+            workflow=workflow_from_document(value, PLANT_RUN_EXECUTION_REQUEST_VERSION),
         )
         PlantRunExecutionService._validate_request(request)
         return request
@@ -682,6 +724,7 @@ class PlantRunExecutionService:
                     export_provider_id=request.export_provider_id or "",
                     offset=request.offset or (),
                     elevation_options=request.elevation_options,
+                    workflow=request.workflow,
                 )
             )
         elif any(
@@ -691,13 +734,19 @@ class PlantRunExecutionService:
                 request.export_provider_id,
                 request.offset,
             )
-        ) or request.elevation_options:
+        ) or request.elevation_options or request.workflow is not None:
             raise ValueError(
                 "Review-required Plant Run output parameters belong to confirmation"
             )
 
     @staticmethod
     def _validate_continuation(request: PlantRunContinuationRequest) -> None:
+        if request.workflow is not None:
+            request.workflow.validate()
+            if (request.workflow.elevation_provider_id != request.elevation_provider_id
+                    or request.workflow.export_provider_id != request.export_provider_id
+                    or (request.elevation_options and request.elevation_options != request.workflow.sampling.configuration)):
+                raise ValueError("Output parameters differ from the frozen workflow")
         normalize_asset_selection(request.selected_asset_ids)
         if not request.elevation_provider_id.strip():
             raise ValueError("elevation_provider_id is required")
@@ -721,6 +770,7 @@ class PlantRunExecutionService:
                 export_provider_id=request.export_provider_id or "",
                 offset=request.offset or (),
                 elevation_options=request.elevation_options,
+                workflow=request.workflow,
             )
             self._validate_continuation(output)
             return output
@@ -730,6 +780,8 @@ class PlantRunExecutionService:
             document = json.load(stream)
         if semantic_hash(document) != info.continuation_hash:
             raise ValueError("Plant Run continuation hash differs from execution")
+        if document.get("schema") != PLANT_RUN_CONTINUATION_SCHEMA:
+            raise ValueError("Plant Run continuation schema is unsupported")
         complete_after_elevation = document.get(
             "complete_after_elevation", False
         )
@@ -742,6 +794,7 @@ class PlantRunExecutionService:
             elevation_options=dict(document.get("elevation_options", {})),
             selected_asset_ids=normalize_asset_selection(document.get("selected_asset_ids")),
             complete_after_elevation=complete_after_elevation,
+            workflow=workflow_from_document(document, PLANT_RUN_CONTINUATION_VERSION),
         )
         self._validate_continuation(output)
         return output
@@ -753,7 +806,8 @@ class PlantRunExecutionService:
         selected = normalize_asset_selection(request.selected_asset_ids)
         return {
             "schema": PLANT_RUN_CONTINUATION_SCHEMA,
-            "version": PLANT_RUN_CONTINUATION_VERSION,
+            "version": "2" if request.workflow else PLANT_RUN_CONTINUATION_VERSION,
+            **({"workflow": request.workflow.to_document()} if request.workflow else {}),
             "elevation_provider_id": request.elevation_provider_id,
             "export_provider_id": request.export_provider_id,
             "offset": list(request.offset),

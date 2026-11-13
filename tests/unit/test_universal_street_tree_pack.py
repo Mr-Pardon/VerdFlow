@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 import importlib.util
+import math
 from pathlib import Path
 import sys
 import unittest
@@ -205,6 +206,32 @@ class UniversalStreetTreePackTests(unittest.TestCase):
         spaced = run(12, triple_row_spacing_m=4, tree_spacing_m=10, shrub_spacing_m=4)
         self.assertGreater(len(rows(spaced, "tree_accent")), len(rows(wide, "tree_accent")))
         self.assertLess(len(rows(spaced, "outer_shrub")), len(rows(wide, "outer_shrub")))
+
+    def test_clamped_outer_rows_keep_all_stations_on_rotated_greenbelt(self) -> None:
+        region = rectangle_region("rotated", 5.0, 100.0)
+        cos_angle, sin_angle = math.cos(0.61), math.sin(0.61)
+        ring = region["rings"][0]
+        ring["loop"] = [
+            [x * cos_angle - y * sin_angle, x * sin_angle + y * cos_angle, z]
+            for x, y, z in ring["loop"]
+        ]
+        result = self.generator.generate(
+            {
+                "strategy": self.strategy,
+                "selected_regions": [region],
+                "seed": 17,
+                "args": {"strategy_parameters": {"triple_row_spacing_m": 3.0}},
+            }
+        )
+        outer_rows = Counter()
+        for point in result["points"]:
+            if point["role_key"] == "outer_shrub":
+                x, y, _ = point["generated_position"]
+                lateral = -x * sin_angle + y * cos_angle
+                self.assertAlmostEqual(abs(lateral), 2.05)
+                outer_rows[1 if lateral > 0 else -1] += 1
+
+        self.assertEqual(outer_rows, {-1: 50, 1: 50})
 
     def test_rotation_is_randomized_without_changing_seeded_positions(self) -> None:
         context = {

@@ -1,25 +1,42 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 
 import type { Bounds3D, RegionViewerItem } from "../../api";
 import {
   boundaryIntersectsRectangle,
   boundsContainPoint,
+  extentBoundary,
   pointInBoundary,
 } from "./regionGeometry";
 import type { RegionSelectionMode } from "./useRegionViewer";
+import type { ImageryDetailTile } from "./imageryDetail";
+import { createRegionOverviewCanvas, drawRegionOverview, pickRegionOverview } from "./regionViewport";
+import type { RegionOverviewGrid } from "./regionViewport";
 
 const props = defineProps<{
   bounds: Bounds3D | null;
   regions: RegionViewerItem[];
+  regionOverview?: RegionOverviewGrid | null;
   selectedRegionIds: string[];
   committedRegionIds: string[];
   loading: boolean;
+  exactSelection?: boolean;
+  backdrop?: { url: string; transform: [number, number, number, number, number, number] } | null;
+  overview?: {
+    canvas: HTMLCanvasElement;
+    transform: [number, number, number, number, number, number];
+    pick: (x: number, y: number) => string | undefined;
+    pickArea: (corners: readonly { x: number; y: number }[], covered?: (x: number, y: number) => boolean) => string[];
+  } | null;
+  imageryReview?: boolean;
+  imageryTiles?: ImageryDetailTile[];
 }>();
 
 const emit = defineEmits<{
-  viewport: [bounds: Bounds3D];
+  viewChanging: [];
+  viewport: [bounds: Bounds3D, pixelsPerMeter: number];
   selection: [payload: { ids: string[]; mode: RegionSelectionMode }];
+  selectionQuery: [corners: { x: number; y: number }[], mode: RegionSelectionMode, previewId?: string];
 }>();
 
 const canvas = ref<HTMLCanvasElement | null>(null);
@@ -35,6 +52,9 @@ const view = reactive({
 let resizeObserver: ResizeObserver | undefined;
 let renderFrame: number | undefined;
 let viewportTimer: ReturnType<typeof setTimeout> | undefined;
+let backdropImage: HTMLImageElement | undefined;
+let viewAdjusted = false;
+let focusedRegion: Bounds3D | null = null;
 let drag:
   | {
       kind: "pan" | "rotate" | "selection";
@@ -52,16 +72,16 @@ let drag:
 const selected = () => new Set(props.selectedRegionIds);
 const committed = () => new Set(props.committedRegionIds);
 
-const fit = () => {
-  if (!props.bounds || view.width <= 1 || view.height <= 1) return;
-  const width = Math.max(props.bounds.max_x - props.bounds.min_x, 1e-6);
-  const height = Math.max(props.bounds.max_y - props.bounds.min_y, 1e-6);
+const fitBounds = (bounds: Bounds3D, minimumSpan: number, adjusted: boolean) => {
+  if (view.width <= 1 || view.height <= 1) return;
+  const width = Math.max(bounds.max_x - bounds.min_x, minimumSpan);
+  const height = Math.max(bounds.max_y - bounds.min_y, minimumSpan);
   const cosine = Math.abs(Math.cos(view.rotation));
   const sine = Math.abs(Math.sin(view.rotation));
   const projectedWidth = width * cosine + height * sine;
   const projectedHeight = width * sine + height * cosine;
-  view.centerX = (props.bounds.min_x + props.bounds.max_x) / 2;
-  view.centerY = (props.bounds.min_y + props.bounds.max_y) / 2;
+  view.centerX = (bounds.min_x + bounds.max_x) / 2;
+  view.centerY = (bounds.min_y + bounds.max_y) / 2;
   view.scale = Math.max(
     1e-6,
     Math.min(
@@ -70,16 +90,24 @@ const fit = () => {
     ),
   );
   view.initialized = true;
+  viewAdjusted = adjusted;
   scheduleRender();
   scheduleViewport();
 };
 
+const fit = () => { if (props.bounds) fitBounds(props.bounds, 1e-6, false); };
+const clearFocus = () => { focusedRegion = null; scheduleRender(); };
+const focusRegion = (bounds: Bounds3D, minimumSpan: number) => {
+  focusedRegion = bounds;
+  fitBounds(bounds, minimumSpan, true);
+};
 const resetRotation = () => {
+  clearFocus();
   view.rotation = 0;
   fit();
 };
 
-defineExpose({ fit, resetRotation });
+defineExpose({ fit, resetRotation, focusRegion, clearFocus });
 
 const resize = () => {
   const element = canvas.value;
@@ -93,8 +121,11 @@ const resize = () => {
   const ratio = Math.min(window.devicePixelRatio || 1, 2);
   element.width = Math.round(nextWidth * ratio);
   element.height = Math.round(nextHeight * ratio);
-  if (changed && props.bounds && !view.initialized) fit();
-  else scheduleRender();
+  if (changed && props.bounds && (!view.initialized || (props.imageryReview && !viewAdjusted))) fit();
+  else {
+    scheduleRender();
+    if (changed && props.imageryReview) scheduleViewport();
+  }
 };
 
 const scheduleRender = () => {
@@ -115,9 +146,20 @@ const render = () => {
   context.clearRect(0, 0, view.width, view.height);
   context.fillStyle = "#edf3f1";
   context.fillRect(0, 0, view.width, view.height);
+  if (props.backdrop && backdropImage?.complete && backdropImage.naturalWidth) {
+    drawRaster(context, backdropImage, props.backdrop.transform);
+  }
+  if (props.overview) drawRaster(context, props.overview.canvas, props.overview.transform);
+  for (const tile of props.imageryTiles ?? []) {
+    drawRaster(context, tile.backdrop, tile.transform);
+    if (props.overview) drawRaster(context, tile.canvas, tile.transform);
+  }
 
   const selectedIds = selected();
   const committedIds = committed();
+  if (props.regionOverview && overviewCanvas.value) {
+    drawRegionOverview(context, overviewCanvas.value, props.regionOverview.bounds, worldToScreen);
+  }
   for (const region of props.regions) {
     drawRegion(
       context,
@@ -126,6 +168,7 @@ const render = () => {
       committedIds.has(region.region_id),
     );
   }
+  if (focusedRegion && props.overview) drawFocus(context, focusedRegion);
 
   if (drag?.kind === "selection") {
     const left = Math.min(drag.startX, drag.currentX);
@@ -142,14 +185,53 @@ const render = () => {
   }
 };
 
+const drawFocus = (context: CanvasRenderingContext2D, bounds: Bounds3D) => {
+  const points = [worldToScreen(bounds.min_x, bounds.min_y), worldToScreen(bounds.max_x, bounds.min_y),
+    worldToScreen(bounds.min_x, bounds.max_y), worldToScreen(bounds.max_x, bounds.max_y)];
+  const xs = points.map(point => point.x), ys = points.map(point => point.y);
+  const left = Math.min(...xs), top = Math.min(...ys);
+  const right = Math.max(...xs), bottom = Math.max(...ys);
+  const centerX = (left + right) / 2, centerY = (top + bottom) / 2;
+  const dx = Math.max((right - left) / 2 + 5, 10), dy = Math.max((bottom - top) / 2 + 5, 10);
+  context.beginPath();
+  for (const x of [-1, 1]) for (const y of [-1, 1]) {
+    const cx = centerX + x * dx, cy = centerY + y * dy;
+    context.moveTo(cx - x * 8, cy);
+    context.lineTo(cx, cy);
+    context.lineTo(cx, cy - y * 8);
+  }
+  context.save();
+  context.lineWidth = 4;
+  context.strokeStyle = "rgb(16 32 28 / 75%)";
+  context.stroke();
+  context.lineWidth = 1.5;
+  context.strokeStyle = "#ffffff";
+  context.stroke();
+  context.restore();
+};
+
+const drawRaster = (
+  context: CanvasRenderingContext2D, source: CanvasImageSource,
+  [a, b, c, d, e, f]: [number, number, number, number, number, number],
+) => {
+  const origin = worldToScreen(c, f);
+  const column = worldToScreen(c + a, f + d);
+  const row = worldToScreen(c + b, f + e);
+  context.save();
+  context.transform(column.x - origin.x, column.y - origin.y, row.x - origin.x, row.y - origin.y, origin.x, origin.y);
+  context.drawImage(source, 0, 0);
+  context.restore();
+};
+
 const drawRegion = (
   context: CanvasRenderingContext2D,
   region: RegionViewerItem,
   isSelected: boolean,
   isCommitted: boolean,
 ) => {
+  const extent = region.boundary_mode === "extent";
   context.beginPath();
-  for (const ring of region.footprint_boundary_xyz) {
+  for (const ring of extent ? extentBoundary(region.bounds) : region.footprint_boundary_xyz) {
     if (!ring.length) continue;
     const first = worldToScreen(ring[0][0], ring[0][1]);
     context.moveTo(first.x, first.y);
@@ -170,8 +252,8 @@ const drawRegion = (
       ? "#52615e"
       : classificationStroke(region.classification);
   context.lineWidth = isSelected || isCommitted ? 2 : 1;
-  context.setLineDash(isCommitted && !isSelected ? [5, 4] : []);
-  context.fill("evenodd");
+  context.setLineDash(extent || (isCommitted && !isSelected) ? [5, 4] : []);
+  if (!extent) context.fill("evenodd");
   context.stroke();
   context.setLineDash([]);
 };
@@ -212,6 +294,7 @@ const onPointerMove = (event: PointerEvent) => {
   if (!drag) return;
   const point = pointerPosition(event);
   if (drag.kind === "pan") {
+    viewAdjusted = true;
     const screenX = (point.x - drag.lastX) / view.scale;
     const screenY = -(point.y - drag.lastY) / view.scale;
     const cosine = Math.cos(view.rotation);
@@ -222,6 +305,7 @@ const onPointerMove = (event: PointerEvent) => {
     drag.lastY = point.y;
     scheduleViewport();
   } else if (drag.kind === "rotate") {
+    viewAdjusted = true;
     view.rotation += (point.x - drag.lastX) * 0.008;
     drag.lastX = point.x;
     drag.lastY = point.y;
@@ -243,18 +327,24 @@ const onPointerUp = (event: PointerEvent) => {
       completed.currentX - completed.startX,
       completed.currentY - completed.startY,
     );
-    const ids =
-      distance < 5
+    const click = distance < 5;
+    const mode = completed.ctrlKey ? "toggle" : completed.shiftKey ? "add" : "replace";
+    if (props.exactSelection) {
+      const { startX, startY, currentX, currentY } = completed;
+      if (click) {
+        emit("selectionQuery", [screenToWorld(currentX, currentY)], mode, pickRegion(currentX, currentY)[0]);
+      } else {
+        emit("selectionQuery", [
+          screenToWorld(startX, startY), screenToWorld(currentX, startY),
+          screenToWorld(currentX, currentY), screenToWorld(startX, currentY),
+        ], mode);
+      }
+    } else {
+      const ids = click
         ? pickRegion(completed.currentX, completed.currentY)
         : regionsInSelection(completed);
-    emit("selection", {
-      ids,
-      mode: completed.ctrlKey
-        ? "toggle"
-        : completed.shiftKey
-          ? "add"
-          : "replace",
-    });
+      emit("selection", { ids, mode });
+    }
   }
   scheduleRender();
 };
@@ -266,6 +356,7 @@ const onPointerCancel = () => {
 
 const onWheel = (event: WheelEvent) => {
   if (!view.initialized) return;
+  viewAdjusted = true;
   const point = pointerPosition(event);
   const before = screenToWorld(point.x, point.y);
   view.scale = Math.min(
@@ -291,7 +382,13 @@ const pickRegion = (screenX: number, screenY: number): string[] => {
       return [region.region_id];
     }
   }
-  return [];
+  if (props.regionOverview) {
+    const id = pickRegionOverview(props.regionOverview, point.x, point.y);
+    return id && !committedIds.has(id) ? [id] : [];
+  }
+  const detail = props.overview && [...(props.imageryTiles ?? [])].reverse().find(tile => tile.covers(point.x, point.y));
+  const overviewId = detail ? detail.pick(point.x, point.y) : props.overview?.pick(point.x, point.y);
+  return overviewId ? [overviewId] : [];
 };
 
 const regionsInSelection = (selection: NonNullable<typeof drag>) => {
@@ -300,6 +397,18 @@ const regionsInSelection = (selection: NonNullable<typeof drag>) => {
   const minY = Math.min(selection.startY, selection.currentY);
   const maxX = Math.max(selection.startX, selection.currentX);
   const maxY = Math.max(selection.startY, selection.currentY);
+  if (props.overview) {
+    const corners = [
+      screenToWorld(minX, minY), screenToWorld(maxX, minY),
+      screenToWorld(maxX, maxY), screenToWorld(minX, maxY),
+    ];
+    const tiles = [...(props.imageryTiles ?? [])].reverse();
+    const hits = tiles.flatMap((tile, index) => {
+      const finer = tiles.slice(0, index);
+      return tile.pickArea(corners, (x, y) => finer.some(other => other.covers(x, y)));
+    });
+    return [...new Set([...hits, ...props.overview.pickArea(corners, (x, y) => tiles.some(tile => tile.covers(x, y)))])];
+  }
   return props.regions
     .filter((region) => !committedIds.has(region.region_id))
     .filter((region) =>
@@ -320,6 +429,7 @@ const regionsInSelection = (selection: NonNullable<typeof drag>) => {
 };
 
 const scheduleViewport = () => {
+  if (props.imageryReview) emit("viewChanging");
   if (viewportTimer) clearTimeout(viewportTimer);
   viewportTimer = setTimeout(() => {
     if (!view.initialized) return;
@@ -338,7 +448,7 @@ const scheduleViewport = () => {
       max_x: Math.max(...xValues),
       max_y: Math.max(...yValues),
       max_z: props.bounds?.max_z ?? 0,
-    });
+    }, view.scale * ((canvas.value?.width ?? view.width) / view.width));
   }, 120);
 };
 
@@ -371,13 +481,30 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  if (backdropImage) backdropImage.onload = null;
   resizeObserver?.disconnect();
   if (renderFrame !== undefined) cancelAnimationFrame(renderFrame);
   if (viewportTimer) clearTimeout(viewportTimer);
 });
 
+watch(() => props.backdrop?.url, (url) => {
+  if (backdropImage) backdropImage.onload = null;
+  backdropImage = undefined;
+  if (url) {
+    backdropImage = new Image();
+    backdropImage.onload = scheduleRender;
+    backdropImage.src = url;
+  }
+  scheduleRender();
+}, { immediate: true });
 watch(() => props.bounds, fit);
 watch(() => props.regions, scheduleRender);
+const overviewCanvas = computed(() => props.regionOverview
+  ? createRegionOverviewCanvas(props.regionOverview, selected(), committed(), "regions")
+  : null);
+watch(overviewCanvas, scheduleRender);
+watch(() => props.overview, scheduleRender);
+watch(() => props.imageryTiles, scheduleRender);
 watch(() => props.selectedRegionIds, scheduleRender);
 watch(() => props.committedRegionIds, scheduleRender);
 

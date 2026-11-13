@@ -34,6 +34,11 @@ PYTHON_URL = (
 PYTHON_SHA256 = "59ff76e16e6597de47474fb22be69e7191a89116910d728ab735079b078e52db"
 PYYAML_VERSION = "6.0.2"
 REQUIREMENTS_PATH = ROOT / "tools" / "portable-requirements.txt"
+IMAGERY_REQUIREMENTS_PATH = ROOT / "tools" / "portable-imagery-requirements.txt"
+IMAGERY_MODEL_FILENAME = "segformer-probabilities.onnx"
+# Match the fixed model profile enforced by the embedded geospatial worker.
+IMAGERY_MODEL_SHA256 = "58db911702831c05889a1dd5354011521b6de7bd768ab5f8cff70d4f52b0877d"
+_ONNX_DEVELOPMENT_PREFIXES = ("onnxruntime/tools/", "onnxruntime/transformers/", "onnxruntime/quantization/")
 
 
 def _default_update_repository() -> str | None:
@@ -54,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     update_source.add_argument("--no-updates", dest="update_repository", action="store_const", const=None,
                               help="build without online application updates")
+    parser.add_argument("--imagery-model", type=Path, metavar="ONNX_FILE",
+                        help="verified ONNX model for the standard package (or VERDFLOW_IMAGERY_MODEL_PATH)")
     parser.add_argument(
         "--smoke-test",
         action="store_true",
@@ -63,7 +70,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    arguments = build_parser().parse_args(argv)
+    parser = build_parser()
+    arguments = parser.parse_args(argv)
+    model_env = os.environ.get("VERDFLOW_IMAGERY_MODEL_PATH", "").strip()
+    imagery_model = arguments.imagery_model or (Path(model_env) if model_env else None)
+    if imagery_model is None or not imagery_model.is_file():
+        parser.error("The portable package requires a local ONNX file; set --imagery-model or VERDFLOW_IMAGERY_MODEL_PATH")
+    if _sha256(imagery_model) != IMAGERY_MODEL_SHA256:
+        parser.error("The ONNX model does not match the pinned VerdFlow imagery profile SHA-256")
     repository = arguments.update_repository
     if repository is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", repository):
         raise ValueError("Update repository must be owner/repository")
@@ -86,6 +100,9 @@ def main(argv: list[str] | None = None) -> int:
 
     _stage_electron(bundle_root, version, repository)
     _stage_python(bundle_root)
+    model_target = bundle_root / "resources" / "imagery" / IMAGERY_MODEL_FILENAME
+    model_target.parent.mkdir()
+    shutil.copyfile(imagery_model, model_target)
     _write_release_files(bundle_root, version)
     _verify_embedded_python(bundle_root)
     _verify_release_layout(bundle_root)
@@ -127,7 +144,9 @@ def _workspace_version() -> str:
     return version.strip()
 
 
-def _stage_electron(bundle_root: Path, version: str, repository: str | None = None) -> None:
+def _stage_electron(
+    bundle_root: Path, version: str, repository: str | None = None,
+) -> None:
     electron_dist = (
         ROOT
         / "apps"
@@ -193,7 +212,7 @@ def _stage_python(bundle_root: Path) -> None:
     site_packages.mkdir(parents=True)
     for wheel in wheels:
         with zipfile.ZipFile(wheel) as source:
-            source.extractall(site_packages)
+            source.extractall(site_packages, _portable_wheel_members(wheel, source.namelist()))
     _merge_verdflow_sources(site_packages / "verdflow")
 
     pth_files = tuple(runtime.glob("python*._pth"))
@@ -205,7 +224,16 @@ def _stage_python(bundle_root: Path) -> None:
     )
 
 
+def _portable_wheel_members(wheel: Path, names: list[str]) -> list[str]:
+    if wheel.name.startswith("onnxruntime-"):
+        # The fixed CPU graph does not use model conversion tools. Their deep
+        # paths exceed MAX_PATH in the existing updater's sibling staging root.
+        return [name for name in names if not name.startswith(_ONNX_DEVELOPMENT_PREFIXES)]
+    return names
+
+
 def _download_runtime_wheels() -> tuple[Path, ...]:
+    requirements = (REQUIREMENTS_PATH, IMAGERY_REQUIREMENTS_PATH)
     wheel_root = (CACHE_ROOT / "wheels").resolve()
     _require_child(wheel_root, CACHE_ROOT)
     if wheel_root.exists():
@@ -228,8 +256,7 @@ def _download_runtime_wheels() -> tuple[Path, ...]:
             "cp",
             "--abi",
             "cp313",
-            "--requirement",
-            str(REQUIREMENTS_PATH),
+            *(arg for requirement in requirements for arg in ("--requirement", str(requirement))),
             "--dest",
             str(wheel_root),
         ]
@@ -237,7 +264,8 @@ def _download_runtime_wheels() -> tuple[Path, ...]:
     wheels = tuple(sorted(wheel_root.glob("*.whl"), key=lambda item: item.name.lower()))
     expected_hashes = {
         line.split("sha256:", 1)[1].strip()
-        for line in REQUIREMENTS_PATH.read_text(encoding="utf-8").splitlines()
+        for requirement in requirements
+        for line in requirement.read_text(encoding="utf-8").splitlines()
         if "--hash=sha256:" in line
     }
     actual_hashes = {_sha256(wheel) for wheel in wheels}
@@ -277,6 +305,7 @@ def _write_release_files(bundle_root: Path, version: str) -> None:
             "working_tree_dirty": bool(_git_output(["status", "--porcelain"])),
         }
     stage_licenses(ROOT, bundle_root, python_version=PYTHON_VERSION)
+    shutil.copyfile(ROOT / "tools" / "portable-imagery-notice.md", bundle_root / "third-party" / "Imagery-model.md")
     (bundle_root / "README.txt").write_text(
         f"VerdFlow Studio v{version} Windows 免安装版\n"
         "\n"
@@ -288,7 +317,8 @@ def _write_release_files(bundle_root: Path, version: str) -> None:
         "6. 模型 API Key 由 Windows 凭据管理器保存，不写入普通数据文件。\n"
         "7. 本包未签名，Windows 可能显示未知发布者提醒。\n"
         "8. 使用手册：https://mr-pardon.github.io/verdflow-site/\n"
-        "9. 作者与许可见 AUTHORS.md、LICENSE、NOTICE；运行库声明见 third-party/README.md。\n",
+        "9. 影像提取使用内置 CPU 推理，模型来源见 third-party/Imagery-model.md。\n"
+        "10. 作者与许可见 AUTHORS.md、LICENSE、NOTICE；运行库声明见 third-party/README.md。\n",
         encoding="utf-8-sig",
     )
     (bundle_root / "release.json").write_text(
@@ -303,6 +333,8 @@ def _write_release_files(bundle_root: Path, version: str) -> None:
                 "python_version": PYTHON_VERSION,
                 "pyyaml_version": PYYAML_VERSION,
                 "python_requirements_sha256": _sha256(REQUIREMENTS_PATH),
+                "imagery_model_sha256": _sha256(bundle_root / "resources" / "imagery" / IMAGERY_MODEL_FILENAME),
+                "imagery_requirements_sha256": _sha256(IMAGERY_REQUIREMENTS_PATH),
             },
             ensure_ascii=False,
             sort_keys=True,
@@ -313,6 +345,12 @@ def _write_release_files(bundle_root: Path, version: str) -> None:
     )
 def _verify_embedded_python(bundle_root: Path) -> None:
     python = bundle_root / "resources" / "python" / "python.exe"
+    imagery_check = (
+        "from pathlib import Path; "
+        "from verdflow.geospatial_worker.imagery import ImageryRegionOptions, _load_predictor; "
+        f"predict, _ = _load_predictor(Path('resources/imagery/{IMAGERY_MODEL_FILENAME}'), ImageryRegionOptions('smoke')); "
+        "assert predict(numpy.zeros((3, 512, 512), dtype=numpy.float32)).shape[-2:] == (512, 512); "
+    )
     # Match Electron's piped stdin lifecycle; a plain import misses Windows
     # native-library deadlocks after the parent-disconnect watcher starts.
     with subprocess.Popen(
@@ -323,12 +361,13 @@ def _verify_embedded_python(bundle_root: Path) -> None:
                 "from verdflow.local_api.__main__ import _portable_shutdown_event; "
                 "stopped = _portable_shutdown_event(); "
                 "import time; time.sleep(0.1); "
-                "import yaml; import jsonschema; import verdflow.local_api; "
+                "import yaml; import jsonschema; import ijson; import verdflow.local_api; "
                 "import verdflow.system_host; import verdflow.strategy_worker; "
                 "import verdflow.model_api.worker_entry; "
                 "import verdflow.blender_worker; import numpy; import rasterio; "
                 "import shapefile; import shapely; import verdflow.geospatial_worker; "
-                "stopped.set(); print('portable-python-ready', flush=True)"
+                + imagery_check
+                + "stopped.set(); print('portable-python-ready', flush=True)"
             ),
         ],
         cwd=bundle_root,

@@ -6,18 +6,19 @@ import hashlib
 import math
 from collections.abc import Callable
 from decimal import Decimal, ROUND_HALF_EVEN, localcontext
-from typing import Any
+from typing import Any, BinaryIO
 
 from verdflow.contracts import AssignmentPreviewRequest, AssignmentPreviewResult
 
-from .canonical import canonical_json_bytes, semantic_hash
+from .canonical import CanonicalRowHasher, canonical_array_hash, canonical_row_bytes, point_set_row_hasher
 from .errors import PlantingDocumentError
+from .point_stream import PointSetReader
 from .validation import (
     validate_assignment_set,
     validate_effective_binding_snapshot,
     validate_persisted_point_set_summary,
+    validate_point_header,
     validate_point_set,
-    with_semantic_hash,
 )
 
 
@@ -176,31 +177,7 @@ def _resolve_validated_asset_assignments(
     _report_progress(progress, "resolving_asset_assignments", 0.0)
     resolved: list[dict[str, Any]] = []
     for index, point in enumerate(points, start=1):
-        role_key = point["role_key"]
-        role_assignment = snapshot["assignments"].get(role_key)
-        if role_assignment is None:
-            raise PlantingDocumentError(
-                f"point {point['id']!r} uses unmapped role {role_key!r}"
-            )
-        candidate = _choose_candidate(
-            role_assignment["candidates"],
-            random_seed,
-            point["id"],
-        )
-        scale = _resolve_scale(
-            candidate["scale"],
-            random_seed,
-            point["id"],
-        )
-        assignment = {
-            "point_id": point["id"],
-            "role_key": role_key,
-            "asset_id": candidate["asset_id"],
-            "target_scale_xyz": [scale, scale, scale],
-        }
-        if point.get("group_id"):
-            assignment["assignment_group_id"] = point["group_id"]
-        resolved.append(assignment)
+        resolved.append(_resolve_row(point, snapshot, random_seed))
         if index % _PROGRESS_INTERVAL == 0 or index == point_count:
             _report_progress(
                 progress,
@@ -208,21 +185,83 @@ def _resolve_validated_asset_assignments(
                 index / point_count,
             )
 
-    payload = {
+    payload = _assignment_header(
+        snapshot, random_seed, point_count, canonical_array_hash(point_set, "points"),
+    )
+    payload["assignments"] = resolved
+    _report_progress(progress, "validating_asset_assignments", 0.0)
+    payload["semantic_hash"] = canonical_array_hash(payload, "assignments")
+    validated = validate_assignment_set(payload)
+    _report_progress(progress, "validating_asset_assignments", 1.0)
+    return validated
+
+
+def write_persisted_asset_assignments(
+    source: BinaryIO,
+    destination: BinaryIO,
+    effective_binding_snapshot: dict[str, Any],
+    *,
+    random_seed: int,
+    expected_point_count: int,
+    point_kind: str,
+    progress: AssignmentProgressCallback | None = None,
+) -> None:
+    """Write canonical AssignmentSet bytes; the caller stages output until success."""
+    if type(random_seed) is not int or not 0 <= random_seed <= MAX_SEED:
+        raise PlantingDocumentError(f"random_seed must be between 0 and {MAX_SEED}")
+    snapshot = validate_effective_binding_snapshot(effective_binding_snapshot)
+    points = PointSetReader(source, expected_point_count=expected_point_count)
+    point_hash = point_set_row_hasher(kind=point_kind, count=expected_point_count)
+    assignment_hash = CanonicalRowHasher("assignments", {})
+    _report_progress(progress, "resolving_asset_assignments", 0.0)
+    destination.write(assignment_hash.prefix)
+    for index, point in enumerate(points.rows(), start=1):
+        point_hash.row(point)
+        row = _resolve_row(point, snapshot, random_seed)
+        destination.write(assignment_hash.row(row))
+        if index % _PROGRESS_INTERVAL == 0 or index == expected_point_count:
+            _report_progress(progress, "resolving_asset_assignments", index / expected_point_count)
+    _report_progress(progress, "validating_asset_assignments", 0.0)
+    header = points.header
+    validate_point_header(header)
+    if header["strategy"] != snapshot["strategy"]:
+        raise PlantingDocumentError("PointSet strategy does not match EffectiveBindingSnapshot")
+    assignment_header = _assignment_header(snapshot, random_seed, expected_point_count, point_hash.finish(header))
+    assignment_header["semantic_hash"] = assignment_hash.finish(assignment_header)
+    destination.write(assignment_hash.suffix(assignment_header))
+    _report_progress(progress, "validating_asset_assignments", 1.0)
+
+
+def _assignment_header(snapshot: dict[str, Any], seed: int, count: int, point_hash: str) -> dict[str, Any]:
+    return {
         "schema": "verdflow.asset-assignment-set",
         "version": "1",
         "target_type": snapshot["target"]["target_type"],
         "resolver": {"id": RESOLVER_ID, "version": RESOLVER_VERSION},
-        "random_seed": random_seed,
-        "point_set_hash": semantic_hash(point_set),
+        "random_seed": seed,
+        "point_set_hash": point_hash,
         "effective_binding_snapshot_hash": snapshot["semantic_hash"],
-        "point_count": len(resolved),
-        "assignments": resolved,
+        "point_count": count,
     }
-    _report_progress(progress, "validating_asset_assignments", 0.0)
-    validated = validate_assignment_set(with_semantic_hash(payload))
-    _report_progress(progress, "validating_asset_assignments", 1.0)
-    return validated
+
+
+def _resolve_row(point: dict[str, Any], snapshot: dict[str, Any], seed: int) -> dict[str, Any]:
+    role_key = point["role_key"]
+    point_id = point["id"]
+    role = snapshot["assignments"].get(role_key)
+    if role is None:
+        raise PlantingDocumentError(f"point {point_id!r} uses unmapped role {role_key!r}")
+    candidate = _choose_candidate(role["candidates"], seed, point_id)
+    scale = _resolve_scale(candidate["scale"], seed, point_id)
+    if not math.isfinite(scale) or scale <= 0.0:
+        raise PlantingDocumentError("Resolved asset scale must be finite and positive")
+    assignment = {
+        "point_id": point_id, "role_key": role_key, "asset_id": candidate["asset_id"],
+        "target_scale_xyz": [scale, scale, scale],
+    }
+    if point.get("group_id"):
+        assignment["assignment_group_id"] = point["group_id"]
+    return assignment
 
 
 def _report_progress(
@@ -239,6 +278,8 @@ def _choose_candidate(
     seed: int,
     point_id: str,
 ) -> dict[str, Any]:
+    if len(candidates) == 1:
+        return candidates[0]
     weights = [Decimal(str(item["weight"])) for item in candidates]
     total = sum(weights, start=Decimal(0))
     with localcontext() as context:
@@ -271,7 +312,7 @@ def _resolve_scale(policy: dict[str, Any], seed: int, point_id: str) -> float:
 
 
 def _unit_integer(seed: int, point_id: str, purpose: str) -> int:
-    material = canonical_json_bytes(
+    material = canonical_row_bytes(
         {
             "resolver": RESOLVER_ID,
             "version": RESOLVER_VERSION,

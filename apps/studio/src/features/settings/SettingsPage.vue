@@ -24,7 +24,7 @@ const guide = useGuidePage("runtimes", () => ({
   ...runtimeReadiness(settings.runtimes.value, guide?.progress.value.workflow ?? "live"),
   loading: settings.loading.value, busy: settings.action.value !== null, error: settings.errorMessage.value,
   actions: settings.runtimes.value
-    .filter(runtime => requiredRuntimeIds(guide?.progress.value.workflow ?? "live").includes(runtime.runtime_id))
+    .filter(runtime => !runtime.available && requiredRuntimeIds(guide?.progress.value.workflow ?? "live").includes(runtime.runtime_id))
     .map(runtime => ({ label: `选择 ${runtime.display_name} 路径`, disabled: !settings.managementAvailable.value,
       run: () => settings.browse(runtime) })),
 }));

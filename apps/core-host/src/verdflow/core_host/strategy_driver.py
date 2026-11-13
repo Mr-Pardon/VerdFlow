@@ -23,7 +23,14 @@ class StrategyWorkerDriver:
         return self._descriptor
 
     def run_once(self) -> JobInfo | None:
-        return self.supervisor.run_once()
+        return self.supervisor.poller.poll()
+
+    @property
+    def active(self) -> bool:
+        return self.supervisor.poller.active
+
+    def close(self) -> None:
+        self.supervisor.poller.close()
 
     def reconcile(self) -> int:
         return self.supervisor.reconcile_recorded_processes()

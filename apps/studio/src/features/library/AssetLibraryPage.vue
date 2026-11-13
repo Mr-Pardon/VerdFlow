@@ -58,7 +58,10 @@ const packageDrop = usePackageDropTarget({
       rejectedNames,
       pathFailures,
     );
-    if (imported) catalogIndexOpen.value = false;
+    if (imported) {
+      selectedAsset.value = null;
+      catalogIndexOpen.value = false;
+    }
   },
 });
 
@@ -152,7 +155,10 @@ const setTarget = async (target: "dts" | "blender") => {
 
 const importCatalog = async () => {
   const imported = await library.importCatalogPackage();
-  if (imported) catalogIndexOpen.value = false;
+  if (imported) {
+    selectedAsset.value = null;
+    catalogIndexOpen.value = false;
+  }
 };
 
 const deleteCatalog = async () => {

@@ -4,11 +4,13 @@ version = "0.1.0"
 description = "Supervised polygon source and GeoTIFF elevation adapter for VerdFlow."
 requires-python = ">=3.11"
 dependencies = [
+  "ijson>=3.4.0.post0,<4",
   "pyshp>=2.3",
   "rasterio>=1.4",
   "shapely>=2.0",
   "verdflow-contracts",
   "verdflow-core",
+  "verdflow-planting",
   "verdflow-project-store",
   "verdflow-worker-runtime",
 ]

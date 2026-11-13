@@ -28,6 +28,7 @@ DEFAULT_STRATEGY: dict[str, Any] = {
 }
 
 ROTATION_SEED_XOR = 0x6A09E667
+CLEARANCE_TOLERANCE_M = 1e-8
 
 
 def deep_merge(base: dict[str, Any], override: dict[str, Any] | None) -> dict[str, Any]:
@@ -227,7 +228,11 @@ def axis_to_world(axis: dict[str, Any], t: float, lateral: float, z: float) -> l
 
 
 def point_inside_with_clearance(entry: dict[str, Any], x: float, y: float, clearance: float) -> bool:
-    return point_in_region_xy(x, y, entry["loops"]) and distance_to_region_boundary_xy(x, y, entry["loops"]) >= clearance
+    loops = entry["loops"]
+    if not point_in_region_xy(x, y, loops):
+        return False
+    # Capped row offsets can land exactly at the minimum clearance before rounding.
+    return distance_to_region_boundary_xy(x, y, loops) >= clearance - CLEARANCE_TOLERANCE_M
 
 
 def estimate_local_half_width(entry: dict[str, Any], axis: dict[str, Any], t: float, z: float, max_probe: float = 9.0) -> float:
@@ -489,7 +494,7 @@ def generate_region_points(
             if role in {"middle_shrub", "double_left_shrub", "double_right_shrub"} and near_tree:
                 continue
             clearance = double_edge_clearance if mode == "double" else single_edge_clearance if mode == "single" else edge_clearance
-            if abs(lateral) + clearance > local_half_width:
+            if abs(lateral) + clearance > local_half_width + CLEARANCE_TOLERANCE_M:
                 continue
             normal_x = -station["tangent_y"]
             normal_y = station["tangent_x"]

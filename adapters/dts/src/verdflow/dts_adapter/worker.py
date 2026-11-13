@@ -2,31 +2,46 @@
 
 from __future__ import annotations
 
+import errno
+from contextlib import closing
 import json
 import time
 import uuid
 from datetime import timedelta
-from typing import Any
+from typing import Any, BinaryIO, Iterator
 
 from verdflow.contracts import (
+    AssetAssignmentSetInfo,
     JobErrorInfo,
     JobInfo,
     OUTPUT_EXPORT_COMMAND_SCHEMA,
     OUTPUT_EXPORT_COMMAND_VERSION,
+    PointSetInfo,
+    PointSetKind,
 )
 from verdflow.core import JobRuntime, WorkerDescriptor
 from verdflow.planting import (
-    select_persisted_output_assets,
+    normalize_asset_selection,
+    output_row_selected,
+    paired_planting_rows,
     validate_effective_binding_snapshot,
 )
+from verdflow.project_store import JobLeaseConflictError
 
-from .xml import _render_persisted_dts_xml_composition
+from .xml import _write_streamed_dts_xml
 
 
 DTS_ADAPTER_ID = "verdflow.dts.xml"
 DTS_ADAPTER_VERSION = "1"
 DTS_XML_EXPORT_COMMAND = "verdflow.dts.export-xml"
 DTS_EXPORT_OPERATION_LEASE = timedelta(minutes=5)
+
+
+class _ExportCancelled(Exception):
+    pass
+
+
+_PlantingPairs = Iterator[tuple[dict[str, Any], dict[str, Any]]]
 
 
 class DtsXmlExportWorker:
@@ -53,8 +68,11 @@ class DtsXmlExportWorker:
             return None
         lease = claimed.lease
         try:
-            if lease.job_id in self._cancel_requests:
-                return self.runtime.acknowledge_cancel(lease)
+            def check_cancel() -> None:
+                if lease.job_id in self._cancel_requests:
+                    raise _ExportCancelled()
+
+            check_cancel()
             command = self._load_command(claimed.job.command.artifact_id)
             self.runtime.heartbeat(
                 lease,
@@ -66,6 +84,7 @@ class DtsXmlExportWorker:
 
             def report_progress(completed: int, total: int) -> None:
                 nonlocal last_heartbeat_at
+                check_cancel()
                 now = time.monotonic()
                 if completed < total and now - last_heartbeat_at < 5.0:
                     return
@@ -77,44 +96,85 @@ class DtsXmlExportWorker:
                 )
                 last_heartbeat_at = now
 
-            if command["operation"] == "export_composition":
-                inputs = []
-                for index, item in enumerate(command["inputs"], start=1):
-                    point_set, effective, assignments = self._load_input(item)
-                    inputs.append((point_set, effective, assignments))
+            inputs = command.get("inputs", (command,))
+            total = sum(self.runtime.store.get_point_set(item["point_set_id"]).point_count for item in inputs)
+
+            def load_batches() -> Iterator[tuple[dict[str, Any], _PlantingPairs]]:
+                scanned = 0
+                for item in inputs:
+                    check_cancel()
                     self.runtime.heartbeat(
                         lease,
-                        progress=0.1 + 0.1 * index / len(command["inputs"]),
-                        stage="loading_dts_export_inputs",
                         lease_duration=DTS_EXPORT_OPERATION_LEASE,
                     )
-                    last_heartbeat_at = time.monotonic()
+                    point, assignment, effective = self._load_input(item)
+                    selection = normalize_asset_selection(item.get("selected_asset_ids"))
+                    selected = frozenset(selection) if selection is not None else None
+                    require_hit = item.get("require_terrain_hit", False)
+                    if type(require_hit) is not bool:
+                        raise ValueError("DTS export terrain selection must be boolean")
 
-                document = _render_persisted_dts_xml_composition(
-                    tuple(inputs),
-                    tuple(command["offset_xyz"]),
-                    progress=report_progress,
+                    def rows() -> _PlantingPairs:
+                        nonlocal scanned
+                        matched = 0
+                        missing = set(selected or ())
+                        with (
+                            self.runtime.store.open_artifact(point.point_artifact_id) as points_file,
+                            self.runtime.store.open_artifact(assignment.assignment_artifact_id) as assignment_file,
+                            closing(paired_planting_rows(
+                                points_file, assignment_file, point_count=point.point_count,
+                                point_kind=point.kind.value, assignment_hash=assignment.semantic_hash,
+                                target_type=assignment.target_type, scratch_root=self.runtime.store.root / "runtime",
+                                on_rows=lambda: report_progress(scanned, total),
+                            )) as pairs,
+                        ):
+                            for point_row, assignment_row in pairs:
+                                scanned += 1
+                                if missing:
+                                    missing.discard(assignment_row["asset_id"])
+                                if output_row_selected(point_row, assignment_row, selected, require_terrain_hit=require_hit):
+                                    matched += 1
+                                    yield point_row, assignment_row
+                        if missing:
+                            raise ValueError("Output references unknown assets: " + ", ".join(sorted(missing)))
+                        if not matched and (selected is not None or require_hit):
+                            raise ValueError("Output selection has no points or mismatched assignments")
+                        report_progress(scanned, total)
+
+                    with closing(rows()) as batch_rows:
+                        yield effective, batch_rows
+
+            def persist_progress() -> None:
+                nonlocal last_heartbeat_at
+                check_cancel()
+                now = time.monotonic()
+                if now - last_heartbeat_at >= 5.0:
+                    self.runtime.heartbeat(lease, lease_duration=DTS_EXPORT_OPERATION_LEASE)
+                    last_heartbeat_at = now
+
+            record_count = 0
+
+            def write_xml(stream: BinaryIO) -> None:
+                nonlocal record_count, last_heartbeat_at
+                with closing(load_batches()) as batches:
+                    record_count = _write_streamed_dts_xml(stream, batches, tuple(command["offset_xyz"]))
+                if record_count != command.get("expected_record_count", record_count):
+                    raise ValueError("DTS export result count differs from selected inputs")
+                check_cancel()
+                self.runtime.heartbeat(
+                    lease,
+                    progress=0.9,
+                    stage="persisting_dts_xml",
+                    lease_duration=DTS_EXPORT_OPERATION_LEASE,
                 )
-            else:
-                point_set, effective, assignments = self._load_input(command)
-                document = _render_persisted_dts_xml_composition(
-                    ((point_set, effective, assignments),),
-                    tuple(command["offset_xyz"]),
-                    progress=report_progress,
-                )
-            if lease.job_id in self._cancel_requests:
-                return self.runtime.acknowledge_cancel(lease)
-            self.runtime.heartbeat(
-                lease,
-                progress=0.9,
-                stage="persisting_dts_xml",
-                lease_duration=DTS_EXPORT_OPERATION_LEASE,
-            )
-            output = self.runtime.store.put_bytes(
-                document.content,
+                last_heartbeat_at = time.monotonic()
+
+            output = self.runtime.store.write_artifact(
+                write_xml,
                 media_type="application/xml",
                 schema_id="verdflow.dts-model-point-xml",
                 schema_version="1",
+                on_chunk=persist_progress,
             )
             result = {
                 "schema": "verdflow.dts-export.result",
@@ -124,7 +184,7 @@ class DtsXmlExportWorker:
                     "id": DTS_ADAPTER_ID,
                     "version": DTS_ADAPTER_VERSION,
                 },
-                "record_count": document.record_count,
+                "record_count": record_count,
                 "output_artifacts": [
                     {"role": "export", "artifact_id": output.artifact_id}
                 ],
@@ -141,15 +201,27 @@ class DtsXmlExportWorker:
                 schema_id="verdflow.dts-export.result",
                 schema_version="1",
             )
+            check_cancel()
             return self.runtime.succeed(
                 lease,
                 result_artifact_id=result_artifact.artifact_id,
             )
-        except (ValueError, KeyError, OSError, json.JSONDecodeError) as error:
-            return self.runtime.fail(
-                lease,
-                JobErrorInfo("DTS_EXPORT_FAILED", str(error), retryable=False),
-            )
+        except _ExportCancelled:
+            try:
+                self.runtime.request_cancel(lease.job_id)
+                return self.runtime.acknowledge_cancel(lease)
+            except JobLeaseConflictError:
+                return None
+        except JobLeaseConflictError:
+            return None
+        except (ValueError, KeyError, OSError, MemoryError) as error:
+            disk_full = isinstance(error, OSError) and error.errno == errno.ENOSPC
+            code = "DTS_EXPORT_DISK_FULL" if disk_full else "DTS_EXPORT_FAILED"
+            message = str(error) or type(error).__name__
+            try:
+                return self.runtime.fail(lease, JobErrorInfo(code, message, retryable=disk_full))
+            except JobLeaseConflictError:
+                return None
         finally:
             self._cancel_requests.discard(lease.job_id)
 
@@ -201,7 +273,7 @@ class DtsXmlExportWorker:
     def _load_input(
         self,
         command: dict[str, Any],
-    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    ) -> tuple[PointSetInfo, AssetAssignmentSetInfo, dict[str, Any]]:
         point = self.runtime.store.get_point_set(command["point_set_id"])
         assignment = self.runtime.store.get_asset_assignment_set(
             command["asset_assignment_set_id"]
@@ -218,7 +290,8 @@ class DtsXmlExportWorker:
         ):
             raise ValueError("DTS export command Artifact reference is stale")
         if (
-            assignment.point_set_id
+            point.kind is not PointSetKind.ELEVATION_RESOLVED
+            or assignment.point_set_id
             not in {point.point_set_id, point.parent_point_set_id}
             or assignment.effective_binding_snapshot_id
             != binding.effective_binding_snapshot_id
@@ -227,20 +300,12 @@ class DtsXmlExportWorker:
             or assignment.point_count != point.point_count
         ):
             raise ValueError("DTS export project input lineage is inconsistent")
-        points, assignments = select_persisted_output_assets(
-            self._read_json(point.point_artifact_id),
-            self._read_json(assignment.assignment_artifact_id),
-            command.get("selected_asset_ids"),
-            expected_point_count=point.point_count,
-            expected_assignment_hash=assignment.semantic_hash,
-            require_terrain_hit=command.get("require_terrain_hit", False),
-        )
         effective = validate_effective_binding_snapshot(
             self._read_json(binding.snapshot_artifact_id)
         )
         if effective["semantic_hash"] != binding.semantic_hash:
             raise ValueError("DTS binding hash differs from its Core record")
-        return points, effective, assignments
+        return point, assignment, effective
 
     def _read_json(self, artifact_id: str) -> dict[str, Any]:
         with self.runtime.store.open_artifact(artifact_id) as stream:

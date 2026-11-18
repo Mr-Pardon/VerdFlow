@@ -198,6 +198,9 @@ export interface SessionSnapshot {
 }
 
 export interface LiveRegion {
+  dataset_id?: string;
+  ordinal?: number;
+  vertex_count?: number;
   path_id?: never;
   region_id: string;
   name: string;
@@ -207,6 +210,8 @@ export interface LiveRegion {
 }
 
 export interface LivePath {
+  dataset_id?: never;
+  vertex_count?: never;
   path_id: string;
   region_id?: never;
   holes?: never;

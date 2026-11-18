@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import Future
+from contextlib import ExitStack
 from dataclasses import dataclass
 import json
 import math
@@ -135,7 +136,12 @@ class DtsLiveTemporaryRuntime:
                 )
                 raise
 
-        return self._runtime.submit(execute)
+        with ExitStack() as pending:
+            pending.enter_context(self.port.working())
+            future = self._runtime.submit(execute)
+            lease = pending.pop_all()
+            future.add_done_callback(lambda _: lease.close())
+            return future
 
     def close(self, timeout_seconds: float, *, remove_files: bool = True) -> None:
         try:
@@ -232,7 +238,7 @@ def _execute_operation(
             idempotency_key=f"dts-live-path:{correlation.operation_id}:{correlation.generation_token}",
         )
         completed = host.service_loop.run_until_terminal(
-            submitted.job_id, timeout_seconds=30.0
+            submitted.job_id, timeout_seconds=None
         )
         if completed.status is not JobStatus.SUCCEEDED:
             raise ValueError(
@@ -261,7 +267,7 @@ def _execute_operation(
                 f"dts-live-region:{correlation.operation_id}:"
                 f"{correlation.generation_token}"
             ),
-            timeout_seconds=30.0,
+            timeout_seconds=None,
         )
     region_ids = (
         ()
@@ -301,7 +307,7 @@ def _execute_operation(
             binding_overrides=execution.binding_overrides or {},
             generation_args=execution.generation_args or {},
         ),
-        timeouts=PlantRunTimeouts(assignment_seconds=3600),
+        timeouts=PlantRunTimeouts(assignment_seconds=None),
     )
     binding = host.store.get_effective_binding_snapshot(
         prepared_run.assignment.assignments.effective_binding_snapshot_id
@@ -329,7 +335,7 @@ def _execute_operation(
             require_terrain_hit=True,
             workflow=workflow,
         ),
-        timeouts=PlantRunTimeouts(elevation_seconds=7 * 24 * 3600, export_seconds=3600),
+        timeouts=PlantRunTimeouts(elevation_seconds=None, export_seconds=None),
     )
     export = resolved.output.export
     xml_path = _materialize_export(host, export.export_id, export.output_artifact_id)

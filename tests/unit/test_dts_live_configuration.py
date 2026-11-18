@@ -130,7 +130,7 @@ class DtsLiveConfigurationTests(unittest.TestCase):
                 )
 
             self.assertEqual(snapshot.strategy_id, "universal_street_tree")
-            self.assertEqual(snapshot.strategy_version, "2.1.0")
+            self.assertEqual(snapshot.strategy_version, "2.1.1")
             self.assertEqual(snapshot.target_type, "dts")
             self.assertEqual(snapshot.asset_source_kind, "profile")
             self.assertEqual(snapshot.asset_source_id, profile_id)

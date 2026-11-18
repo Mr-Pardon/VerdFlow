@@ -287,14 +287,14 @@ const startSelection = async () => {
         <span>{{ stageLabel }}</span>
       </div>
       <button
-        v-if="operationActive"
+        v-if="operationActive && currentStage !== 'delivery_pending'"
         class="secondary-button danger"
         :disabled="cancelling"
         @click="cancel"
       >
         <X :size="16" /> {{ cancelling ? "正在取消" : "取消本次种植" }}
       </button>
-      <div v-else-if="entryMode !== 'choose'" class="operation-actions single">
+      <div v-else-if="!operationActive && entryMode !== 'choose'" class="operation-actions single">
         <button
           v-if="entryMode === 'manual'"
           class="secondary-button"

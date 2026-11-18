@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import {
   ChevronDown,
+  Layers,
   Plus,
+  Sprout,
   Trash2,
   Trees,
 } from "@lucide/vue";
@@ -14,7 +16,6 @@ import {
 import type {
   AssetCatalogAssetInfo,
   AssetCatalogSummary,
-  AssetCatalogCollectionInfo,
   StrategyRoleInfo,
 } from "../api";
 import StudioAssetBrowser from "./StudioAssetBrowser.vue";
@@ -34,7 +35,6 @@ const props = defineProps<{
   roles: StrategyRoleInfo[];
   assets: AssetCatalogAssetInfo[];
   catalogs: AssetCatalogSummary[];
-  collections: AssetCatalogCollectionInfo[];
   mappings: RoleMappingDraft;
   enabled: Record<string, boolean>;
   disabled?: boolean;
@@ -132,6 +132,7 @@ const toggleActive = (event: Event) => {
     :data-pane="pane"
   >
     <aside class="plan-role-sidebar">
+      <div class="plan-role-sidebar-heading"><Layers :size="16" /><strong>植被用途</strong><small>{{ enabledCount }} / {{ roles.length }}</small></div>
       <RoleChoiceNav
         vertical
         :roles="roles"
@@ -162,25 +163,27 @@ const toggleActive = (event: Event) => {
       />
       <template v-else>
         <details v-if="role?.guide" class="plan-role-guide">
-          <summary>用途示意与推荐植被<ChevronDown :size="14" /></summary>
+          <summary><Sprout :size="15" />用途示意与推荐植被<ChevronDown :size="14" /></summary>
           <RolePurposePanel :role="role" :roles="roles" />
         </details>
         <div class="plan-mobile-panes">
           <button
             type="button"
             :class="{ active: pane === 'assets' }"
+            :aria-pressed="pane === 'assets'"
             @click="pane = 'assets'"
           >
             选择植被</button
           ><button
             type="button"
             :class="{ active: pane === 'selected' }"
+            :aria-pressed="pane === 'selected'"
             @click="pane = 'selected'"
           >
             已选植被 {{ candidates.length }}
           </button>
         </div>
-        <div v-show="pane === 'assets'" class="plan-browser-content">
+        <div class="plan-browser-content">
           <StudioAssetBrowser :catalogs="catalogs" :mappings="mappings" :selected-ids="candidates.map(c => c.assetId)" :disabled="disabled" @toggle="toggleAsset" />
         </div>
       </template>
@@ -191,11 +194,8 @@ const toggleActive = (event: Event) => {
       :class="{ 'mobile-visible': pane === 'selected' }"
     >
       <header>
-        <strong>已选植被</strong
-        ><span
-          >{{ candidates.length }} 种 · 总权重
-          {{ candidates.length ? 100 : 0 }}%</span
-        >
+        <strong><Trees :size="16" />已选植被</strong>
+        <span>{{ candidates.length }} 种</span>
       </header>
       <p v-if="hasRepeatedTarget(candidates)" class="mapping-duplicate-note" role="status">部分植被引用同一模型，权重将分别计入。</p>
       <div class="plan-selected-list">

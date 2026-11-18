@@ -1,6 +1,8 @@
 import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from "vue";
 import type { BrowserAsset, BrowserCatalog, AssetSearchPage, AssetSearchRequest } from "./types";
 
+const SEARCH_TIMEOUT_MS = 15_000;
+
 export interface AssetBrowserOptions<T extends BrowserAsset> {
   catalogs: BrowserCatalog[];
   targetType: string;
@@ -82,16 +84,23 @@ export function useAssetBrowser<T extends BrowserAsset>(props: AssetBrowserOptio
     invalidate();
     if (!mounted || !scope.value.length || !provider.value) { result.value = null; busy.value = false; return; }
     const current = epoch;
-    controller = new AbortController();
+    const request = new AbortController();
+    controller = request;
+    let abort: (() => void) | undefined;
+    const deadline = setTimeout(() => request.abort(new Error("植被检索超时，请重试。")), SEARCH_TIMEOUT_MS);
     busy.value = true;
     error.value = "";
-    const [catalogId, collectionId] = category.value ? JSON.parse(category.value) : [];
     try {
-      const page = await props.search({ target_type: props.targetType, provider_id: provider.value,
+      const [catalogId, collectionId] = category.value ? JSON.parse(category.value) : [];
+      const cancelled = new Promise<never>((_, reject) => {
+        abort = () => reject(request.signal.reason);
+        request.signal.addEventListener("abort", abort, { once: true });
+      });
+      const page = await Promise.race([cancelled, props.search({ target_type: props.targetType, provider_id: provider.value,
         catalog_ids: [...scope.value], query: query.value.trim(), offset: pageOffset, limit: pageSize.value,
         ...(collectionId ? { collection_catalog_id: catalogId, collection_id: collectionId } : {}),
         ...(pageOffset && result.value ? { revision: result.value.revision } : {}),
-      }, controller.signal);
+      }, request.signal)]);
       if (epoch !== current) return;
       result.value = page;
       offset.value = page.offset;
@@ -99,7 +108,9 @@ export function useAssetBrowser<T extends BrowserAsset>(props: AssetBrowserOptio
     } catch (cause) {
       if (epoch === current) { error.value = cause instanceof Error ? cause.message : "植被加载失败"; result.value = null; }
     } finally {
-      if (epoch === current) busy.value = false;
+      clearTimeout(deadline);
+      if (abort) request.signal.removeEventListener("abort", abort);
+      if (epoch === current) { controller = undefined; busy.value = false; }
     }
   }
   function outside(event: PointerEvent) { if (!root.value?.contains(event.target as Node)) scopeOpen.value = false; }
@@ -107,8 +118,12 @@ export function useAssetBrowser<T extends BrowserAsset>(props: AssetBrowserOptio
     mounted = true;
     document.addEventListener("pointerdown", outside);
     if (typeof ResizeObserver !== "undefined") {
+      let measuredWidth = 0;
       observer = new ResizeObserver(() => {
-        if (!grid.value || grid.value.clientWidth === 0) return;
+        const width = grid.value?.offsetWidth ?? 0;
+        if (!grid.value || width === 0 || width === measuredWidth) return;
+        // Result-driven scrollbars must not invalidate the query that populated the grid.
+        measuredWidth = width;
         const columns = getComputedStyle(grid.value).gridTemplateColumns.split(" ").length;
         pageSize.value = Math.min(192, Math.ceil(48 / columns) * columns);
       });

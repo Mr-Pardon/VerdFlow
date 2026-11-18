@@ -80,7 +80,7 @@ class DtsLiveConnectorApplication:
             profile_detail=system.get_role_binding_profile,
             save_profile=system.save_role_binding_profile,
             export_regions=region_exchange.export_regions,
-            import_regions=region_exchange.import_regions,
+            draft_exchange=region_exchange,
             previews=self._previews,
         )
         self._sessions: set[str] = set()

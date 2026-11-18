@@ -8,10 +8,11 @@ export const geometryPayload = (geometry: LiveGeometry): LiveGeometry => geometr
 
 export const MAX_LIVE_VERTICES = 200_000;
 
-export const regionPayload = ({ region_id, name, coordinates, bbox, holes }: LiveRegion): LiveRegion =>
-  ({ region_id, name, coordinates, bbox, ...(holes?.length ? { holes } : {}) });
+export const regionPayload = ({ region_id, name, coordinates, bbox, holes, dataset_id, ordinal, vertex_count }: LiveRegion): LiveRegion =>
+  ({ region_id, name, coordinates, bbox, ...(holes?.length ? { holes } : {}), ...(dataset_id ? { dataset_id, ordinal, vertex_count } : {}) });
 
 export function assertRegionBudget(regions: LiveGeometry[]) {
+  regions = regions.filter(region => !region.dataset_id);
   const vertices = regions.reduce((sum, region) => sum + region.coordinates.length +
     (region.holes ?? []).reduce((count, ring) => count + ring.length, 0), 0);
   if (vertices > MAX_LIVE_VERTICES) {

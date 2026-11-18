@@ -18,7 +18,8 @@ const results = computed(() => new Map(state.operation.value?.items.map(item => 
 const successful = computed(() => state.operation.value?.items.filter(item => ["imported", "existing"].includes(item.status)).length ?? 0);
 const choices = computed(() => state.operation.value?.choices ?? []);
 const selected = computed(() => choices.value.filter(item => !item.blocked && (!item.optional || state.optionalIds.value.includes(item.id)) && (!item.conflict || state.overwriteIds.value.includes(item.id))));
-const confirmLabel = computed(() => !props.selection && props.paths.length === 0 ? "全部导入" : "确认导入");
+const recommended = computed(() => !props.selection && props.paths.length === 0);
+const confirmLabel = computed(() => recommended.value ? "全部导入" : "确认导入");
 function resourceTarget(item: ImportChoice) {
   // Choice IDs can have a dependency suffix; the published page identifies the resource.
   const id = URL.canParse(item.page_url) ? new URL(item.page_url).searchParams.get("id") : null;
@@ -43,7 +44,7 @@ onScopeDispose(() => dialog.value?.close());
 </script>
 
 <template>
-  <dialog ref="dialog" class="starter-dialog" aria-labelledby="starter-title" @cancel.prevent="close">
+  <dialog ref="dialog" class="starter-dialog" :class="{ 'starter-dialog--recommended': recommended }" aria-labelledby="starter-title" @cancel.prevent="close">
     <header class="starter-dialog__header">
       <div><span class="guide-eyebrow">资源导入</span><h2 id="starter-title">{{ selection ? '确认导入资源' : paths.length ? '导入种植方案' : '准备推荐资源' }}</h2></div>
       <button class="icon-button" title="关闭并取消未完成的导入" aria-label="关闭" @click="close"><X :size="18" /></button>
@@ -93,6 +94,7 @@ onScopeDispose(() => dialog.value?.close());
 
 <style scoped>
 .starter-dialog { width: min(620px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); padding: 0; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface); color: var(--color-text); }
+.starter-dialog--recommended { max-height: min(680px, 78dvh); }
 .starter-dialog[open] { display: flex; flex-direction: column; }
 .starter-dialog::backdrop { background: #142e2a66; }
 .starter-dialog__header, .starter-dialog__footer { display: flex; align-items: center; gap: 12px; padding: 20px 24px; flex-shrink: 0; }

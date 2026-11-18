@@ -87,7 +87,7 @@ const visibilityLabel = computed(() => `${hasVisibleRegions.value ? '隐藏' : '
         <div v-if="regions.length" class="region-list">
           <div v-for="region in visibleRegions" :id="`region-row-${geometryId(region)}`" :key="geometryId(region)" class="region-row" :class="{ excluded: !region.enabled, focused: focusedRegionId === geometryId(region), 'sampling-failed': failureByRegion.has(geometryId(region)) }">
             <label><input v-model="region.enabled" type="checkbox" :disabled="selectionLocked" :aria-label="`参与种植：${region.name}`" />
-              <span><strong :title="region.name">{{ region.name }}</strong><small :title="failureByRegion.get(geometryId(region))">{{ failureByRegion.has(geometryId(region)) ? "采样失败" : `${region.coordinates.length} 个顶点` }}</small></span>
+              <span><strong :title="region.name">{{ region.name }}</strong><small :title="failureByRegion.get(geometryId(region))">{{ failureByRegion.has(geometryId(region)) ? "采样失败" : `${region.vertex_count ?? region.coordinates.length} 个顶点` }}</small></span>
             </label>
             <button class="icon-button" :disabled="selectionLocked" :title="`定位${region.name}`" @click="locateRegion(region)"><Crosshair :size="15" /></button>
             <button class="icon-button" :disabled="selectionLocked" :title="`${region.visible ? '隐藏' : '显示'}${geometryName}`" @click="toggleRegionPreview(region)">

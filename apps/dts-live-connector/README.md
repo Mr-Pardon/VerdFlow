@@ -33,10 +33,8 @@ from verdflow.dts_live_connector import (
   `on_session_closed` 生命周期端口。Connector 自身不等待 Core 长任务。
 - `POST /api/v1/operations/selection` 可接收 `regions` 集合，直接冻结配置并排队。
   Session 快照暴露 `selection_regions`，多面与单面均进入同一标准 RegionSet/Plant Run。
-  选择/导出请求上限 32 MiB，导入草稿上限 30 MiB；轮询可用 `include_regions=false`
-  省去轮廓序列化。文件 128 MiB/200000 顶点（含内环）限制见 ADR-0021。
-  合法 `holes` 保留到标准 RegionSet，超限提示给出工作台 SHP＋TIF 的处理建议；不表示
-  工作台自动修复、对齐或具备无限处理能力。
+  选择/导出请求上限 32 MiB，已登记 SHP 提交会话内引用。合法 `holes` 保留到标准
+  RegionSet；轮询可用 `include_regions=false` 省去选区明细。见 ADR-0025。
 - `POST /api/v1/callbacks/elevation-chunk` 接受关联 ID、原点索引和最多 2000 个命中结果。
   最终 elevation 回调可携带 `chunked=true` 与失败面清单；服务端严格校验其余点完整性。
   Session `sampling_failures` 提供面 ID、名称及原因，详见 ADR-0007。
@@ -44,7 +42,8 @@ from verdflow.dts_live_connector import (
   由 Geospatial Adapter 编码二维 SHP ZIP，本机 Windows 另存为确认目的地并原子写入。
   不接受客户端路径，不创建 Core 任务，不修改选区或种植状态；取消保存不是错误。
 - `POST /api/v1/selections/import-shp` 只接收空对象，经原生窗口选择 SHP/ZIP 后返回
-  规范化选区集合；不接受客户端路径，也不修改当前运行。导入导出共享文件窗口互斥与
+  数据集 ID 和数量，通过认证的 `GET /api/v1/selections/geometry` 分页取完整几何；
+  不接受客户端路径，也不修改当前运行。导入导出共享文件窗口互斥与
   最近目录记忆。几何解析及文件格式由 Geospatial Adapter 负责，详见 ADR-0007。
 - `POST /api/v1/operations/regeneration` 只复用当前 Session 上一轮已验收的选区集合，
   重新冻结策略、Profile、参数和随机种子后进入既有生成链路；它不重新启动 Explorer

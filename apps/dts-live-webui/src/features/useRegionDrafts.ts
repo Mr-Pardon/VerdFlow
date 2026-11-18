@@ -1,6 +1,6 @@
 import { ref, computed, nextTick, watch, onBeforeUnmount } from "vue";
 import { type LiveRegion, type LiveGeometry } from "../types";
-import { exportRegionsShapefile, importRegionsShapefile } from "../api";
+import { exportRegionsShapefile, importRegionsShapefile, regionGeometryPage } from "../api";
 import type { Ref } from "vue";
 import type { DtsSdkBridge } from "../sdk/DtsSdkBridge";
 import { readableError } from "../shared/presentation";
@@ -145,33 +145,64 @@ export function useRegionDrafts(context: {
     regionExportPath.value = null;
     errorMessage.value = null;
     try {
+      regionExportNotice.value = "正在读取并校验 SHP";
       const result = await importRegionsShapefile();
       if (!result.imported) {
         regionExportNotice.value = "已取消导入";
         return;
       }
-      assertRegionBudget([...regions.value, ...result.regions]);
-      const added = result.regions.map(region => ({ ...region, enabled: true, visible: false }));
-      regions.value.push(...added);
+      const total = result.region_count ?? result.regions?.length ?? 0;
+      if (!result.dataset_id) assertRegionBudget([...regions.value, ...(result.regions ?? [])]);
       let previewFailed = false;
-      let previewCount = 0;
-      for (const region of regions.value.slice(-added.length)) {
-        if (stopped) break;
-        try {
-          sdk.showRegion(region);
-          region.visible = true;
-        } catch { previewFailed = true; }
-        previewCount++;
-        if (previewCount % 20 === 0) {
-          regionExportNotice.value = `正在显示选区 ${previewCount} / ${added.length}`;
-          await new Promise(resolve => window.setTimeout(resolve, 0));
+      let added = 0;
+      let firstId = "";
+      try {
+        while (!stopped && added < total) {
+          const page = result.dataset_id ? (await regionGeometryPage(result.dataset_id, added)).regions : result.regions!;
+          if (!page?.length || added + page.length > total) throw new Error("SHP 预览数据不完整，请重新导入。");
+          if (stopped) return;
+          let pageVisible = false;
+          if (result.dataset_id) {
+            try { await sdk.addImportedPage(page); pageVisible = true; }
+            catch { previewFailed = true; }
+          }
+          let sliceStart = Date.now();
+          for (const region of page) {
+            if (stopped) break;
+            let visible = pageVisible;
+            if (!result.dataset_id) {
+              try { sdk.showRegion(region); visible = true; } catch { previewFailed = true; }
+            }
+            const draft = region.dataset_id ? { ...region, coordinates: [], holes: undefined } : region;
+            regions.value.push({ ...draft, enabled: true, visible });
+            firstId ||= region.region_id;
+            added++;
+            if (Date.now() - sliceStart > 40) {
+              regionExportNotice.value = `正在显示选区 ${added} / ${total}`;
+              await new Promise(resolve => window.setTimeout(resolve, 0));
+              sliceStart = Date.now();
+            }
+          }
+          if (!stopped) regionExportNotice.value = `正在显示选区 ${added} / ${total}`;
         }
+      } catch (error) {
+        if (!stopped && result.dataset_id) {
+          const remaining = regions.value.filter(r => {
+            if (r.dataset_id !== result.dataset_id) return true;
+            try { sdk.removeRegion(geometryId(r)); return false; }
+            catch { r.enabled = false; return true; }
+          });
+          regions.value = remaining;
+        }
+        throw error;
       }
-      regionExportNotice.value = `已导入 ${added.length} 个面`;
+      if (stopped) return;
+      regionExportNotice.value = `已导入 ${added} 个面`;
       regionExportPath.value = result.source_name;
-      if (added[0]) void revealRegion(geometryId(added[0]));
+      if (firstId) void revealRegion(firstId);
       if (previewFailed) errorMessage.value = "选区已导入，部分贴地预览未能显示，可点击选区的显示按钮重试";
     } catch (error) {
+      regionExportNotice.value = "";
       errorMessage.value = readableError(error);
     } finally {
       importingRegions.value = false;
@@ -185,10 +216,20 @@ export function useRegionDrafts(context: {
     catch (error) { errorMessage.value = readableError(error); }
   };
 
-  const toggleRegionPreview = (region: typeof regions.value[number]) => {
+  const showDraft = (region: LiveGeometry) => {
+    if (region.dataset_id && !sdk.hasRegion(geometryId(region))) {
+      return regionGeometryPage(region.dataset_id, region.ordinal!, true).then(page => {
+        const full = page.regions[0];
+        if (!full || full.region_id !== region.region_id) throw new Error("SHP 选区已失效，请重新导入。");
+        if (!stopped && regions.value.some(r => geometryId(r) === full.region_id)) sdk.showRegion(full);
+      });
+    } else sdk.showRegion(region);
+  };
+
+  const toggleRegionPreview = async (region: typeof regions.value[number]) => {
     try {
       if (region.visible) sdk.hideRegion(geometryId(region));
-      else sdk.showRegion(region);
+      else { const loading = showDraft(region); if (loading) await loading; }
       region.visible = !region.visible;
     } catch (error) { errorMessage.value = readableError(error); }
   };
@@ -205,7 +246,7 @@ export function useRegionDrafts(context: {
         const region = activeRegions.value[i]!;
         if (region.visible !== visible) {
           try {
-            if (visible) sdk.showRegion(region);
+            if (visible) { const loading = showDraft(region); if (loading) await loading; }
             else sdk.hideRegion(geometryId(region));
             region.visible = visible;
           } catch { failures++; }

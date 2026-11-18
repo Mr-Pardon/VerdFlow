@@ -2,16 +2,19 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
 import hmac
 import secrets
+from pathlib import Path
 from threading import RLock
 import time
 from typing import Callable, Sequence
 
 from verdflow.dts_adapter import (
+    LiveRegionDraftStore,
     DtsElevationSample,
     DtsLiveElevationBatch,
     DtsLiveCommand,
@@ -74,6 +77,9 @@ class _ManagedSession:
     bootstrap_expires_at: float
     access_digest: bytes | None = None
     begin_pending: bool = False
+    active_jobs: int = 0
+    client_seen: float = 0.0
+    drafts: LiveRegionDraftStore | None = None
 
 
 class DtsLiveConnectorManager:
@@ -89,6 +95,7 @@ class DtsLiveConnectorManager:
         session_ttl_seconds: float = 4 * 60 * 60,
         bootstrap_ttl_seconds: float = 15 * 60,
         max_sessions: int = 8,
+        draft_root: Path | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if session_ttl_seconds <= 0:
@@ -102,6 +109,7 @@ class DtsLiveConnectorManager:
         self._bootstrap_ttl_seconds = bootstrap_ttl_seconds
         self._max_sessions = max_sessions
         self._clock = clock
+        self._draft_root = draft_root
         self._sessions: dict[str, _ManagedSession] = {}
         self._lock = RLock()
 
@@ -121,6 +129,8 @@ class DtsLiveConnectorManager:
                 bootstrap_expires_at=now + self._bootstrap_ttl_seconds,
             )
             self._sessions[session.connector_session_id] = managed
+            if self._draft_root is not None:
+                managed.drafts = LiveRegionDraftStore(self._draft_root / f"{session.connector_session_id}.verdflow" / "runtime" / "shp-drafts")
             return DtsLiveBootstrap(
                 connector_session_id=session.connector_session_id,
                 bootstrap_nonce=nonce,
@@ -190,7 +200,8 @@ class DtsLiveConnectorManager:
                     raise DtsLiveSessionNotFoundError(
                         "DTS Live session changed during configuration"
                     )
-                return managed.session.begin_selection(execution, regions, paths)
+                managed.expires_at = self._clock() + self._session_ttl_seconds
+                return managed.session.begin_selection(execution, managed.drafts.resolve(regions) if managed.drafts else regions, paths)
         finally:
             with self._lock:
                 managed.begin_pending = False
@@ -350,7 +361,13 @@ class DtsLiveConnectorManager:
         return self._authorize(
             connector_session_id,
             access_token,
-        ).session.cancel_current()
+        ).session.cancel_current(allow_delivery=False)
+
+    def elevation_page(self, session_id, token, correlation, index):
+        return self._authorize(session_id, token).session.elevation_page(correlation, index)
+
+    def claim_delivery(self, session_id, token, correlation):
+        return self._authorize(session_id, token).session.claim_delivery(correlation)
 
     def close_session(
         self,
@@ -399,7 +416,16 @@ class DtsLiveConnectorManager:
                 raise DtsLiveAuthorizationError(
                     "DTS Live session authorization failed"
                 )
+            managed.client_seen = self._clock()
             return managed
+
+    def _check_sampling_connection(self, session_id: str, *, starting: bool = False) -> None:
+        with self._lock:
+            managed = self._get(session_id)
+            if starting:
+                managed.client_seen = self._clock()
+            elif self._clock() - managed.client_seen > self._session_ttl_seconds:
+                raise ValueError("实时高程采样期间与 Explorer 长时间失联，未向场景导入 XML。请检查连接后重试。")
 
     def _get(self, connector_session_id: str) -> _ManagedSession:
         now = self._clock()
@@ -411,11 +437,33 @@ class DtsLiveConnectorManager:
             )
         return managed
 
+    def drafts(self, session_id: str, token: str) -> LiveRegionDraftStore:
+        with self._lock:
+            managed = self._authorize(session_id, token)
+            managed.expires_at = self._clock() + self._session_ttl_seconds
+            store = managed.drafts
+        if store is None:
+            raise DtsLiveConnectorError("SHP draft storage is unavailable")
+        return store
+
+    @contextmanager
+    def working(self, connector_session_id: str):
+        """Pin only a trusted running job, not an idle browser poll."""
+        with self._lock:
+            managed = self._get(connector_session_id)
+            managed.active_jobs += 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                managed.active_jobs -= 1
+                managed.expires_at = self._clock() + self._session_ttl_seconds
+
     def _remove_expired(self, now: float) -> None:
         expired = [
             session_id
             for session_id, managed in self._sessions.items()
-            if now > managed.expires_at
+            if now > managed.expires_at and not managed.active_jobs and not managed.begin_pending
         ]
         for session_id in expired:
             self._sessions.pop(session_id, None)
@@ -453,6 +501,14 @@ class DtsLiveTrustedSessionPort:
             generation_token,
         )
 
+    def working(self):
+        return self._manager.working(self.connector_session_id)
+
+    def region_geometries(self, regions):
+        with self._manager._lock:
+            drafts = self._manager._get(self.connector_session_id).drafts
+        return drafts.geometries(regions) if drafts else iter(regions)
+
     def execution(
         self,
         operation_id: str,
@@ -473,6 +529,7 @@ class DtsLiveTrustedSessionPort:
         lines: Sequence[dict[str, object]],
         batches: Sequence[DtsLiveElevationBatch] = (),
     ) -> DtsLiveCommand:
+        self._manager._check_sampling_connection(self.connector_session_id, starting=True)
         return self._session().request_elevation(
             operation_id=operation_id,
             generation_token=generation_token,
@@ -488,6 +545,7 @@ class DtsLiveTrustedSessionPort:
         *,
         timeout_seconds: float,
     ) -> tuple[DtsElevationSample, ...] | None:
+        self._manager._check_sampling_connection(self.connector_session_id)
         return self._session().wait_for_elevation(
             correlation,
             timeout_seconds=timeout_seconds,

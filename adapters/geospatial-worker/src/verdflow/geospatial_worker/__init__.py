@@ -4,8 +4,8 @@ from typing import Any
 
 from .archive import package_shapefile, shapefile_members, write_shapefile_package
 from .errors import GeospatialDataError
-from .polygon_export import ShapefilePolygon, export_polygon_shapefile
-from .polygon_import import ShapefileImportError, import_polygon_shapefile
+from .polygon_export import ShapefilePolygon, export_polygon_shapefile, write_polygon_shapefile
+from .polygon_import import ShapefileImportError, import_polygon_shapefile, iter_live_shapefile
 from .protocol import (
     GEOSPATIAL_ADAPTER_ID,
     GEOSPATIAL_PREPARE_REGIONS_COMMAND,
@@ -42,8 +42,10 @@ __all__ = [
     "write_shapefile_package",
     "ShapefilePolygon",
     "export_polygon_shapefile",
+    "write_polygon_shapefile",
     "ShapefileImportError",
     "import_polygon_shapefile",
+    "iter_live_shapefile",
 ]
 
 

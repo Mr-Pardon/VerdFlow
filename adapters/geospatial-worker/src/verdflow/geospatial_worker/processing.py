@@ -7,10 +7,9 @@ from functools import lru_cache
 import json
 import math
 from pathlib import Path
-import shutil
-import zipfile
 from typing import Any, BinaryIO, Callable, Iterable, Iterator, TextIO
-from .errors import GeospatialDataError, invalid_polygon_message
+from .errors import GeospatialDataError
+from .vector_shp import shapefile_records, unpack_shapefile, validate_polygon
 from .vector_json import read_geojson_features
 
 
@@ -78,7 +77,7 @@ def _prepare_region_rows(
             feature_count += 1
             polygons = geometry.geoms if geometry.geom_type == "MultiPolygon" else (geometry,)
             for part_index, polygon in enumerate(polygons):
-                _validate_polygon(polygon, feature_index, part_index)
+                validate_polygon(polygon, feature_index, part_index)
                 region_id = f"region_{feature_index + 1:04d}_{part_index + 1:03d}"
                 min_x, min_y, max_x, max_y = (float(value) for value in polygon.bounds)
                 row = {
@@ -432,54 +431,10 @@ def _read_shapefile(
     workdir: Path,
     report: Callable[[str, int, int], None],
 ) -> tuple[Iterator[tuple[Any, dict[str, Any]]], dict[str, Any]]:
-    try:
-        import shapefile
-        from shapely.geometry import shape
-    except ImportError as error:
-        raise RuntimeError("pyshp and shapely are required by geospatial-worker") from error
-    destination = workdir / "shapefile"
-    destination.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(archive_path) as archive:
-        members = archive.infolist()
-        paths = [Path(member.filename.replace("\\", "/")) for member in members]
-        if any(path.anchor or not path.parts or ".." in path.parts or
-               any(":" in part for part in path.parts) for path in paths):
-            raise GeospatialDataError("geo_invalid_archive", "SHP 压缩包包含不安全路径，未解压数据。请重新打包一套 SHP 及其配套文件。")
-        total = sum(member.file_size for member in members)
-        reserve = 256 * 1024**2
-        if total + reserve > shutil.disk_usage(destination).free:
-            raise GeospatialDataError("geo_disk_budget", "项目磁盘空间不足，无法解压 SHP。请释放空间后重试。")
-        completed = 0
-        for member, path in zip(members, paths, strict=True):
-            target = (destination / path).resolve()
-            if not target.is_relative_to(destination.resolve()):
-                raise GeospatialDataError("geo_invalid_archive", "SHP 压缩包包含不安全路径，未解压数据。")
-            if member.is_dir():
-                target.mkdir(parents=True, exist_ok=True)
-                continue
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(member) as source, target.open("xb") as output:
-                while chunk := source.read(1024 * 1024):
-                    if completed + len(chunk) > total or shutil.disk_usage(destination).free < reserve + len(chunk):
-                        raise GeospatialDataError("geo_disk_budget", "项目磁盘空间不足或 SHP 压缩包解压大小不符。")
-                    output.write(chunk)
-                    completed += len(chunk)
-                    report("unpacking_source", completed, total)
-    shp_files = list(destination.rglob("*.shp"))
-    if len(shp_files) != 1:
-        raise GeospatialDataError("geo_single_dataset_required", "压缩包中应只有一套 SHP 数据，请分别导入多个图层。")
-    shp_path = shp_files[0]
-    for suffix in (".shx", ".dbf"):
-        if not shp_path.with_suffix(suffix).is_file():
-            raise GeospatialDataError("geo_companions_missing", f"SHP 缺少同名 {suffix} 配套文件，请补齐后重新导入。")
+    shp_path = unpack_shapefile(archive_path, workdir, report)
     def features():
-        with shapefile.Reader(str(shp_path)) as reader:
-            for index, shape_record in enumerate(reader.iterShapeRecords(), 1):
-                geometry = shape(shape_record.shape.__geo_interface__)
-                if geometry.geom_type not in {"Polygon", "MultiPolygon"}:
-                    raise GeospatialDataError("geo_polygon_required", f"SHP 第 {index} 条要素不是面，请选择 Polygon/MultiPolygon 图层。")
-                yield geometry, dict(shape_record.record.as_dict())
-                report("preparing_regions", index, max(reader.numRecords, index))
+        for geometry, properties, _ in shapefile_records(shp_path, report):
+            yield geometry, properties
 
     prj = shp_path.with_suffix(".prj")
     return features(), {
@@ -490,15 +445,6 @@ def _read_shapefile(
     }
 
 
-def _validate_polygon(polygon: Any, feature_index: int, part_index: int) -> None:
-    if polygon.is_empty or not polygon.is_valid or polygon.area <= 0:
-        raise GeospatialDataError("geo_invalid_geometry", invalid_polygon_message(polygon, feature_index + 1))
-    for ring in (polygon.exterior, *polygon.interiors):
-        if not all(
-            math.isfinite(float(coordinate[0])) and math.isfinite(float(coordinate[1]))
-            for coordinate in ring.coords
-        ):
-            raise GeospatialDataError("geo_invalid_coordinates", f"第 {feature_index + 1} 条面要素含有无效坐标，请在 GIS 中检查并修复；未自动丢弃顶点。")
 
 
 def _ring_xyz(coordinates: Iterable[Any]) -> list[list[float]]:

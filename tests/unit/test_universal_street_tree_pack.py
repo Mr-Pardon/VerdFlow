@@ -233,6 +233,33 @@ class UniversalStreetTreePackTests(unittest.TestCase):
 
         self.assertEqual(outer_rows, {-1: 50, 1: 50})
 
+    def test_default_outer_rows_keep_exact_minimum_clearance(self) -> None:
+        result = self.generator.generate(
+            {
+                "strategy": self.strategy,
+                "selected_regions": [rectangle_region("threshold", 4.0, 100.0)],
+                "args": {"strategy_parameters": {"triple_row_spacing_m": 1.55}},
+            }
+        )
+        rows = Counter(
+            point["generated_position"][1]
+            for point in result["points"]
+            if point["role_key"] == "outer_shrub"
+        )
+        self.assertEqual(rows, {-1.55: 50, 1.55: 50})
+
+    def test_clearance_tolerance_does_not_admit_points_outside_usable_area(self) -> None:
+        loops = rectangle_region("greenbelt", 5.0)["rings"]
+        loops.append({
+            "index": 1,
+            "role": "hole",
+            "loop": [[10, -1, 2], [12, -1, 2], [12, 1, 2], [10, 1, 2]],
+        })
+        entry = {"loops": loops}
+        for x, y, clearance in ((20, 2.06, 0.45), (11, 0, 0), (20, 2.500000001, 0)):
+            with self.subTest(x=x, y=y, clearance=clearance):
+                self.assertFalse(self.generator.point_inside_with_clearance(entry, x, y, clearance))
+
     def test_rotation_is_randomized_without_changing_seeded_positions(self) -> None:
         context = {
             "strategy": self.strategy,

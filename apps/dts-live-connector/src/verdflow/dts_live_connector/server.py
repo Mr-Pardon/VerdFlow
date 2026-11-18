@@ -25,7 +25,7 @@ from verdflow.dts_adapter import (
     DtsLiveCorrelation, DtsLiveSelection, DtsLiveRegion, normalize_live_regions,
 )
 from .region_exchange import (
-    RegionExchangeBusyError, RegionExportResult, RegionImportError, RegionImportResult,
+    RegionExchangeBusyError, RegionExportResult, RegionImportError, RegionImportResult, RegionExchangeService,
 )
 from verdflow.system_host import (
     AssetSearchRequest,
@@ -123,6 +123,7 @@ class DtsLiveConnectorServer:
         | None = None,
         export_regions: Callable[[tuple[DtsLiveRegion, ...]], RegionExportResult] | None = None,
         import_regions: Callable[[], RegionImportResult] | None = None,
+        draft_exchange: RegionExchangeService | None = None,
         previews: ConnectorPreviews | None = None,
     ) -> None:
         self.manager = manager
@@ -139,6 +140,7 @@ class DtsLiveConnectorServer:
         self._save_profile = save_profile
         self._export_regions = export_regions
         self._import_regions = import_regions
+        self._draft_exchange = draft_exchange
         self._previews = previews
         self._server: ThreadingHTTPServer | None = None
         self._thread: Thread | None = None
@@ -233,6 +235,13 @@ class DtsLiveConnectorServer:
                         return
                     session_id, token = self._authorization()
                     preview_id = _preview_id(target.path)
+                    if target.path == "/api/v1/selections/geometry":
+                        drafts = manager.drafts(session_id, token)
+                        query = parse_qs(target.query)
+                        page = drafts.page(query.get("dataset", [""])[0], int(query.get("start", ["0"])[0]),
+                                           single=query.get("single") == ["true"])
+                        self._bytes(HTTPStatus.OK, page, content_type="application/json", cache=False)
+                        return
                     if preview_id is not None:
                         manager.snapshot(session_id, token)
                         if owner._previews is None:
@@ -378,12 +387,17 @@ class DtsLiveConnectorServer:
                         return
                     if target.path == "/api/v1/selections/export-shp":
                         manager.snapshot(session_id, token)
-                        if owner._export_regions is None:
+                        if owner._export_regions is None and owner._draft_exchange is None:
                             self._error(HTTPStatus.SERVICE_UNAVAILABLE, "export_unavailable")
                             return
-                        regions = normalize_live_regions(document.get("regions"))
                         try:
-                            result = owner._export_regions(regions)
+                            if owner._draft_exchange is not None:
+                                drafts = manager.drafts(session_id, token)
+                                regions = normalize_live_regions(drafts.resolve(document.get("regions")))
+                                with manager.working(session_id):
+                                    result = owner._draft_exchange.export_regions(regions, drafts)
+                            else:
+                                result = owner._export_regions(normalize_live_regions(document.get("regions")))
                         except RegionExchangeBusyError:
                             self._error(HTTPStatus.CONFLICT, "export_busy")
                             return
@@ -394,13 +408,18 @@ class DtsLiveConnectorServer:
                         return
                     if target.path == "/api/v1/selections/import-shp":
                         manager.snapshot(session_id, token)
-                        if owner._import_regions is None:
+                        if owner._import_regions is None and owner._draft_exchange is None:
                             self._error(HTTPStatus.SERVICE_UNAVAILABLE, "import_unavailable")
                             return
                         if document:
                             raise ValueError("Import paths must be chosen using the native dialog")
                         try:
-                            imported = owner._import_regions()
+                            if owner._draft_exchange is not None:
+                                drafts = manager.drafts(session_id, token)
+                                with manager.working(session_id):
+                                    imported = owner._draft_exchange.register_shapefile(drafts)
+                            else:
+                                imported = owner._import_regions()
                         except RegionExchangeBusyError:
                             self._error(HTTPStatus.CONFLICT, "export_busy")
                             return
@@ -428,7 +447,8 @@ class DtsLiveConnectorServer:
                             except BaseException:
                                 manager.cancel(session_id, token)
                                 raise
-                        self._json(HTTPStatus.ACCEPTED, asdict(command))
+                        self._json(HTTPStatus.ACCEPTED, {"correlation": asdict(command.correlation)}
+                                   if document.get("compact_response") is True else asdict(command))
                         return
                     if target.path == "/api/v1/operations/regeneration":
                         selection = manager.regenerate(
@@ -523,6 +543,13 @@ class DtsLiveConnectorServer:
                             document.get("indices"), document.get("intersects"),
                         )
                         self._json(HTTPStatus.ACCEPTED, {"accepted": True, "sample_count": count})
+                        return
+                    if target.path == "/api/v1/operations/elevation-page":
+                        windows = manager.elevation_page(session_id, token, _correlation(document), document.get("page"))
+                        self._json(HTTPStatus.OK, {"windows": windows})
+                        return
+                    if target.path == "/api/v1/operations/claim-delivery":
+                        self._json(HTTPStatus.OK, {"claimed": manager.claim_delivery(session_id, token, _correlation(document))})
                         return
                     if target.path == _ELEVATION_CALLBACK_PATH:
                         samples = manager.accept_elevation(

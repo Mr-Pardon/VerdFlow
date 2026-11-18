@@ -19,6 +19,7 @@ import { computed, onMounted, ref, watch } from "vue";
 
 import type { StrategyLibrarySummary } from "../../api";
 import { confirmAction } from "../../components/confirmDialog";
+import StrategyDetailComposition from "./StrategyDetailComposition.vue";
 import { useStrategyLibrary } from "./useStrategyLibrary";
 import { usePackageDropTarget } from "./usePackageDropTarget";
 import { useGuidePage } from "../onboarding/context";
@@ -201,7 +202,7 @@ const trustLabel = (state: string | null) =>
         <h1>策略库</h1>
         <p>管理可拔插种植策略及其精确信任状态。</p>
       </div>
-      <div class="page-actions">
+      <div class="page-actions strategy-library-actions">
         <label class="search-control">
           <Search :size="17" />
           <span class="sr-only">搜索策略</span>
@@ -319,7 +320,7 @@ const trustLabel = (state: string | null) =>
         <template v-else-if="library.detail.value">
           <header class="library-detail__hero">
             <div>
-              <span>种植策略</span>
+              <span>v{{ library.detail.value.summary.strategy_version }} · {{ library.detail.value.summary.input_geometry === 'polyline' ? '路径输入' : '区域输入' }}</span>
               <h2>{{ library.detail.value.summary.display_name }}</h2>
               <p>{{ library.detail.value.description || '该策略没有补充描述。' }}</p>
             </div>
@@ -347,22 +348,17 @@ const trustLabel = (state: string | null) =>
             <Download :size="19" /><span><strong>资源中心有新版 v{{ selectedUpdate.version }}</strong><small>{{ selectedUpdate.major_change ? '跨主版本更新，已有方案不会自动改用此版本。' : '查看本版更新与资源说明，再决定是否导入。' }}</small></span><span class="strategy-update-banner__action">查看更新<ChevronRight :size="16" /></span>
           </RouterLink>
 
-          <div class="library-detail__meta">
-            <span><small>策略 ID</small><strong>{{ library.detail.value.summary.strategy_id }}</strong></span>
-            <span><small>版本</small><strong>{{ library.detail.value.summary.strategy_version }}</strong></span>
-            <span><small>Package Hash</small><strong>{{ library.detail.value.summary.package_hash.slice(0, 16) }}</strong></span>
-            <span><small>执行状态</small><strong>{{ library.detail.value.summary.executable ? '可执行' : '不可执行' }}</strong></span>
-          </div>
+          <StrategyDetailComposition :key="library.detail.value.summary.package_hash" :strategy="library.detail.value" :can-preview="library.managementAvailable.value" />
 
           <div class="strategy-detail-grid">
             <section>
-              <header><h3>设计意图</h3><span>Intent</span></header>
+              <header><h3>设计意图</h3></header>
               <p>{{ intentSummary || library.detail.value.description }}</p>
               <div v-if="intentKeywords.length" class="library-tags"><span v-for="item in intentKeywords" :key="item">{{ item }}</span></div>
               <div v-if="intentAvoid.length" class="strategy-avoid"><strong>避免</strong><span v-for="item in intentAvoid" :key="item">{{ item }}</span></div>
             </section>
             <section>
-              <header><h3>地形适配</h3><span>Weak constraint</span></header>
+              <header><h3>地形适配</h3></header>
               <p>{{ terrainHint || '该策略没有提供额外的地形选择建议。' }}</p>
               <dl v-if="terrainFeatures.length" class="terrain-feature-list">
                 <div v-for="feature in terrainFeatures" :key="feature.key"><dt>{{ feature.key }}</dt><dd>{{ feature.value }}</dd></div>
@@ -370,17 +366,15 @@ const trustLabel = (state: string | null) =>
             </section>
           </div>
 
-          <section class="strategy-roles-section">
-            <header><div><h3>植被用途</h3><p>按空间分工搭配植被，同一用途不限定具体物种。</p></div><strong>{{ library.detail.value.roles.length }}</strong></header>
-            <div class="strategy-role-table">
-              <div v-for="role in library.detail.value.roles" :key="role.role_key">
-                <span class="role-required" :data-required="role.required">{{ role.required ? '必需' : '可选' }}</span>
-                <span><strong>{{ role.display_name }}</strong><small>{{ role.role_key }}</small></span>
-                <p>{{ role.description }}</p>
-                <code>{{ role.assignment_policy }}</code>
-              </div>
+          <details class="strategy-technical-details">
+            <summary>技术信息</summary>
+            <div class="library-detail__meta">
+              <span><small>策略 ID</small><strong>{{ library.detail.value.summary.strategy_id }}</strong></span>
+              <span><small>版本</small><strong>{{ library.detail.value.summary.strategy_version }}</strong></span>
+              <span><small>包指纹</small><strong :title="library.detail.value.summary.package_hash">{{ library.detail.value.summary.package_hash.slice(0, 16) }}</strong></span>
+              <span><small>执行状态</small><strong>{{ library.detail.value.summary.executable ? '可执行' : '不可执行' }}</strong></span>
             </div>
-          </section>
+          </details>
         </template>
         <div v-else class="library-empty library-empty--detail"><BookOpen :size="30" /><strong>选择一个策略查看详情</strong></div>
       </main>
@@ -389,6 +383,9 @@ const trustLabel = (state: string | null) =>
 </template>
 
 <style scoped>
+.strategy-technical-details { padding: 0 22px 18px; }
+.strategy-technical-details summary { padding: 12px 0; font-size: 13px; color: var(--color-text-muted); cursor: pointer; }
+.strategy-technical-details .library-detail__meta { padding-inline: 0; }
 .strategy-update-check { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--color-border); font-size: 11px; color: var(--color-text-muted); }
 .strategy-update-check .icon-button, .strategy-update-warning .icon-button { width: 26px; height: 26px; min-width: 26px; }
 .strategy-update-warning { display: flex; align-items: flex-start; gap: 8px; padding: 12px 16px; font-size: 12px; line-height: 1.6; color: #9c713b; }
@@ -401,4 +398,9 @@ const trustLabel = (state: string | null) =>
 .strategy-update-banner small { display: block; font-size: 12px; line-height: 1.6; color: var(--color-text-muted); margin-top: 5px; }
 .strategy-update-banner__action { display: flex; align-items: center; font-size: 12px; gap: 6px; }
 @media (max-width: 600px) { .strategy-update-banner { flex-wrap: wrap; } }
+@media (max-width: 680px) {
+  .strategy-library-actions { display: flex; flex-wrap: wrap; justify-content: flex-start; }
+  .strategy-library-actions .search-control { flex: 1 0 calc(100% - 50px); }
+  .strategy-library-actions > button:not(.icon-button) { display: inline-flex; white-space: nowrap; }
+}
 </style>

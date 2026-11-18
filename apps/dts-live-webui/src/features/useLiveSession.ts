@@ -1,6 +1,6 @@
 import { shallowRef, ref, computed, onMounted, onBeforeUnmount } from "vue";
 import { type SessionSnapshot, type SelectionConfiguration, type LiveGeometry, type LivePath, type LiveRegion } from "../types";
-import { cancelOperation, sessionSnapshot, commandsAfter, bootstrapSession, beginSelection } from "../api";
+import { cancelOperation, sessionSnapshot, commandsAfter, bootstrapSession, beginSelection, claimDelivery } from "../api";
 import { DtsSdkBridge } from "../sdk/DtsSdkBridge";
 import type { Ref } from "vue";
 import { readableError, wait } from "../shared/presentation";
@@ -65,12 +65,11 @@ export function useLiveSession(errorMessage: Ref<string | null>, callbacks: Sess
   const samplingFailures = computed(() => snapshot.value?.sampling_failures ?? []);
 
   const cancel = async () => {
-    if (!operationActive.value || cancelling.value) return;
+    if (!operationActive.value || currentStage.value === "delivery_pending" || cancelling.value) return;
     cancelling.value = true;
     try {
       snapshot.value = await cancelOperation();
-      const warning = sdk.cancelPendingCommands();
-      if (warning) errorMessage.value = warning;
+      if (snapshot.value.stage !== "delivery_pending") sdk.cancelPendingCommands();
     } catch (error) {
       errorMessage.value = readableError(error);
     } finally {
@@ -106,11 +105,15 @@ export function useLiveSession(errorMessage: Ref<string | null>, callbacks: Sess
         if (stopped) return;
         for (const command of page.items) {
           if (command.sequence <= afterSequence) continue;
+          while (!sdkReady.value && !stopped) await wait(250);
+          if (stopped) return;
           afterSequence = command.sequence;
           await refreshSnapshot();
           if (stopped) return;
           if (snapshot.value?.pending_request_id !== command.correlation.request_id) continue;
           try {
+            if (command.kind === "import_xml" && !(await claimDelivery(command.correlation)).claimed) continue;
+            if (stopped) return;
             await sdk.execute(command);
           } catch (error) {
             await refreshSnapshot();
@@ -122,7 +125,7 @@ export function useLiveSession(errorMessage: Ref<string | null>, callbacks: Sess
               operationActive.value
             ) {
               errorMessage.value = readableError(error);
-              snapshot.value = await cancelOperation();
+              if (command.kind !== "import_xml") snapshot.value = await cancelOperation();
             }
           }
         }

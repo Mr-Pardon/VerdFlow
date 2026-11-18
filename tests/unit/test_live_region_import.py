@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -38,6 +39,65 @@ SQUARE = [[0, 0], [0, 10], [10, 10], [10, 0], [0, 0]]
 
 
 class LiveRegionImportTests(unittest.TestCase):
+    def test_native_http_import_pages_and_exports_registered_geometry(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source, output = root / "input.zip", root / "output.zip"
+            source.write_bytes(dataset([SQUARE, [[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]]))
+            manager = DtsLiveConnectorManager(_resolve, draft_root=root)
+            bootstrap = manager.create_session()
+            service = RegionExchangeService(import_picker=lambda _: source, picker=lambda _: output)
+            with DtsLiveConnectorServer(manager, draft_exchange=service) as server:
+                base = server.base_url
+                _, _, headers = _request(base + "/api/v1/bootstrap/exchange", document={
+                    "connector_session_id": bootstrap.connector_session_id, "bootstrap_nonce": bootstrap.bootstrap_nonce,
+                }, origin=base)
+                cookie = headers["Set-Cookie"].split(";", 1)[0]
+                status, imported, _ = _request(base + "/api/v1/selections/import-shp", document={}, origin=base, cookie=cookie)
+                self.assertEqual(status, 200)
+                self.assertEqual(imported["region_count"], 1)
+                self.assertNotIn("regions", imported)
+                dataset_id = imported["dataset_id"]
+                geometry = base + "/api/v1/selections/geometry?start=0&dataset=" + dataset_id
+                self.assertEqual(_request(geometry, method="GET")[0], 401)
+                status, page, _ = _request(geometry, method="GET", cookie=cookie)
+                self.assertEqual(status, 200)
+                self.assertEqual(len(page["regions"][0]["holes"]), 1)
+                source.unlink()
+                status, _, _ = _request(base + "/api/v1/selections/export-shp", origin=base, cookie=cookie,
+                                        document={"regions": [{"dataset_id": dataset_id, "start": 0, "count": 1}]})
+                self.assertEqual(status, 200)
+                self.assertEqual(len(import_polygon_shapefile(output)[0].holes), 1)
+
+    def test_registered_draft_pages_and_refs_are_session_local_and_exact(self) -> None:
+        from verdflow.dts_adapter import LiveRegionDraftStore
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = LiveRegionDraftStore(root / "drafts")
+            source = root / "holes.zip"
+            source.write_bytes(dataset([SQUARE, [[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]], encoding="gbk"))
+            svc = RegionExchangeService(import_picker=lambda _: source, picker=lambda _: root / "export.zip")
+            imported = svc.register_shapefile(store)
+            source.unlink()
+            page = json.loads(store.page(imported.dataset_id, 0))["regions"]
+            self.assertEqual(page[0]["vertex_count"], 8)
+            self.assertEqual(page[0]["name"], "选区样本")
+            query = [{"dataset_id": imported.dataset_id, "start": 0, "count": 1}]
+            refs = normalize_live_regions(store.resolve(query))
+            self.assertFalse(refs[0].coordinates)
+            self.assertEqual(next(store.geometries(refs)).holes, tuple(tuple(map(tuple, r)) for r in page[0]["holes"]))
+            self.assertTrue(svc.export_regions(refs, store).saved)
+            self.assertEqual(len(import_polygon_shapefile(root / "export.zip")[0].holes), 1)
+            for bad in ([*query, *query], [{**query[0], "count": 1000000}]):
+                with self.assertRaises(ValueError):
+                    store.resolve(bad)
+            with self.assertRaises(ValueError):
+                LiveRegionDraftStore(root / "other").resolve(query)
+            source.write_bytes(dataset([[[0,0], [10,10], [0,10], [10,0], [0,0]]]))
+            with self.assertRaises(RegionImportError):
+                svc.register_shapefile(store)
+            self.assertEqual(len(list(store.root.iterdir())), 1)
+
     def test_export_import_roundtrip_zip_and_shp(self) -> None:
         regions = normalize_live_regions(REGIONS)
         payload = export_polygon_shapefile(tuple(ShapefilePolygon(r.region_id, r.name, r.coordinates) for r in regions))

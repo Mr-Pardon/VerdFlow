@@ -41,6 +41,9 @@ Strategy Worker、Asset Package、SystemHost、Studio 或 Agent SDK。SystemHost
 
 ## 验证
 
+正式落地涉及 `.vfs` 或 `.vfa` 契约的改动时，同步对应 Author 的创作说明、参考和模板；
+如影响构建或检查，同步工具并通过对应的打包与导入回归。纯展示布局不触发格式升级。
+
 运行 `python -m unittest tests.unit.test_authoring_kits`。测试同时使用正式 Strategy 和
 Asset Package Inspector 检查模板附带构建器的输出。
 

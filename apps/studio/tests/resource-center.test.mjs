@@ -10,10 +10,24 @@ after(() => server.close());
 const { useResourceCenter } = await server.ssrLoadModule('/src/features/resources/useResourceCenter.ts');
 const { useStrategyUpdates } = await server.ssrLoadModule('/src/features/resources/useStrategyUpdates.ts');
 const { useResourceImport } = await server.ssrLoadModule('/src/features/onboarding/useResourceImport.ts');
-const { renderResourceMarkdown, safeContentImage } = await server.ssrLoadModule('/src/features/resources/resourcePresentation.ts');
+const { assetArchiveUrl, renderResourceMarkdown, resourcePageUrl, safeContentImage } = await server.ssrLoadModule('/src/features/resources/resourcePresentation.ts');
 const renderer = createRenderer({ createComment: () => ({}), createElement: () => ({}), createText: () => ({}),
   insert() {}, remove() {}, setText() {}, setElementText() {}, patchProp() {}, parentNode: () => null, nextSibling: () => null });
 function mount(factory) { let state; const app = renderer.createApp({ setup() { state = factory(); return () => null; } }); app.mount({}); return { app, state }; }
+
+test('only non-importable historical asset snapshots get a versioned web download action', () => {
+  const resource = { id: 'weekly-library', kind: 'assets', version: '1.1.0' };
+  const historical = { version: '1.0.0', installable: false };
+  assert.equal(assetArchiveUrl(resource, historical),
+    'https://mr-pardon.github.io/verdflow-resources/?id=weekly-library&version=1.0.0');
+  assert.equal(assetArchiveUrl(resource, { ...historical, installable: true }), '');
+  assert.equal(assetArchiveUrl(resource, { version: resource.version, installable: false }), '');
+  for (const kind of ['strategies', 'plans']) assert.equal(assetArchiveUrl({ ...resource, kind }, historical), '');
+  assert.equal(resourcePageUrl(), 'https://mr-pardon.github.io/verdflow-resources/');
+  const page = new URL(resourcePageUrl(resource.id, '1&version=2#x'));
+  assert.deepEqual([...page.searchParams], [['id', resource.id], ['version', '1&version=2#x']]);
+  assert.equal(page.hash, '');
+});
 
 test('markdown never executes remote HTML or renders arbitrary remote media', () => {
   const base = 'https://mr-pardon.github.io/verdflow-resources/data/sample/aaaaaaaaaaaaaaaaaaaa/';

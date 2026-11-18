@@ -342,6 +342,7 @@ class SystemHost:
         )
         self._dts_live_connector = DtsLiveConnectorManager(
             self.freeze_dts_live_execution,
+            draft_root=self._system_root / "runtime" / "dts-live",
         )
         self._dts_live_runtimes: dict[str, DtsLiveTemporaryRuntime] = {}
         self._project_registry = ProjectRegistry(self._system_root)

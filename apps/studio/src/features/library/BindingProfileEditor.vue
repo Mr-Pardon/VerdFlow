@@ -6,7 +6,9 @@ import {
   CircleCheck,
   LoaderCircle,
   Save,
+  SlidersHorizontal,
   Sprout,
+  Trees,
   X,
 } from "@lucide/vue";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from "vue";
@@ -17,7 +19,8 @@ import {
 } from "@verdflow/role-guide-ui";
 
 import PlanMappingWorkspace from "../../components/PlanMappingWorkspace.vue";
-import StrategyParameterEditor from "../../components/StrategyParameterEditor.vue";
+import StrategyEffectWorkspace from "../../components/StrategyEffectWorkspace.vue";
+import type { StrategyExampleCache } from "@verdflow/strategy-preview-ui";
 import { confirmAction } from "../../components/confirmDialog";
 import {
   parameterPresetValues,
@@ -27,7 +30,6 @@ import {
 import { LocalApiClient, LocalApiError } from "../../api";
 import type {
   AssetCatalogAssetInfo,
-  AssetCatalogCollectionInfo,
   AssetCatalogSummary,
   RoleBindingProfileDetail,
   StrategyLibraryDetail,
@@ -41,6 +43,7 @@ import {
   validCandidates,
 } from "../shared/roleMapping";
 import type { RoleMappingDraft } from "../shared/roleMapping";
+import { strategyExampleAppearance } from "../shared/strategyExampleAppearance";
 
 const props = defineProps<{
   targetType: "dts" | "blender";
@@ -61,12 +64,19 @@ const strategies = shallowRef<StrategyLibrarySummary[]>([]);
 const catalogs = shallowRef<AssetCatalogSummary[]>([]);
 const strategyDetail = shallowRef<StrategyLibraryDetail | null>(null);
 const assets = shallowRef<AssetCatalogAssetInfo[]>([]);
-const collections = shallowRef<AssetCatalogCollectionInfo[]>([]);
 const mappings = shallowRef<RoleMappingDraft>({});
 let dependencyEpoch = 0;
 onBeforeUnmount(() => { dependencyEpoch++; });
 const roleEnabled = ref<Record<string, boolean>>({});
-const step = ref(props.baseProfile ? 1 : 0);
+const firstStep = props.baseProfile ? 1 : 0;
+const step = ref(firstStep);
+const steps = [
+  { id: 0, name: "选择策略", icon: Sprout },
+  { id: 1, name: "植被搭配", icon: Trees },
+  { id: 2, name: "种植效果", icon: SlidersHorizontal },
+].slice(firstStep);
+const exampleCache: StrategyExampleCache = { signature: "", result: null };
+const appearance = computed(() => strategyExampleAppearance(mappings.value, props.baseProfile?.assignments ?? {}, assets.value));
 const dialogElement = ref<HTMLElement | null>(null);
 const parameterValues = ref<Record<string, number>>({});
 const parameterStrategyHash = ref("");
@@ -193,7 +203,9 @@ onMounted(async () => {
       selectedStrategyHash.value =
         strategies.value.find(
           (item) =>
-            item.strategy_id === props.baseProfile?.summary.strategy_id &&
+            props.baseProfile?.summary.resolved_strategy_hash
+              ? item.package_hash === props.baseProfile.summary.resolved_strategy_hash
+              : item.strategy_id === props.baseProfile?.summary.strategy_id &&
             item.strategy_version ===
               (props.baseProfile?.summary.resolved_strategy_version ??
                 props.baseProfile?.summary.strategy_version),
@@ -265,7 +277,6 @@ const loadDependencies = async (clearMappings: boolean) => {
   }
   strategyDetail.value = null;
   assets.value = [];
-  collections.value = [];
   const strategy = selectedStrategy.value;
   if (!strategy) return;
   loadingDependency.value = true;
@@ -343,8 +354,7 @@ const readableError = (error: unknown) => {
       @keydown.esc.stop="close"
     >
       <header>
-        <div>
-          <span>种植方案</span>
+        <div class="plan-editor-title">
           <h3 id="plan-editor-title">
             {{
               saveAsCopy
@@ -354,11 +364,14 @@ const readableError = (error: unknown) => {
                   : "新建种植方案"
             }}
           </h3>
+          <span v-if="selectedStrategy">{{ selectedStrategy.display_name }} · v{{ selectedStrategy.strategy_version }}</span>
         </div>
+        <label class="plan-editor-name"><span>方案名称</span><input v-model="displayName" maxlength="80" placeholder="例如：草坪铺设" :disabled="saving" /></label>
         <button
           class="icon-button"
           type="button"
           title="关闭"
+          aria-label="关闭方案编辑器"
           :disabled="saving"
           @click="close"
         >
@@ -367,31 +380,27 @@ const readableError = (error: unknown) => {
       </header>
 
       <div v-if="errorMessage" class="inline-alert" role="alert">
-        {{ errorMessage }}
+        <span>{{ errorMessage }}</span><button class="icon-button" type="button" title="关闭提示" aria-label="关闭提示" @click="errorMessage = null"><X :size="15" /></button>
       </div>
       <div v-if="loading" class="library-loading">
         <LoaderCircle :size="18" class="spinning" />正在读取依赖
       </div>
       <nav v-if="!loading" class="plan-editor-steps" aria-label="方案配置步骤">
         <button
-          v-for="(name, index) in ['选择策略', '植被搭配', '种植效果']"
-          :key="name"
+          v-for="item in steps"
+          :key="item.id"
           type="button"
-          :class="{ active: step === index }"
-          :aria-current="step === index ? 'step' : undefined"
+          :class="{ active: step === item.id }"
+          :aria-current="step === item.id ? 'step' : undefined"
           :disabled="
             saving ||
             loadingDependency ||
-            (index > 0 && !strategyDetail) ||
-            (index > 1 && !mappingReady)
+            (item.id > 0 && !strategyDetail) ||
+            (item.id > 1 && !mappingReady)
           "
-          @click="step = index"
+          @click="step = item.id"
         >
-          <span
-            ><Check v-if="step > index" :size="13" /><template v-else>{{
-              index + 1
-            }}</template></span
-          >{{ name }}
+          <span><Check v-if="step > item.id" :size="15" /><component :is="item.icon" v-else :size="15" /></span>{{ item.name }}
         </button>
       </nav>
       <div
@@ -555,29 +564,27 @@ const readableError = (error: unknown) => {
             <LoaderCircle :size="18" class="spinning" />正在读取植被
           </div>
           <PlanMappingWorkspace
-            v-else
+            v-else-if="strategyDetail"
             v-model:enabled="roleEnabled"
             v-model:mappings="mappings"
             :roles="strategyDetail?.roles ?? []"
             :assets="assets"
             :catalogs="catalogs"
-            :collections="collections"
             :disabled="saving"
           />
+          <div v-else class="library-loading">对应策略暂不可用，请先检查策略库。</div>
         </template>
-        <section v-else class="plan-editor-parameters">
-          <label class="plan-editor-name"
-            ><span>方案名称</span
-            ><input
-              v-model="displayName"
-              maxlength="80"
-              placeholder="例如：草坪铺设"
-              :disabled="saving"
-          /></label>
-          <StrategyParameterEditor
-            simplified
+        <section v-else-if="strategyDetail" class="plan-editor-parameters">
+          <p v-if="strategyDetail.parameter_preview && !strategyDetail.summary.executable" class="plan-editor-preview-status">此策略暂不可执行，仍可编辑和保存参数。</p>
+          <StrategyEffectWorkspace
+            :strategy="strategyDetail"
             :parameters="visibleGenerationParameters"
             :values="parameterValues"
+            :enabled="roleEnabled"
+            :random-seed="null"
+            :appearance="appearance"
+            :example-cache="exampleCache"
+            :show-preview="managementAvailable && strategyDetail.summary.executable"
             :show-seed="false"
             :disabled="saving"
             @update-parameter="
@@ -610,10 +617,10 @@ const readableError = (error: unknown) => {
           class="secondary-button"
           type="button"
           :disabled="saving"
-          @click="step > 0 ? step-- : close()"
+          @click="step > firstStep ? step-- : close()"
         >
-          <ArrowLeft v-if="step > 0" :size="15" />{{
-            step > 0 ? "上一步" : "取消"
+          <ArrowLeft v-if="step > firstStep" :size="15" />{{
+            step > firstStep ? "上一步" : "取消"
           }}
         </button>
         <button

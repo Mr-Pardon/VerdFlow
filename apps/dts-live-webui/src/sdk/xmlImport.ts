@@ -6,7 +6,6 @@ interface PendingImport {
   path: string;
   resolve: () => void;
   reject: (error: Error) => void;
-  warningTimer: number;
 }
 
 export class XmlImportCancelled extends Error {}
@@ -35,9 +34,6 @@ export class DtsXmlImport {
     return new Promise((resolve, reject) => {
       const pending: PendingImport = {
         path: normalizeImportPath(xmlPath), resolve, reject,
-        warningTimer: window.setTimeout(() => {
-          if (this.pending === pending) this.onActivity("DTS 导入耗时较长，仍在等待完成回执");
-        }, 30_000),
       };
       this.pending = pending;
       this.buffer = "";
@@ -89,7 +85,6 @@ export class DtsXmlImport {
     const pending = this.pending;
     if (!pending) return;
     this.pending = null;
-    window.clearTimeout(pending.warningTimer);
     if (error) pending.reject(error);
     else pending.resolve();
   }

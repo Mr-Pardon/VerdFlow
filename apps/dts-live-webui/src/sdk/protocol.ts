@@ -19,7 +19,7 @@ export type DtsApi = UnknownRecord & {
     set?: (x: number, y: number, z: number, pitch: number, yaw: number, flyTime: number) => unknown;
   };
   polygon?: {
-    add: (data: UnknownRecord) => unknown;
+    add: (data: UnknownRecord | UnknownRecord[]) => unknown;
     show: (ids: string | string[]) => unknown;
     hide: (ids: string | string[]) => unknown;
     delete: (id: string) => unknown;

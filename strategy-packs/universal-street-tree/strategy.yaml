@@ -1,7 +1,7 @@
 schema: verdflow.strategy
 version: '2'
 strategy_id: universal_street_tree
-strategy_version: 2.1.0
+strategy_version: 2.1.1
 display_name: 通用行道树
 description: >-
   沿道路型绿地的局部中心路径生成宽度自适应灌木带，并在所有宽度模式中等距放置乔木。

@@ -1,5 +1,5 @@
 import MarkdownIt from "markdown-it";
-import type { ResourceKind, ResourceLocalState } from "../../api/resourceCenter";
+import type { CenterResource, CenterVersion, ResourceKind, ResourceLocalState } from "../../api/resourceCenter";
 
 export const centerUrl = "https://mr-pardon.github.io/verdflow-resources/";
 export const kindLabels: Record<ResourceKind, string> = { assets: "资产库", strategies: "种植策略", plans: "种植方案" };
@@ -7,6 +7,21 @@ export const stateLabels: Record<ResourceLocalState, string> = {
   available: "未导入", installed: "已导入", local: "本地已有", conflict: "本地内容不同", unavailable: "仅浏览",
 };
 export const formatBytes = (value: number) => value < 1024 * 1024 ? `${Math.ceil(value / 1024)} KB` : `${(value / 1024 / 1024).toFixed(1)} MB`;
+
+export function resourcePageUrl(id = "", version = ""): string {
+  const url = new URL(centerUrl);
+  if (id) {
+    url.searchParams.set("id", id);
+    if (version) url.searchParams.set("version", version);
+  }
+  return url.href;
+}
+
+export function assetArchiveUrl(resource: Pick<CenterResource, "id" | "kind" | "version">,
+  release: Pick<CenterVersion, "version" | "installable">): string {
+  return resource.kind === "assets" && !release.installable && release.version !== resource.version
+    ? resourcePageUrl(resource.id, release.version) : "";
+}
 
 export function safeContentImage(source: string, base = centerUrl): string {
   try {

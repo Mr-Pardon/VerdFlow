@@ -157,6 +157,25 @@ await test("parameter editor keeps seed controls by default and advanced setting
   assert.ok(!profileHtml.includes('class="strategy-seed-control"'));
   assert.ok(!profileHtml.includes("随机种子"));
 });
+await test("workbench effect workspace shows its example and seed controls without view overrides", async () => {
+  const { default: Workspace } = await server.ssrLoadModule("/src/components/StrategyEffectWorkspace.vue");
+  const detail = {
+    summary: strategy,
+    roles: [{ role_key: "tree", display_name: "Tree" }],
+    generation_parameters: parameters,
+    parameter_preview: { display_name: "Example", fixed_seed: 17, boundary_xy: [[0, 0], [8, 0], [0, 8]] },
+  };
+  const props = { strategy: detail, parameters, values: { density: 5, spacing: 3 }, enabled: {}, randomSeed: 99 };
+  const html = await renderToString(createSSRApp(Workspace, props));
+  assert.match(html, /strategy-effect-workspace has-example/);
+  assert.match(html, /<canvas\b/);
+  assert.ok(html.includes("随机种子"));
+
+  const noPreview = await renderToString(createSSRApp(Workspace, { ...props, showPreview: false, showSeed: false }));
+  assert.doesNotMatch(noPreview, /has-example|<canvas\b|随机种子/);
+  const noSample = await renderToString(createSSRApp(Workspace, { ...props, strategy: { ...detail, parameter_preview: null } }));
+  assert.doesNotMatch(noSample, /has-example|<canvas\b/);
+});
 await test("disabled plan roles replace vegetation controls without discarding their assignments", async () => {
   const { default: Workspace } = await server.ssrLoadModule("/src/components/PlanMappingWorkspace.vue");
   const mappings = { ground: [{ assetId: "grass", displayNameSnapshot: "Grass", weight: 1, scaleMode: "fixed", fixedScale: 1 }] };

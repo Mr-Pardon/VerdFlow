@@ -1,4 +1,5 @@
 <script setup lang="ts" generic="T extends BrowserAsset">
+import { ref } from "vue";
 import { useAssetBrowser } from "./useAssetBrowser";
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Database, Search, RefreshCw, Trees } from "@lucide/vue";
 import type { BrowserAsset, BrowserCatalog, AssetSearchPage, AssetSearchRequest } from "./types";
@@ -15,17 +16,24 @@ const props = withDefaults(defineProps<{
   disabled?: boolean;
 }>(), { targetType: "dts", initialCatalogIds: () => [] });
 const emit = defineEmits<{ toggle: [asset: T] }>();
+const scopeTrigger = ref<HTMLButtonElement | null>(null);
 const { root, grid, scopeOpen, chosenProvider, providers, compatible, scope, query, category,
   offset, pageSize, result, busy, error, selected, items, categoryKey, groups, scopeLabel, setScope, toggleScope, load } = useAssetBrowser(props);
 const setRoot = (element: unknown) => { root.value = element as HTMLElement | null; };
 const setGrid = (element: unknown) => { grid.value = element as HTMLElement | null; };
+const closeScopeOnEscape = (event: KeyboardEvent) => {
+  if (!scopeOpen.value) return;
+  event.stopPropagation();
+  scopeOpen.value = false;
+  scopeTrigger.value?.focus();
+};
 </script>
 
 <template>
-  <section :ref="setRoot" class="vf-asset-browser" aria-label="选择植被" @keydown.esc="scopeOpen = false">
+  <section :ref="setRoot" class="vf-asset-browser" aria-label="选择植被" @keydown.esc="closeScopeOnEscape">
     <div class="vf-browser-tools">
       <div class="vf-browser-scope">
-        <button type="button" class="vf-scope-trigger" :aria-expanded="scopeOpen" aria-label="选择检索资产库" @click="scopeOpen = !scopeOpen">
+        <button ref="scopeTrigger" type="button" class="vf-scope-trigger" :aria-expanded="scopeOpen" aria-label="选择检索资产库" @click="scopeOpen = !scopeOpen">
           <Database :size="16" /><span>{{ scopeLabel }}</span><ChevronDown :size="14" />
         </button>
         <div v-if="scopeOpen" class="vf-scope-menu">
@@ -93,7 +101,7 @@ const setGrid = (element: unknown) => { grid.value = element as HTMLElement | nu
 .vf-scope-options span { overflow-wrap:anywhere; min-width:0; }
 .vf-scope-options input { width:15px; height:15px; accent-color:var(--ab-accent); flex-shrink:0; }
 .vf-browser-body { position:relative; flex:1; min-height:120px; overflow:hidden; }
-.vf-browser-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,132px),1fr)); gap:10px; align-content:start; overflow-y:auto; height:100%; min-height:0; padding:12px; box-sizing:border-box; }
+.vf-browser-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,132px),1fr)); gap:10px; align-content:start; overflow-y:auto; scrollbar-gutter:stable; height:100%; min-height:0; padding:12px; box-sizing:border-box; }
 .vf-browser-asset { position:relative; display:flex; flex-direction:column; gap:5px; min-width:0; padding:7px; border:1px solid var(--ab-border); background:var(--ab-bg); border-radius:5px; text-align:left; color:inherit; cursor:pointer; }
 .vf-browser-asset:hover,.vf-browser-asset:focus-visible { border-color:var(--ab-accent); }
 .vf-browser-asset.selected { border-color:var(--ab-accent); background:var(--color-accent-soft,#e4f3ef); }

@@ -153,6 +153,27 @@ test('SHP import retains its existing append-and-select behavior', async () => {
   } finally { f.dispose(); }
 });
 
+test('paged SHP previews add exact geometry once and retain only references for later show', async () => {
+  const f = fixture();
+  try {
+    const rows = [0, 1].map(i => ({...region(String(i)), dataset_id: 'd', ordinal:i, vertex_count:4}));
+    const pages = [];
+    f.api.importRegionsShapefile = async () => ({imported:true, dataset_id:'d', region_count:2});
+    f.api.regionGeometryPage = async (_, start) => { pages.push(start); return {regions:[rows[start]]}; };
+    f.sdk.hasRegion = id => f.calls.shown.includes(id);
+    f.sdk.addImportedPage = async rows => rows.forEach(r => f.sdk.showRegion(r));
+    await f.model.importRegions();
+    assert.deepEqual(pages, [0,1]);
+    assert.deepEqual(f.calls.shown, ['0','1']);
+    const first = f.model.regions.value[0];
+    assert.equal(first.coordinates.length, 0);
+    assert.equal(first.vertex_count, 4);
+    await f.model.toggleRegionPreview(first);
+    await f.model.toggleRegionPreview(first);
+    assert.deepEqual(pages, [0,1]);
+  } finally { f.dispose(); }
+});
+
 test('imported holes are retained and cumulative vertex overflow leaves existing drafts and previews untouched', async () => {
   const f = fixture();
   try {

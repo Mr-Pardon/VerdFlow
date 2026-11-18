@@ -7,17 +7,21 @@ import StrategyExamplePreview from "./StrategyExamplePreview.vue";
 import StrategyParameterEditor from "./StrategyParameterEditor.vue";
 import type { ExampleAppearanceRole } from "../features/shared/strategyExampleAppearance";
 import type { StrategyExampleCache } from "@verdflow/strategy-preview-ui";
+import { computed } from "vue";
 
-defineProps<{
+const props = withDefaults(defineProps<{
   strategy: StrategyLibraryDetail;
   parameters: StrategyGenerationParameterInfo[];
   values: Record<string, number>;
   enabled: Record<string, boolean>;
   randomSeed: number | null;
+  showSeed?: boolean;
+  showPreview?: boolean;
   disabled?: boolean;
   appearance?: ExampleAppearanceRole[];
   exampleCache?: StrategyExampleCache;
-}>();
+}>(), { showSeed: true, showPreview: true });
+const hasExample = computed(() => props.showPreview && Boolean(props.strategy.parameter_preview));
 const emit = defineEmits<{
   updateParameter: [key: string, value: number];
   updateRandomSeed: [value: number];
@@ -29,7 +33,7 @@ const emit = defineEmits<{
 <template>
   <div
     class="strategy-effect-workspace"
-    :class="{ 'has-example': strategy.parameter_preview }"
+    :class="{ 'has-example': hasExample }"
   >
     <div class="strategy-effect-controls">
       <StrategyParameterEditor
@@ -38,6 +42,7 @@ const emit = defineEmits<{
         :parameters="parameters"
         :values="values"
         :random-seed="randomSeed"
+        :show-seed="showSeed"
         :disabled="disabled"
         @update-parameter="(key, value) => emit('updateParameter', key, value)"
         @update-random-seed="emit('updateRandomSeed', $event)"
@@ -46,7 +51,7 @@ const emit = defineEmits<{
       />
     </div>
     <StrategyExamplePreview
-      v-if="strategy.parameter_preview"
+      v-if="hasExample"
       :key="strategy.summary.package_hash"
       :strategy="strategy"
       :values="values"

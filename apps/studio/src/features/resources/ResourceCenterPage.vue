@@ -5,7 +5,7 @@ import { ArrowLeft, ArrowUpRight, BookOpen, Boxes, Check, ChevronRight, Download
 import type { ResourceKind, ResourceSelection } from "../../api/resourceCenter";
 import StarterResourcesDialog from "../onboarding/StarterResourcesDialog.vue";
 import { useResourceCenter } from "./useResourceCenter";
-import { centerUrl, formatBytes, kindLabels, renderResourceMarkdown, safeContentImage, stateLabels } from "./resourcePresentation";
+import { assetArchiveUrl, formatBytes, kindLabels, renderResourceMarkdown, resourcePageUrl, safeContentImage, stateLabels } from "./resourcePresentation";
 
 const route = useRoute();
 const router = useRouter();
@@ -27,6 +27,8 @@ const filtered = computed(() => resources.value.filter(r => (tab.value === "all"
   && [r.name, r.summary, r.author, ...r.tags].join(" ").toLocaleLowerCase().includes(query.value.trim().toLocaleLowerCase())));
 const detail = computed(() => state.detail.value);
 const version = computed(() => detail.value?.versions.find(v => v.version === detail.value?.selected_version));
+const archiveUrl = computed(() => detail.value && version.value ? assetArchiveUrl(detail.value.resource, version.value) : "");
+const webUrl = computed(() => resourcePageUrl(resourceId.value, version.value?.version || requestedVersion.value));
 const markdown = computed(() => detail.value ? renderResourceMarkdown(detail.value.readme, detail.value.content_base) : "");
 const localTarget = computed(() => detail.value?.resource.kind === "assets" ? "/assets" : detail.value?.resource.kind === "plans" ? "/plans" : "/strategies");
 const cover = (url: string) => !brokenImages.value.has(url) ? safeContentImage(url) : "";
@@ -51,7 +53,7 @@ onMounted(() => void state.load());
       </div>
       <div class="page-actions">
         <button class="icon-button" title="刷新资源中心" aria-label="刷新资源中心" :disabled="state.loading.value || state.loadingDetail.value" @click="refresh"><RefreshCw :size="17" :class="{ spinning: state.loading.value || state.loadingDetail.value }" /></button>
-        <a class="secondary-button" :href="resourceId ? `${centerUrl}?id=${encodeURIComponent(resourceId)}` : centerUrl" target="_blank" rel="noopener noreferrer"><ExternalLink :size="15" />网页版</a>
+        <a class="secondary-button" :href="webUrl" target="_blank" rel="noopener noreferrer"><ExternalLink :size="15" />网页版</a>
       </div>
     </header>
     <div v-if="state.error.value || state.warning.value" class="resource-message" :class="{ 'resource-message--error': state.error.value }" role="alert">
@@ -110,7 +112,8 @@ onMounted(() => void state.load());
           <h2>{{ detail.resource.name }}</h2><p class="resource-summary">{{ detail.resource.summary }}</p>
           <label class="resource-version-label">版本<select :value="version.version" aria-label="资源版本" @change="selectVersion"><option v-for="release in detail.versions" :key="release.version" :value="release.version">v{{ release.version }}{{ release.version === detail.resource.version ? ' · 推荐' : '' }}</option></select></label>
           <div class="resource-download-meta"><span>{{ version.released_at }}</span><span v-if="version.bytes">{{ formatBytes(version.bytes) }}</span></div>
-          <button v-if="version.local_state !== 'installed'" class="primary-button resource-import" :disabled="!version.installable || (detail.resource.kind === 'strategies' && version.local_state === 'conflict')" @click="importResource"><Download :size="17" />{{ !version.installable ? '暂不支持应用内导入' : version.local_state === 'conflict' && detail.resource.kind === 'strategies' ? '同版本内容冲突' : '导入 VerdFlow' }}</button>
+          <a v-if="archiveUrl" class="secondary-button resource-import" :href="archiveUrl" target="_blank" rel="noopener noreferrer"><ExternalLink :size="17" />下载历史版本</a>
+          <button v-else-if="version.local_state !== 'installed'" class="primary-button resource-import" :disabled="!version.installable || (detail.resource.kind === 'strategies' && version.local_state === 'conflict')" @click="importResource"><Download :size="17" />{{ !version.installable ? '暂不支持应用内导入' : version.local_state === 'conflict' && detail.resource.kind === 'strategies' ? '同版本内容冲突' : '导入 VerdFlow' }}</button>
           <RouterLink v-else class="secondary-button resource-import" :to="localTarget"><Check :size="17" />已导入 · 查看本地</RouterLink>
           <p v-if="version.local_state === 'conflict'" class="resource-caution">本地存在不同内容，导入前请核对，现有资源不会被静默覆盖。</p>
           <p v-else-if="version.local_state === 'local'" class="resource-caution">本地已有此资产库。导入时将核对内容，不覆盖本地修改。</p>
@@ -182,6 +185,7 @@ onMounted(() => void state.load());
 .resource-version-label select { flex: 1; min-width: 0; padding: 9px 12px; background: var(--color-surface); border: 1px solid var(--color-border-strong); border-radius: 5px; color: var(--color-text); font: inherit; }
 .resource-download-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--color-text-muted); margin: 12px 0 17px; }
 .resource-import { width: 100%; justify-content: center; box-sizing: border-box; }
+a.resource-import { text-decoration: none; }
 .resource-subtle, .resource-caution { font-size: 12px; line-height: 1.7; color: var(--color-text-muted); margin: 10px 0 0; }
 .resource-caution { color: #a4712f; }
 .resource-release, .resource-related { border-top: 1px solid var(--color-border); padding-top: 20px; margin-top: 24px; }

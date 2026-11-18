@@ -102,20 +102,44 @@ test('responsive pages fill whole rows, hidden grids retain size, and observers 
   let resize, disconnected = false, observed = false, columns = 5;
   globalThis.ResizeObserver = class { constructor(callback) { resize = callback; } observe() { observed = true; } disconnect() { disconnected = true; } };
   globalThis.getComputedStyle = () => ({ gridTemplateColumns: Array(columns).fill('140px').join(' ') });
-  const gridElement = { clientWidth: 800, scrollTo() {} };
+  const gridElement = { offsetWidth: 800, scrollTo() {} };
   const v = mount({ gridElement });
   try {
     assert.equal(observed, true);
     for (columns = 1; columns <= 9; columns++) {
+      gridElement.offsetWidth = columns * 150;
       resize();
       assert.equal(v.state.pageSize.value % columns, 0);
       assert.ok(v.state.pageSize.value >= 48);
     }
     const size = v.state.pageSize.value;
-    gridElement.clientWidth = 0; columns = 4; resize();
+    columns = 5; resize();
+    assert.equal(v.state.pageSize.value, size, 'a content-driven column change at the same outer width must not restart search');
+    gridElement.offsetWidth = 0; columns = 4; resize();
     assert.equal(v.state.pageSize.value, size);
   } finally {
     v.app.unmount(); assert.equal(disconnected, true);
     delete globalThis.ResizeObserver; delete globalThis.getComputedStyle;
   }
+});
+
+test('an unanswered search stops loading and can be retried even when the bridge ignores abort', async t => {
+  storage.clear();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const pending = [];
+  const v = mount({ search: (request, signal) => new Promise(resolve => pending.push({ request, signal, resolve })) });
+  try {
+    assert.equal(v.state.busy.value, true);
+    t.mock.timers.tick(15_000);
+    await nextTick(); await nextTick();
+    assert.equal(pending[0].signal.aborted, true);
+    assert.equal(v.state.busy.value, false);
+    assert.match(v.state.error.value, /超时/);
+    const retry = v.state.load();
+    pending[0].resolve(page(pending[0].request, 'late'));
+    pending[1].resolve(page(pending[1].request, 'retried'));
+    await retry;
+    assert.equal(v.state.result.value?.revision, 'retried');
+    assert.equal(v.state.error.value, '');
+  } finally { v.app.unmount(); }
 });

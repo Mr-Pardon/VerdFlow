@@ -8,7 +8,7 @@ from typing import Any
 
 DEFAULT_STRATEGY: dict[str, Any] = {
     "strategy_id": "universal_street_tree",
-    "strategy_version": "2.0.0",
+    "strategy_version": "2.1.1",
     "parameters": {
         "default_seed": 2026071301,
         "shrub_spacing_m": 2.0,

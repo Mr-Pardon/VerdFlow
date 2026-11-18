@@ -368,7 +368,7 @@ test('Session disposal discards a late polled command and clears owned intervals
   assert.equal(session.operationActive.value, false);
 });
 
-test('Import soft-wait activity is visible; cancelling acknowledges that native loading may continue', async () => {
+test('Native XML delivery cannot be cancelled from the live panel; earlier stages can', async () => {
   const f = fixture();
   let stage = 'delivery_pending';
   f.api.sessionSnapshot = async () => ({ stage });
@@ -380,11 +380,12 @@ test('Import soft-wait activity is visible; cancelling acknowledges that native 
     onRegionDrawn() {}, onDrawingFinished() {}, onRegionClicked() {},
   });
   await session.refreshSnapshot();
-  f.calls.sdkCallbacks.onActivity('Still waiting for DTS');
-  assert.equal(session.stageLabel.value, 'Still waiting for DTS');
+  await session.cancel();
+  assert.equal(stage, 'delivery_pending');
   stage = 'elevation_ready';
   await session.refreshSnapshot();
   assert.match(session.stageLabel.value, /整理高程结果/);
   await session.cancel();
-  assert.equal(f.state.errorMessage.value, 'Native import may still be running');
+  assert.equal(stage, 'cancelled');
+  assert.equal(f.state.errorMessage.value, null);
 });

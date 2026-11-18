@@ -15,8 +15,13 @@
   flex-shrink: 0;
 }
 .plan-editor-dialog > header h3 {
+  margin: 0;
   font-size: 21px;
 }
+.plan-editor-dialog > header { align-items: center; gap: 12px 20px; }
+.plan-editor-title { flex: 1; min-width: 0; }
+.plan-editor-title h3, .plan-editor-title span { overflow-wrap: anywhere; }
+.plan-editor-dialog > .inline-alert { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-shrink: 0; }
 .plan-editor-steps {
   display: flex;
   gap: 4px;
@@ -42,6 +47,7 @@
   background: var(--color-accent-soft);
   color: var(--color-accent);
 }
+.plan-editor-steps button:disabled { opacity: .55; cursor: default; }
 .plan-editor-steps button > span {
   display: grid;
   place-items: center;
@@ -66,6 +72,8 @@
 .plan-editor-parameters {
   padding: 24px;
 }
+.plan-editor-parameters { max-width: 1190px; margin: 0 auto; }
+.plan-editor-preview-status { margin: 0 0 16px; color: var(--color-text-muted); font-size: 13px; }
 .plan-editor-strategies {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr);
@@ -286,13 +294,14 @@
 }
 .plan-editor-name {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 8px;
-  max-width: 520px;
-  margin-bottom: 24px;
+  min-width: 0;
   font-size: 13px;
 }
-.plan-editor-dialog input:not([type="checkbox"]),
+.plan-editor-name span { flex-shrink: 0; }
+.plan-editor-name input { width: min(300px, 26vw); min-width: 0; }
+.plan-editor-dialog input:not([type="checkbox"], [type="range"], [type="search"]),
 .plan-editor-dialog select {
   min-height: 36px;
   border: 1px solid var(--color-border);
@@ -314,13 +323,16 @@
   overflow: auto;
   min-width: 0;
 }
+.plan-role-sidebar-heading { display: flex; align-items: center; gap: 7px; padding: 0 0 12px; margin-bottom: 12px; border-bottom: 1px solid var(--color-border); color: var(--color-accent); }
+.plan-role-sidebar-heading strong { color: var(--color-text); font-size: 13px; }
+.plan-role-sidebar-heading small { margin-left: auto; color: var(--color-text-muted); font-size: 11px; }
 .plan-mapping-workspace.role-disabled .plan-plant-browser {
   grid-column: 2 / -1;
 }
 .plan-plant-browser {
   display: flex;
   flex-direction: column;
-  padding: 16px;
+  padding: 13px 14px;
   min-width: 0;
   min-height: 0;
 }
@@ -348,21 +360,25 @@
 }
 .plan-role-guide > summary {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
+  gap: 7px;
   font-size: 12px;
   color: var(--color-text-muted);
   cursor: pointer;
   padding: 4px 0 10px;
 }
+.plan-role-guide > summary svg:last-child { margin-left: auto; }
 .plan-role-guide[open] {
   max-height: 260px;
   overflow: auto;
 }
 .plan-browser-content {
-  display: flex !important;
+  display: flex;
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
 }
 .plan-asset-search {
   display: flex;
@@ -484,6 +500,8 @@
   font-size: 10px;
   color: var(--color-text-muted);
 }
+.plan-selected-panel > header strong { display: flex; align-items: center; gap: 7px; }
+.plan-selected-panel > header strong svg { color: var(--color-accent); }
 .plan-selected-list {
   overflow: auto;
   min-height: 0;
@@ -588,6 +606,11 @@
     height: calc(100dvh - 16px);
     max-height: calc(100dvh - 16px);
   }
+  .plan-editor-dialog > header { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: 13px 16px; }
+  .plan-editor-dialog > header > .icon-button { grid-column: 2; grid-row: 1; }
+  .plan-editor-name { grid-column: 1 / -1; }
+  .plan-editor-name input { width: 100%; }
+  .plan-editor-parameters { padding: 16px; }
   .plan-editor-steps {
     padding: 8px;
   }
@@ -614,8 +637,9 @@
   }
   .plan-mapping-workspace[data-pane="selected"] .plan-plant-browser {
     min-height: 0;
-    flex: 0;
+    flex: none;
   }
+  .plan-mapping-workspace[data-pane="selected"] .plan-browser-content { display: none; }
   .plan-selected-panel {
     display: none;
     min-height: 180px;

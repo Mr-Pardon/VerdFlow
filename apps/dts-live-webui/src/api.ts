@@ -130,22 +130,36 @@ export const saveProfile = (request: SaveProfileRequest) =>
     body: JSON.stringify(request),
   });
 
+function regionReferences(regions: LiveRegion[]) {
+  const result: (LiveRegion | {dataset_id: string; start: number; count: number})[] = [];
+  for (const r of regions) {
+    if (!r.dataset_id || r.ordinal === undefined) { result.push(r); continue; }
+    const last = result.at(-1);
+    if (last && "start" in last && last.dataset_id === r.dataset_id && last.start + last.count === r.ordinal) last.count++;
+    else result.push({dataset_id: r.dataset_id, start: r.ordinal, count: 1});
+  }
+  return result;
+}
+
 export const beginSelection = (configuration: SelectionConfiguration & { regions?: LiveRegion[]; paths?: LivePath[] }) =>
-  apiRequest<{ correlation: Correlation; regions: LiveRegion[] }>("/api/v1/operations/selection", {
+  apiRequest<{ correlation: Correlation }>("/api/v1/operations/selection", {
     method: "POST",
-    body: JSON.stringify(configuration),
+    body: JSON.stringify({ ...configuration, compact_response: true, regions: configuration.regions && regionReferences(configuration.regions) }),
   });
 
 export const exportRegionsShapefile = (regions: LiveRegion[]) =>
   apiRequest<{ saved: boolean; path: string | null; region_count: number }>(
     "/api/v1/selections/export-shp",
-    { method: "POST", body: JSON.stringify({ regions }) },
+    { method: "POST", body: JSON.stringify({ regions: regionReferences(regions) }) },
   );
 
 export const importRegionsShapefile = () =>
-  apiRequest<{ imported: boolean; source_name: string | null; regions: LiveRegion[] }>(
+  apiRequest<{ imported: boolean; source_name: string | null; regions?: LiveRegion[]; dataset_id?: string; region_count?: number }>(
     "/api/v1/selections/import-shp", { method: "POST", body: "{}" },
   );
+
+export const regionGeometryPage = (dataset: string, start: number, single = false) =>
+  apiRequest<{ regions: LiveRegion[] }>(`/api/v1/selections/geometry?dataset=${encodeURIComponent(dataset)}&start=${start}&single=${single}`);
 
 export const regenerateSelection = (configuration: SelectionConfiguration) =>
   apiRequest("/api/v1/operations/regeneration", {
@@ -184,6 +198,22 @@ export const submitElevation = (
 export const submitElevationChunk = (correlation: Correlation, indices: number[], intersects: unknown) =>
   apiRequest("/api/v1/callbacks/elevation-chunk", {
     method: "POST", body: JSON.stringify({ correlation, indices, intersects }),
+  });
+
+export interface SamplingWindow {
+  number: number;
+  bbox: number[];
+  groups: { selection_id: string; name: string; path_id?: string | null; indices: number[]; lines?: unknown[] }[];
+}
+
+export const elevationPage = (correlation: Correlation, page: number) =>
+  apiRequest<{ windows: SamplingWindow[] }>("/api/v1/operations/elevation-page", {
+    method: "POST", body: JSON.stringify({ correlation, page }),
+  });
+
+export const claimDelivery = (correlation: Correlation) =>
+  apiRequest<{ claimed: boolean }>("/api/v1/operations/claim-delivery", {
+    method: "POST", body: JSON.stringify({ correlation }),
   });
 
 export const submitDelivery = (

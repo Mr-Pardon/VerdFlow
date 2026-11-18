@@ -152,6 +152,12 @@ class DtsLiveVerticalRuntimeTests(unittest.TestCase):
     def test_legal_hole_survives_standard_regions_and_generates_no_points_inside(self) -> None:
         self._run_regions(multi=True, with_hole=True)
 
+    def test_stored_shp_reference_runs_through_exact_core_regions_and_one_xml(self) -> None:
+        with patch("verdflow.dts_adapter.live_worker._POINT_INPUT_STREAM_BYTES", 0), patch(
+            "verdflow.dts_adapter.live._RAY_PAGE_SIZE", 2
+        ):
+            self._run_regions(multi=True, with_hole=True, stored=True)
+
     def test_tweaked_plan_runs_without_original_catalog(self) -> None:
         self._run_regions(multi=True, tweaked=True)
 
@@ -179,6 +185,7 @@ class DtsLiveVerticalRuntimeTests(unittest.TestCase):
         with_hole: bool = False,
         path_input: bool = False,
         overlapping: bool = False,
+        stored: bool = False,
     ) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -223,6 +230,14 @@ class DtsLiveVerticalRuntimeTests(unittest.TestCase):
                     bootstrap.connector_session_id,
                     bootstrap.bootstrap_nonce,
                 )
+                def selection_rows(rows):
+                    if not stored or rows is None:
+                        return rows
+                    from verdflow.dts_adapter import normalize_live_regions
+                    drafts = manager.drafts(bootstrap.connector_session_id, grant.access_token)
+                    dataset, count = drafts.register(normalize_live_regions(rows))
+                    return [{"dataset_id": dataset, "start": 0, "count": count}]
+
                 selection_command = manager.begin_selection(
                     bootstrap.connector_session_id,
                     grant.access_token,
@@ -231,7 +246,7 @@ class DtsLiveVerticalRuntimeTests(unittest.TestCase):
                         profile_id=None if multi_catalog else profile_id,
                         assignments=assignments,
                     ),
-                    regions=(
+                    regions=selection_rows(
                         [
                             {
                                 "region_id": "a",
@@ -316,6 +331,27 @@ class DtsLiveVerticalRuntimeTests(unittest.TestCase):
                         sequence = command.sequence
                         if command.kind is DtsLiveCommandKind.SAMPLE_ELEVATION:
                             elevation_count += 1
+                            if stored:
+                                self.assertNotIn("lines", command.payload)
+                                collected = {}
+                                for i in range(command.payload["page_count"]):
+                                    windows = manager.elevation_page(bootstrap.connector_session_id, grant.access_token, command.correlation, i)
+                                    for window in windows:
+                                        for group in window["groups"]:
+                                            for index, line in zip(group["indices"], group["lines"], strict=True):
+                                                self.assertNotIn(index, collected)
+                                                collected[index] = group["selection_id"]
+                                                x, y, _ = line["start"]
+                                                if group["selection_id"] == "a":
+                                                    self.assertFalse(20 < x < 80 and 20 < y < 80)
+                                            manager.accept_elevation_chunk(bootstrap.connector_session_id, grant.access_token,
+                                                command.correlation, group["indices"], [{"LineIntersectPoint": [*line["start"][:2], 0.0]}
+                                                                                       for line in group["lines"]])
+                                self.assertEqual(set(collected), set(range(len(collected))))
+                                self.assertEqual(set(collected.values()), {"a", "b"})
+                                manager.accept_elevation(bootstrap.connector_session_id, grant.access_token, command.correlation,
+                                                         None, chunked=True)
+                                continue
                             lines = command.payload["lines"]
                             batches = command.payload["batches"]
                             self.assertEqual(len(batches), 2 if multi else 1)
@@ -412,6 +448,11 @@ class DtsLiveVerticalRuntimeTests(unittest.TestCase):
                             )
                         elif command.kind is DtsLiveCommandKind.IMPORT_XML:
                             export_id = command.payload["export_id"]
+                            if stored:
+                                args = (bootstrap.connector_session_id, grant.access_token, command.correlation)
+                                self.assertTrue(manager.claim_delivery(*args))
+                                self.assertFalse(manager.claim_delivery(*args))
+                                self.assertEqual(manager.cancel(*args[:2]).stage, DtsLiveOperationStage.DELIVERY_PENDING)
                             xml_path = Path(command.payload["xml_path"])
                             self.assertTrue(xml_path.is_file())
                             self.assertIn("ModelPoint", xml_path.read_text("utf-8"))

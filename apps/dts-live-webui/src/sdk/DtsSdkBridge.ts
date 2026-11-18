@@ -1,4 +1,4 @@
-import { cancelOperation, submitDelivery, submitElevation, submitElevationChunk, submitSelection } from "../api";
+import { cancelOperation, submitDelivery, submitElevation, submitElevationChunk, submitSelection, elevationPage, type SamplingWindow } from "../api";
 import type { ElevationBatch, LiveCommand, LiveRegion, LiveGeometry } from "../types";
 import { geometryId, geometryKind } from "../shared/regionLimits";
 import type { DtsApi, DtsWindow, PendingSdkRequest, DtsSdkCallbacks } from "./protocol";
@@ -143,6 +143,8 @@ export class DtsSdkBridge {
     this.callbacks.onDrawingFinished();
   }
 
+  hasRegion(id: string) { return this.previewIds.has(id); }
+
   showRegion(region: LiveGeometry) {
     const key = geometryId(region), kind = geometryKind(region);
     const api = kind === "polyline" ? this.api?.polyline : this.api?.polygon;
@@ -155,13 +157,35 @@ export class DtsSdkBridge {
       }
       return;
     }
-    const id = `${this.previewGroup}_${key}`;
-    api.add({
+    const object = this.previewObject(region);
+    api.add(object);
+    this.trackPreview(region, object.id);
+  }
+
+  async addImportedPage(regions: LiveRegion[]) {
+    const api = this.api?.polygon;
+    if (!api || this.disposed) throw new Error("DTS 选区预览接口不可用");
+    const objects = regions.map(r => this.previewObject(r));
+    await api.add(objects);
+    if (this.disposed) {
+      for (const object of objects) api.delete(object.id);
+      return;
+    }
+    regions.forEach((r, i) => this.trackPreview(r, objects[i]!.id));
+  }
+
+  private previewObject(region: LiveGeometry) {
+    const id = `${this.previewGroup}_${geometryId(region)}`, kind = geometryKind(region);
+    return {
       id, groupId: this.previewGroup, coordinates: kind === "polyline" ? region.coordinates : polygonCoordinates(region as LiveRegion),
       coordinateType: 0, style: kind === "polyline" ? 0 : 10, shape: 0, thickness: Math.max(0.03, previewFrameThickness(region)), color: [0.14, 0.63, 0.59, kind === "polyline" ? 1 : 0.3],
       frameColor: [0.36, 0.95, 0.82, 0.95], frameThickness: previewFrameThickness(region),
       range: [1, 1000000], depthTest: false, priority: 1,
-    });
+    };
+  }
+
+  private trackPreview(region: LiveGeometry, id: string) {
+    const key = geometryId(region), kind = geometryKind(region);
     this.previewIds.set(key, id);
     this.previewKinds.set(key, kind);
     this.previewRegions.set(id, key);
@@ -351,8 +375,9 @@ export class DtsSdkBridge {
   }
 
   private async sampleElevationWindows(command: LiveCommand, generation: number) {
-    const lines = command.payload.lines;
-    if (!this.api?.tools?.linesIntersect || !Array.isArray(lines)) {
+    const pageCount = Number(command.payload.page_count ?? 0);
+    const lines = Array.isArray(command.payload.lines) ? command.payload.lines : [];
+    if (!this.api?.tools?.linesIntersect || (!pageCount && !lines.length)) {
       throw new Error("DTS 高程采样工具不可用");
     }
     const batches = command.payload.batches as ElevationBatch[] | undefined;
@@ -361,27 +386,44 @@ export class DtsSdkBridge {
     }];
     const streamed = command.payload.stream_results === true;
     const results: unknown[] = streamed ? [] : Array(lines.length).fill(null);
-    const failures = new Map<string, string>();
+    const failures = new Map<string, { region_id?: string; path_id?: string; reason: string }>();
     const assertActive = () => {
       if (generation !== this.samplingGeneration) throw new Error("高程采样已取消");
     };
-    const windows = samplingWindows(lines, plan);
-    for (const [index, window] of windows.entries()) {
+    let windowCount = Number(command.payload.window_count ?? 0);
+    async function* windows(): AsyncGenerator<SamplingWindow> {
+      if (pageCount) {
+        for (let page = 0; page < pageCount; page++) {
+          assertActive();
+          yield* (await elevationPage(command.correlation, page)).windows;
+        }
+      } else {
+        const local = samplingWindows(lines, plan);
+        windowCount = local.length;
+        for (const [number, window] of local.entries()) yield { number, ...window };
+      }
+    }
+    let focused = -1;
+    for await (const window of windows()) {
+      const index = window.number;
       assertActive();
       if (window.groups.every(group => failures.has(group.selection_id))) continue;
-      this.callbacks.onActivity(`定位采样窗口 ${index + 1}/${windows.length}`);
-      this.focusRegion(window);
-      await this.waitForScene(1400);
+      if (focused !== index) {
+        this.callbacks.onActivity(`定位采样窗口 ${index + 1}/${windowCount}`);
+        this.focusRegion(window);
+        await this.waitForScene(1400);
+        focused = index;
+      }
       assertActive();
       for (const group of window.groups) {
         if (failures.has(group.selection_id)) continue;
         for (let offset = 0; offset < group.indices.length; offset += 2000) {
           const indices = group.indices.slice(offset, offset + 2000);
-          const chunk = indices.map(i => lines[i]);
+          const chunk = group.lines ? group.lines.slice(offset, offset + 2000) : indices.map(i => lines[i]);
           let rows: unknown[] | null = null;
           for (let attempt = 0; attempt < 2; attempt++) {
             assertActive();
-            this.callbacks.onActivity(`采样窗口 ${index + 1}/${windows.length} · ${group.name}${attempt ? " · 重试" : ""}`);
+            this.callbacks.onActivity(`采样窗口 ${index + 1}/${windowCount} · ${group.name}${attempt ? " · 重试" : ""}`);
             try {
               if (attempt) {
                 this.focusRegion(window);
@@ -393,7 +435,10 @@ export class DtsSdkBridge {
               break;
             } catch (error) {
               assertActive();
-              if (attempt === 1) failures.set(group.selection_id, readableError(error));
+              if (attempt === 1) {
+                const path = group.path_id || (!pageCount && plan.find(b => b.path_id === group.selection_id)?.path_id);
+                failures.set(group.selection_id, { ...(path ? {path_id: group.selection_id} : {region_id: group.selection_id}), reason: readableError(error) });
+              }
             }
           }
           if (!rows) break;
@@ -404,11 +449,7 @@ export class DtsSdkBridge {
       }
     }
     assertActive();
-    await submitElevation(command.correlation, streamed ? null : results,
-      [...failures].map(([identifier, reason]) => {
-        const batch = plan.find(item => (item.path_id ?? item.region_id) === identifier)!;
-        return batch.path_id ? {path_id: batch.path_id, reason} : {region_id: batch.region_id!, reason};
-      }), streamed);
+    await submitElevation(command.correlation, streamed ? null : results, [...failures.values()], streamed);
     this.callbacks.onActivity(failures.size ? `采样完成，跳过 ${failures.size} 个失败选区` : "采样完成，正在整理高程结果并生成 XML");
     this.callbacks.onCommandComplete();
   }

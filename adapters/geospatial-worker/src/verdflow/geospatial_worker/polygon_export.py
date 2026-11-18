@@ -17,11 +17,33 @@ class ShapefilePolygon:
 
 def export_polygon_shapefile(polygons: Sequence[ShapefilePolygon]) -> bytes:
     """Return a UTF-8 Polygon Shapefile ZIP in the caller's original XY frame."""
-    import shapefile
-
     if not polygons:
         raise ValueError("At least one polygon is required")
     streams = {suffix: io.BytesIO() for suffix in ("shp", "shx", "dbf")}
+    _write_features(polygons, streams)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for suffix, stream in streams.items():
+            archive.writestr(f"regions.{suffix}", stream.getvalue())
+        archive.writestr("regions.cpg", "UTF-8")
+    return output.getvalue()
+
+
+def write_polygon_shapefile(polygons, output, workdir):
+    """Write and compress one selection at a time, including Zip64 members."""
+    from contextlib import ExitStack
+    with ExitStack() as stack:
+        streams = {suffix: stack.enter_context((workdir / ("regions." + suffix)).open("w+b"))
+                   for suffix in ("shp", "shx", "dbf")}
+        _write_features(polygons, streams)
+    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for suffix in streams:
+            archive.write(workdir / ("regions." + suffix), "regions." + suffix)
+        archive.writestr("regions.cpg", "UTF-8")
+
+
+def _write_features(polygons, streams):
+    import shapefile
     with shapefile.Writer(**streams, shapeType=shapefile.POLYGON, encoding="utf-8") as writer:
         writer.field("REGION_ID", "C", size=80)
         writer.field("NAME", "C", size=254)
@@ -79,9 +101,3 @@ def export_polygon_shapefile(polygons: Sequence[ShapefilePolygon]) -> bytes:
             area = float(geometry.area) if polygon.holes else abs(twice_area) / 2
             writer.record(polygon.polygon_id, polygon.name, len(points) + sum(map(len, polygon.holes)), area,
                           min(p[2] for p in points), max(p[2] for p in points))
-    output = io.BytesIO()
-    with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        for suffix, stream in streams.items():
-            archive.writestr(f"regions.{suffix}", stream.getvalue())
-        archive.writestr("regions.cpg", "UTF-8")
-    return output.getvalue()

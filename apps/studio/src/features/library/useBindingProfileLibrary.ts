@@ -18,9 +18,8 @@ export const useBindingProfileLibrary = (input: {
 }) => {
   const client = new LocalApiClient(platformBridge());
   const targetType = ref<BindingTargetType>(input.targetType);
-  const strategySummary = shallowRef<
-    import("../../api").StrategyLibrarySummary | null
-  >(null);
+  const strategyDetail = shallowRef<StrategyLibraryDetail | null>(null);
+  const strategySummary = computed(() => strategyDetail.value?.summary ?? null);
   const profileDetail = shallowRef<RoleBindingProfileDetail | null>(null);
   const roleNames = shallowRef<Record<string, string>>({});
   const generationParameters = shallowRef<
@@ -74,7 +73,7 @@ export const useBindingProfileLibrary = (input: {
     assetDetails.value = {};
     sourceCatalogs.value = [];
     loadingDetail.value = true;
-    strategySummary.value = null;
+    strategyDetail.value = null;
     try {
       const detail = await client.roleBindingProfile(input.profileId());
       const [strategy, resolvedAssets, catalogs] = await Promise.all([
@@ -86,7 +85,7 @@ export const useBindingProfileLibrary = (input: {
       ]);
       if (epoch !== selectionEpoch) return;
       profileDetail.value = detail;
-      strategySummary.value = strategy?.summary ?? null;
+      strategyDetail.value = strategy;
       generationParameters.value = strategy?.generation_parameters ?? [];
       roleNames.value = Object.fromEntries(
         (strategy?.roles ?? []).map((role) => [
@@ -197,6 +196,7 @@ export const useBindingProfileLibrary = (input: {
     roleNames,
     selectedProfile,
     statusMessage,
+    strategyDetail,
     strategySummary,
     strategyDisplayName,
     syncableMetadataCount,

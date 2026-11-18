@@ -94,6 +94,34 @@ function command() {
   };
 }
 
+test('transport pages share a camera window and return the original ray indices', async () => {
+  const f = await fixture();
+  f.api.elevationPage = async (_, page) => ({ windows: [{number:0, bbox:[0,0,0,10,10,0], groups:[
+    {selection_id:'a',name:'A',indices:[1-page],lines:[{start:[1-page,0,20],end:[1-page,0,-20]}]},
+  ]}]});
+  const c = command();
+  c.payload = {stream_results:true, page_count:2, window_count:1};
+  await f.bridge.execute(c);
+  assert.equal(f.calls.camera.length, 1);
+  assert.deepEqual(f.calls.chunks.map(chunk => chunk[1][0]), [1,0]);
+  assert.equal(f.calls.elevation.length, 1);
+  f.bridge.dispose();
+});
+
+test('imported polygons use one native add per page and then show by ID', async () => {
+  const f = await fixture();
+  const a = {region_id:'a',name:'A',coordinates:[[0,0,0],[10,0,0],[0,10,0]],bbox:[0,0,0,10,10,0]};
+  const b = {...a,region_id:'b'};
+  await f.bridge.addImportedPage([a,b]);
+  assert.equal(f.calls.polygons.length, 1);
+  assert.equal(f.calls.polygons[0].length, 2);
+  f.bridge.hideRegion('a');
+  f.bridge.showRegion({...a, coordinates:[]});
+  assert.equal(f.calls.polygons.length, 1);
+  assert.equal(f.calls.shown.length, 1);
+  f.bridge.dispose();
+});
+
 test('drawing is local; terrain polygons belong to this bridge only', async () => {
   const f = await fixture();
   f.bridge.beginDrawing();
@@ -478,7 +506,7 @@ function importCommand(path = 'D:/Local/current.xml') {
     payload: { xml_path: path, export_id: path } };
 }
 
-test('XML soft timeout warns without failing; only matching full-path receipts finish the import', async () => {
+test('XML stays pending silently; only matching full-path receipts finish the import', async () => {
   const f = await fixture({ timeout: true });
   f.instance.call = () => ({ dispatched: true });
   let done = false;
@@ -486,7 +514,7 @@ test('XML soft timeout warns without failing; only matching full-path receipts f
   await new Promise(resolve => setTimeout(resolve, 20));
   assert.equal(done, false);
   assert.equal(f.calls.delivery.length, 0);
-  assert.ok(f.calls.activity.some(message => /仍在等待/.test(message)));
+  assert.equal(f.calls.activity.some(message => /仍在等待/.test(message)), false);
   for (const response of [
     { eventtype: 'ImportXMLObject', path: 'D:/Other/current.xml', resultMessage: 'Succeed' },
     { eventtype: 'ImportXMLObject', resultMessage: 'Succeed' },

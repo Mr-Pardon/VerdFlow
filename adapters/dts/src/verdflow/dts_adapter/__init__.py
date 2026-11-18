@@ -41,7 +41,10 @@ from .live_worker import (
     DtsLiveWorkerPort,
 )
 
+from .region_drafts import LiveRegionDraftStore
+
 __all__ = [
+    "LiveRegionDraftStore",
     "DtsLiveSelectionLimitError",
     "DTS_ADAPTER_ID",
     "DTS_ADAPTER_VERSION",

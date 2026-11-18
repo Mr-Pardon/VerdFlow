@@ -2,7 +2,7 @@
   "schema": "verdflow.strategy-package",
   "version": "1",
   "package_id": "universal_street_tree",
-  "package_version": "2.1.0",
+  "package_version": "2.1.1",
   "runtime": "python",
   "api_version": "1",
   "strategy_file": "strategy.yaml",

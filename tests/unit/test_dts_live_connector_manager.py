@@ -171,6 +171,24 @@ class DtsLiveConnectorManagerTests(unittest.TestCase):
                 _request(),
             )
 
+    def test_active_job_survives_silent_intervals_but_idle_poll_does_not_pin(self) -> None:
+        now = [0.0]
+        manager = DtsLiveConnectorManager(_resolve, session_ttl_seconds=10, clock=lambda: now[0])
+        boot = manager.create_session()
+        sid = boot.connector_session_id
+        grant = manager.exchange_bootstrap(sid, boot.bootstrap_nonce)
+        with manager.trusted_port(sid).working():
+            now[0] += 100
+            with self.assertRaises(DtsLiveAuthorizationError):
+                manager.snapshot(sid, "wrong")
+            manager.snapshot(sid, grant.access_token)
+            now[0] += 100
+        now[0] += 9
+        manager.snapshot(sid, grant.access_token)
+        now[0] += 2
+        with self.assertRaises(DtsLiveSessionNotFoundError):
+            manager.snapshot(sid, grant.access_token)
+
     def test_expired_session_is_removed_without_persisted_state(self) -> None:
         now = [100.0]
         manager = DtsLiveConnectorManager(

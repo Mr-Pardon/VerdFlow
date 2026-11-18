@@ -115,9 +115,9 @@ class PlantRunRequest:
 @dataclass(frozen=True, slots=True)
 class PlantRunTimeouts:
     generation_seconds: float | None = None
-    elevation_seconds: float = 1800.0
-    assignment_seconds: float = 300.0
-    export_seconds: float = 300.0
+    elevation_seconds: float | None = 1800.0
+    assignment_seconds: float | None = 300.0
+    export_seconds: float | None = 300.0
 
     def validate(self) -> None:
         for name, value in (
@@ -126,7 +126,7 @@ class PlantRunTimeouts:
             ("assignment_seconds", self.assignment_seconds),
             ("export_seconds", self.export_seconds),
         ):
-            if name == "generation_seconds" and value is None:
+            if value is None:
                 continue
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
@@ -161,21 +161,21 @@ class PlantRunStageHost(Protocol):
         self,
         request: ElevationSamplingRequest,
         *,
-        timeout_seconds: float,
+        timeout_seconds: float | None,
     ) -> ElevationSamplingOutcome: ...
 
     def assign_assets(
         self,
         request: AssetAssignmentRequest,
         *,
-        timeout_seconds: float,
+        timeout_seconds: float | None,
     ) -> AssetAssignmentOutcome: ...
 
     def export_output(
         self,
         request: OutputExportRequest,
         *,
-        timeout_seconds: float,
+        timeout_seconds: float | None,
     ) -> OutputExportOutcome: ...
 
 

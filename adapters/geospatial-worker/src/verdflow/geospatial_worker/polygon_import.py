@@ -59,34 +59,7 @@ def import_polygon_shapefile(source: Path) -> tuple[ShapefilePolygon, ...]:
                 geometry = shape(raw.__geo_interface__)
                 if geometry.is_empty or not geometry.is_valid or not math.isfinite(geometry.area) or geometry.area <= 0:
                     raise ShapefileImportError("shp_invalid_geometry", invalid_polygon_message(geometry, index + 1))
-                parts = list(geometry.geoms) if geometry.geom_type == "MultiPolygon" else [geometry]
-                properties = {key.upper(): value for key, value in record.record.as_dict().items()}
-                label = str(properties.get("NAME") or properties.get("LABEL") or f"\u9009\u533a {index + 1}").strip()
-                # A 2D export may retain a reference height range for camera positioning.
-                # This is not a terrain sample. Plain external 2D data starts at zero.
-                z_low, z_high = properties.get("Z_MIN"), properties.get("Z_MAX")
-                reference_z = 0.0
-                if isinstance(z_low, (int, float)) and isinstance(z_high, (int, float)):
-                    if math.isfinite(z_low) and math.isfinite(z_high):
-                        reference_z = z_low / 2 + z_high / 2
-                z_by_xy = {}
-                if raw.shapeType == shapefile.POLYGONZ:
-                    if not all(math.isfinite(z) for z in raw.z):
-                        raise ShapefileImportError("shp_invalid_geometry")
-                    z_by_xy = {tuple(point): z for point, z in zip(raw.points, raw.z)}
-                for part_index, polygon in enumerate(parts):
-                    if polygon.geom_type != "Polygon":
-                        raise ShapefileImportError("shp_polygon_required")
-                    name = label if len(parts) == 1 else f"{label} ({part_index + 1})"
-                    coordinates = tuple(
-                        (float(x), float(y), float(z_by_xy.get((x, y), reference_z)))
-                        for x, y in list(polygon.exterior.coords)[:-1]
-                    )
-                    holes = tuple(tuple(
-                        (float(x), float(y), float(z_by_xy.get((x, y), reference_z)))
-                        for x, y in list(ring.coords)[:-1]
-                    ) for ring in polygon.interiors)
-                    polygons.append(ShapefilePolygon(f"{index + 1}_{part_index + 1}", name, coordinates, holes))
+                polygons.extend(_parts(geometry, record.record.as_dict(), raw, index))
         if not polygons:
             raise ShapefileImportError("shp_empty")
         return tuple(polygons)
@@ -94,6 +67,66 @@ def import_polygon_shapefile(source: Path) -> tuple[ShapefilePolygon, ...]:
         raise
     except (ValueError, LookupError, UnicodeError, zipfile.BadZipFile, shapefile.ShapefileException, GEOSException) as error:
         raise ShapefileImportError("shp_invalid_dataset") from error
+
+
+def iter_live_shapefile(source: Path, workdir: Path):
+    """Use the workbench disk-backed SHP reader, preserving DTS reference heights."""
+    from .vector_shp import shapefile_records, unpack_shapefile, validate_polygon
+    import shapefile
+    from shapely.errors import GEOSException
+
+    report = lambda *_: None
+    try:
+        path = unpack_shapefile(source, workdir, report) if source.suffix.lower() == ".zip" else source
+        found = False
+        for index, (geometry, properties, raw) in enumerate(shapefile_records(path, report)):
+            if not geometry.is_valid:
+                raise ShapefileImportError("shp_invalid_geometry", invalid_polygon_message(geometry, index + 1))
+            for i, poly in enumerate(geometry.geoms if geometry.geom_type == "MultiPolygon" else (geometry,)):
+                validate_polygon(poly, index, i)
+            for part in _parts(geometry, properties, raw, index):
+                found = True
+                yield part
+        if not found:
+            raise ShapefileImportError("shp_empty")
+    except ShapefileImportError:
+        raise
+    except GeospatialDataError as error:
+        raise ShapefileImportError("shp_invalid_dataset", str(error)) from error
+    except (ValueError, LookupError, zipfile.BadZipFile, shapefile.ShapefileException, GEOSException) as error:
+        raise ShapefileImportError("shp_invalid_dataset") from error
+
+
+def _parts(geometry, properties, raw, index):
+    import shapefile
+    parts = list(geometry.geoms) if geometry.geom_type == "MultiPolygon" else [geometry]
+    properties = {key.upper(): value for key, value in properties.items()}
+    label = str(properties.get("NAME") or properties.get("LABEL") or f"\u9009\u533a {index + 1}").strip()
+    # A 2D export may retain a reference height range for camera positioning.
+    # This is not a terrain sample. Plain external 2D data starts at zero.
+    z_low, z_high = properties.get("Z_MIN"), properties.get("Z_MAX")
+    reference_z = 0.0
+    if isinstance(z_low, (int, float)) and isinstance(z_high, (int, float)):
+        if math.isfinite(z_low) and math.isfinite(z_high):
+            reference_z = z_low / 2 + z_high / 2
+    z_by_xy = {}
+    if raw.shapeType == shapefile.POLYGONZ:
+        if not all(math.isfinite(z) for z in raw.z):
+            raise ShapefileImportError("shp_invalid_geometry")
+        z_by_xy = {tuple(point): z for point, z in zip(raw.points, raw.z)}
+    for part_index, polygon in enumerate(parts):
+        if polygon.geom_type != "Polygon":
+            raise ShapefileImportError("shp_polygon_required")
+        name = label if len(parts) == 1 else f"{label} ({part_index + 1})"
+        coordinates = tuple(
+            (float(x), float(y), float(z_by_xy.get((x, y), reference_z)))
+            for x, y in list(polygon.exterior.coords)[:-1]
+        )
+        holes = tuple(tuple(
+            (float(x), float(y), float(z_by_xy.get((x, y), reference_z)))
+            for x, y in list(ring.coords)[:-1]
+        ) for ring in polygon.interiors)
+        yield ShapefilePolygon(f"{index + 1}_{part_index + 1}", name, coordinates, holes)
 
 
 def _dataset_files(source: Path) -> dict[str, bytes]:

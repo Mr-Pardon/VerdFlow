@@ -1,6 +1,8 @@
 """Local selection import/export through explicit native file dialogs."""
 
+from contextlib import closing, nullcontext
 from dataclasses import asdict, dataclass
+from errno import ENOSPC
 import json
 import os
 from pathlib import Path
@@ -9,7 +11,7 @@ from threading import Lock
 from typing import Callable
 from uuid import uuid4
 
-from verdflow.dts_adapter import DtsLiveRegion, normalize_live_regions
+from verdflow.dts_adapter import DtsLiveRegion, LiveRegionDraftStore, normalize_live_regions
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +32,14 @@ class RegionExchangeBusyError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True, slots=True)
+class RegisteredDraft:
+    imported: bool
+    source_name: str | None = None
+    dataset_id: str | None = None
+    region_count: int = 0
+
+
 class RegionImportError(ValueError):
     def __init__(self, code: str, message: str | None = None) -> None:
         super().__init__(message or code)
@@ -46,16 +56,12 @@ class RegionExchangeService:
         self._last_directory: Path | None = None
         self._lock = Lock()
 
-    def export_regions(self, regions: tuple[DtsLiveRegion, ...]) -> RegionExportResult:
-        from verdflow.geospatial_worker import ShapefilePolygon, export_polygon_shapefile
+    def export_regions(self, regions: tuple[DtsLiveRegion, ...], drafts: LiveRegionDraftStore | None = None) -> RegionExportResult:
+        from verdflow.geospatial_worker import ShapefilePolygon, write_polygon_shapefile
 
         if not self._lock.acquire(blocking=False):
             raise RegionExchangeBusyError("A selection file dialog is already open")
         try:
-            payload = export_polygon_shapefile(tuple(
-                ShapefilePolygon(region.region_id, region.name, region.coordinates, region.holes)
-                for region in regions
-            ))
             destination = self._picker(self._last_directory)
             if destination is None:
                 return RegionExportResult(False, None, len(regions))
@@ -68,7 +74,10 @@ class RegionExchangeService:
             try:
                 with tempfile.NamedTemporaryFile(dir=destination.parent, prefix=".verdflow-", delete=False) as output:
                     temporary = Path(output.name)
-                    output.write(payload)
+                    with (tempfile.TemporaryDirectory(dir=destination.parent) as scratch,
+                          (closing(drafts.geometries(regions)) if drafts else nullcontext(regions)) as geometry):
+                        write_polygon_shapefile((ShapefilePolygon(r.region_id, r.name, r.coordinates, r.holes)
+                                                 for r in geometry), output, Path(scratch))
                 os.replace(temporary, destination)
             finally:
                 if temporary is not None:
@@ -78,6 +87,34 @@ class RegionExchangeService:
         finally:
             self._lock.release()
 
+
+    def register_shapefile(self, store: LiveRegionDraftStore) -> RegisteredDraft:
+        from verdflow.geospatial_worker import ShapefileImportError, iter_live_shapefile
+
+        if not self._lock.acquire(blocking=False):
+            raise RegionExchangeBusyError("A selection file dialog is already open")
+        try:
+            source = self._import_picker(self._last_directory)
+            if source is None:
+                return RegisteredDraft(False)
+            store.root.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(dir=store.root) as scratch:
+                def rows():
+                    for poly in iter_live_shapefile(Path(source), Path(scratch)):
+                        coords = poly.coordinates
+                        bbox = tuple(f(p[i] for p in coords) for f in (min, max) for i in range(3))
+                        yield DtsLiveRegion(f"live_{uuid4().hex}", poly.name, coords, bbox, poly.holes)
+                dataset, count = store.register(rows())
+            self._last_directory = Path(source).parent
+            return RegisteredDraft(True, Path(source).name, dataset, count)
+        except ShapefileImportError as error:
+            raise RegionImportError(error.code, str(error)) from error
+        except OSError as error:
+            if error.errno == ENOSPC:
+                raise RegionImportError("shp_disk_budget", "临时磁盘空间不足，未导入本次 SHP。请释放磁盘空间后重试。") from error
+            raise
+        finally:
+            self._lock.release()
 
     def import_regions(self) -> RegionImportResult:
         from verdflow.geospatial_worker import ShapefileImportError, import_polygon_shapefile

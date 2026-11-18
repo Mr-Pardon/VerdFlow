@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+from array import array
+from itertools import islice
 from threading import RLock
 from time import monotonic
 from typing import Any, BinaryIO, Callable, Protocol, Sequence
@@ -18,6 +20,7 @@ from verdflow.contracts import (
     REGION_EXTRACTION_COMMAND_VERSION,
 )
 from verdflow.core import JobRuntime, WorkerDescriptor
+from verdflow.planting import PointSetReader
 
 from .live import (
     DtsElevationSample,
@@ -25,6 +28,8 @@ from .live import (
     DtsLiveCommand,
     DtsLiveCorrelation,
     DtsLiveSelection,
+    DtsLiveRegionRef,
+    DtsLiveRegion,
 )
 
 
@@ -42,10 +47,28 @@ DTS_LIVE_SUPPORTED_COMMANDS = (
 )
 _ELEVATION_STREAM_ROWS = 16_384
 _ELEVATION_WRITE_BATCH_ROWS = 1024
+_POINT_INPUT_STREAM_BYTES = 32 * 1024**2
+
+
+class _VerticalRays(Sequence):
+    def __init__(self, half_range):
+        self.xyz = array("d")
+        self.half_range = half_range
+
+    def __len__(self):
+        return len(self.xyz) // 3
+
+    def __getitem__(self, i):
+        if not 0 <= i < len(self):
+            raise IndexError(i)
+        x, y, z = self.xyz[3*i:3*i+3]
+        return {"start": [x, y, z + self.half_range], "end": [x, y, z - self.half_range]}
 
 
 class DtsLiveWorkerPort(Protocol):
     connector_session_id: str
+
+    def region_geometries(self, regions: Sequence[DtsLiveRegion]): ...
 
     def selection(
         self,
@@ -116,7 +139,7 @@ class DtsLiveCoreWorker:
             if claimed.job.command.command_type == DTS_LIVE_SCENE_INSPECTION_COMMAND:
                 result_id = self._inspect_scene(command)
             elif claimed.job.command.command_type == DTS_LIVE_REGION_SELECTION_COMMAND:
-                result_id = self._select_region(command)
+                result_id = self._select_region(command, lease)
             elif claimed.job.command.command_type == DTS_LIVE_PATH_SELECTION_COMMAND:
                 result_id = self._select_paths(command)
             elif claimed.job.command.command_type == DTS_LIVE_ELEVATION_COMMAND:
@@ -236,7 +259,7 @@ class DtsLiveCoreWorker:
             operation="select_paths",
         )
 
-    def _select_region(self, command: dict[str, Any]) -> str:
+    def _select_region(self, command: dict[str, Any], lease) -> str:
         self._validate_provider_command(
             command,
             schema=REGION_EXTRACTION_COMMAND_SCHEMA,
@@ -248,57 +271,61 @@ class DtsLiveCoreWorker:
             context["operation_id"],
             context["generation_token"],
         )
-        regions = []
         region_metrics = []
-        for region in selection.regions:
-            polygon = [list(point) for point in region.coordinates]
-            boundary = [*polygon, list(polygon[0])]
-            hole_rings = [[list(point) for point in ring] for ring in region.holes]
-            boundaries = [boundary, *[[*ring, list(ring[0])] for ring in hole_rings]]
-            bbox = list(region.bbox)
-            regions.append({
-                "id": region.region_id,
-                "name": region.name,
-                "label": region.name,
-                "tags": "dts-live,user-selection",
-                "region_type": "region",
-                "source_object": "",
-                "coordinate_space": "source_scene_world",
-                "offset_applied": False,
-                "bbox": bbox,
-                "footprint_boundary_xyz": boundaries,
-                "mesh": "",
-                "extraction_method": "dts_user_polygon",
-            })
-            region_metrics.append({
-                "id": region.region_id,
-                "bbox": bbox,
-                "bbox_size": [bbox[i + 3] - bbox[i] for i in range(3)],
-                "footprint_area_xy": _polygon_area_xy(polygon) - sum(_polygon_area_xy(ring) for ring in hole_rings),
-                "boundary_perimeter_xy": sum(_polygon_perimeter_xy(ring) for ring in [polygon, *hole_rings]),
-                "boundary_loop_count": len(boundaries),
-                "is_near_horizontal": True,
-            })
-        geometry = self._put_json(
-            {
-                "schema": "verdflow.regions",
-                "version": "1",
-                "coordinate_space": "source_scene_world",
-                "offset_applied": False,
-                "source_name": "DTS Live Scene",
-                "region_count": len(regions),
-                "regions": regions,
-            },
-            media_type="application/vnd.verdflow.regions+json",
-            schema_id="verdflow.regions",
-        )
+        progress = self._progress_check(lease, "preparing_dts_regions")
+        def write_geometry(stream):
+            header = {"schema": "verdflow.regions", "version": "1", "coordinate_space": "source_scene_world",
+                      "offset_applied": False, "source_name": "DTS Live Scene", "region_count": len(selection.regions)}
+            stream.write(_json_bytes(header)[:-1] + b',"regions":[')
+            regions = self.port.region_geometries(selection.regions) if any(
+                isinstance(r, DtsLiveRegionRef) for r in selection.regions
+            ) else selection.regions
+            for index, region in enumerate(regions):
+                progress()
+                polygon = [list(point) for point in region.coordinates]
+                boundary = [*polygon, list(polygon[0])]
+                hole_rings = [[list(point) for point in ring] for ring in region.holes]
+                boundaries = [boundary, *[[*ring, list(ring[0])] for ring in hole_rings]]
+                bbox = list(region.bbox)
+                row = {
+                    "id": region.region_id,
+                    "name": region.name,
+                    "label": region.name,
+                    "tags": "dts-live,user-selection",
+                    "region_type": "region",
+                    "source_object": "",
+                    "coordinate_space": "source_scene_world",
+                    "offset_applied": False,
+                    "bbox": bbox,
+                    "footprint_boundary_xyz": boundaries,
+                    "mesh": "",
+                    "extraction_method": "dts_user_polygon",
+                }
+                if index:
+                    stream.write(b",")
+                stream.write(_json_bytes(row))
+                region_metrics.append({
+                    "id": region.region_id,
+                    "bbox": bbox,
+                    "bbox_size": [bbox[i + 3] - bbox[i] for i in range(3)],
+                    "footprint_area_xy": _polygon_area_xy(polygon) - sum(_polygon_area_xy(ring) for ring in hole_rings),
+                    "boundary_perimeter_xy": sum(_polygon_perimeter_xy(ring) for ring in [polygon, *hole_rings]),
+                    "boundary_loop_count": len(boundaries),
+                    "is_near_horizontal": True,
+                })
+            stream.write(b"]}")
+
+        geometry = self.runtime.store.write_artifact(
+            write_geometry, on_chunk=progress, media_type="application/vnd.verdflow.regions+json",
+            schema_id="verdflow.regions", schema_version="1",
+        ).artifact_id
         metrics = self._put_json(
             {
                 "schema": "verdflow.region-metrics",
                 "version": "1",
                 "coordinate_space": "source_scene_world",
                 "offset_applied": False,
-                "region_count": len(regions),
+                "region_count": len(selection.regions),
                 "regions": region_metrics,
             },
             media_type="application/vnd.verdflow.region-metrics+json",
@@ -334,50 +361,54 @@ class DtsLiveCoreWorker:
         )
         if parent.point_artifact_id != _text(command, "points_artifact_id"):
             raise ValueError("DTS Live PointSet Artifact reference is stale")
-        points_document = self._read_json(parent.point_artifact_id)
-        points = points_document.get("points")
-        if (
-            points_document.get("schema") != "verdflow.points"
-            or str(points_document.get("version")) not in {"2", "3"}
-            or points_document.get("kind") != "generated"
-            or points_document.get("offset_applied") is not False
-            or not isinstance(points, list)
-            or not points
-        ):
-            raise ValueError("DTS Live elevation input is not a generated PointSet v2")
         point_ids: list[str] = []
-        lines: list[dict[str, object]] = []
         selection = self.port.selection(context["operation_id"], context["generation_token"])
         path_input = bool(selection.paths)
         geometries = selection.paths if path_input else selection.regions
         key = "path_id" if path_input else "region_id"
-        by_region: dict[str, list[dict[str, Any]]] = {
+        by_region: dict[str, list[tuple]] = {
             getattr(region, key): [] for region in geometries
         }
-        for point in points:
-            if not isinstance(point, dict) or point.get(key) not in by_region:
-                raise ValueError("DTS Live point must belong to a selected region")
-            by_region[point[key]].append(point)
+        progress = self._progress_check(lease, "preparing_dts_elevation")
+        def group_rows(rows):
+            for i, point in enumerate(rows):
+                if not i % 1024:
+                    progress()
+                if not isinstance(point, dict) or point.get(key) not in by_region:
+                    raise ValueError("DTS Live point must belong to a selected region")
+                by_region[point[key]].append((_text(point, "id"), _vector3(point.get("generated_position"), "generated_position")))
+
+        stream_points = self.runtime.store.get_artifact(parent.point_artifact_id).byte_size >= _POINT_INPUT_STREAM_BYTES
+        if stream_points:
+            with self.runtime.store.open_artifact(parent.point_artifact_id) as source:
+                reader = PointSetReader(source, expected_point_count=parent.point_count)
+                group_rows(reader.rows())
+                points_document = reader.header
+        else:
+            points_document = self._read_json(parent.point_artifact_id)
+            group_rows(points_document["points"])
+        if (points_document.get("schema") != "verdflow.points" or str(points_document.get("version")) not in {"2", "3"}
+                or points_document.get("kind") != "generated" or points_document.get("offset_applied") is not False):
+            raise ValueError("DTS Live elevation input is not a generated PointSet")
         batches: list[DtsLiveElevationBatch] = []
         shared_sample_ids: dict[str, str] = {}
         half_range = _positive_float(context.get("ray_half_range", 5000.0))
+        lines = _VerticalRays(half_range)
         for region in geometries:
-            group = by_region[getattr(region, key)]
+            group = by_region.pop(getattr(region, key))
             if not group:
                 continue
             start = len(point_ids)
             # Keep each selection independent, even when its rays overlap another selection.
             first_sample_ids: dict[tuple[float, float, float], str] = {}
-            for point in group:
-                point_id = _text(point, "id")
-                position = _vector3(point.get("generated_position"), "generated_position")
+            for point_id, position in group:
                 sample_id = first_sample_ids.setdefault(position, point_id)
                 if sample_id != point_id:
                     shared_sample_ids[point_id] = sample_id
                     continue
-                x, y, z = position
                 point_ids.append(point_id)
-                lines.append({"start": [x, y, z + half_range], "end": [x, y, z - half_range]})
+                lines.xyz.extend(position)
+            group.clear()
             first_sample_ids.clear()
             batches.append(
                 DtsLiveElevationBatch(
@@ -430,15 +461,13 @@ class DtsLiveCoreWorker:
                 self.runtime.heartbeat(lease, progress=0.8, stage="persisting_dts_elevation")
                 last_heartbeat = now
 
-        for index, point in enumerate(points):
-            if index % _ELEVATION_WRITE_BATCH_ROWS == 0:
-                check_progress()
+        def resolve_point(point):
             point_id = point["id"]
             sample = by_id[shared_sample_ids.get(point_id, point_id)]
             if sample.position is None:
                 point["terrain_sample"] = {"hit": False, "target": "dts_region_sampling_failed"}
                 point["resolved_position"] = point["generated_position"]
-                continue
+                return point
             position = list(sample.position)
             point["terrain_sample"] = {
                 "hit": True,
@@ -447,13 +476,25 @@ class DtsLiveCoreWorker:
                 "target": "dts_lines_intersect",
             }
             point["resolved_position"] = position
+            return point
         artifact_options = {
             "media_type": "application/vnd.verdflow.points+json",
             "schema_id": "verdflow.points",
             "schema_version": points_document["version"],
         }
         check_progress()
-        if len(points) < _ELEVATION_STREAM_ROWS:
+        if not stream_points:
+            for index, point in enumerate(points_document["points"]):
+                if not index % _ELEVATION_WRITE_BATCH_ROWS:
+                    check_progress()
+                resolve_point(point)
+        if stream_points:
+            def write_resolved(stream):
+                with self.runtime.store.open_artifact(parent.point_artifact_id) as source:
+                    reader = PointSetReader(source, expected_point_count=parent.point_count)
+                    _write_elevation_json(stream, {**points_document, "points": map(resolve_point, reader.rows())}, check_progress)
+            point_artifact = self.runtime.store.write_artifact(write_resolved, on_chunk=check_progress, **artifact_options).artifact_id
+        elif parent.point_count < _ELEVATION_STREAM_ROWS:
             point_artifact = self._put_json(points_document, **artifact_options)
         else:
             point_artifact = self.runtime.store.write_artifact(
@@ -467,6 +508,18 @@ class DtsLiveCoreWorker:
             outputs=(("points", point_artifact),),
             operation="sample_elevation",
         )
+
+    def _progress_check(self, lease, stage):
+        last = monotonic()
+        def check():
+            nonlocal last
+            if monotonic() - last >= 5:
+                if self._is_cancelled(lease.job_id):
+                    self.port.cancel()
+                    raise _DtsLiveCancelled
+                self.runtime.heartbeat(lease, stage=stage)
+                last = monotonic()
+        return check
 
     def _validate_custom_command(
         self,
@@ -582,13 +635,15 @@ def _write_elevation_json(stream: BinaryIO, document: dict[str, Any], check_prog
         if key != "points":
             stream.write(_json_bytes(document[key]))
             continue
-        points = document[key]
+        points = iter(document[key])
         stream.write(b"[")
-        for start in range(0, len(points), _ELEVATION_WRITE_BATCH_ROWS):
+        first = True
+        while batch := list(islice(points, _ELEVATION_WRITE_BATCH_ROWS)):
             check_progress()
-            if start:
+            if not first:
                 stream.write(b",")
-            stream.write(_json_bytes(points[start:start + _ELEVATION_WRITE_BATCH_ROWS])[1:-1])
+            stream.write(_json_bytes(batch)[1:-1])
+            first = False
         stream.write(b"]")
     stream.write(b"}")
 

@@ -11,11 +11,13 @@ from typing import Any, Iterable, Sequence
 from uuid import uuid4
 
 from verdflow.contracts import require_sha256_hash
+from .ray_pages import RayPages
 
 
 DTS_LIVE_ELEVATION_PROVIDER_ID = "verdflow.dts.live-elevation"
 DTS_LIVE_CONNECTOR_VERSION = "1"
 DTS_LIVE_MAX_VERTICES = 200_000
+_RAY_PAGE_SIZE = 32_768
 
 
 class DtsLiveGeometryInputError(ValueError):
@@ -165,6 +167,14 @@ class DtsLiveRegion:
 
 
 @dataclass(frozen=True, slots=True)
+class DtsLiveRegionRef(DtsLiveRegion):
+    """Server-owned coordinates; inherited rings are empty on the wire."""
+    dataset_id: str = ""
+    ordinal: int = 0
+    vertex_count: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class DtsLivePath:
     path_id: str
     name: str
@@ -243,12 +253,15 @@ class _Operation:
     stage: DtsLiveOperationStage
     pending: DtsLiveCommand | None = None
     selection: DtsLiveSelection | None = None
+    coordinate_count: int = 0
     point_ids: tuple[str, ...] = ()
     elevation: tuple[DtsElevationSample, ...] = ()
     export_id: str | None = None
     receipt: DtsLiveDeliveryReceipt | None = None
     error: str | None = None
     elevation_batches: tuple[DtsLiveElevationBatch, ...] = ()
+    ray_pages: RayPages | None = None
+    delivery_claimed: bool = False
     elevation_chunks: dict[int, tuple[float, float, float]] = field(default_factory=dict)
     sampling_failures: tuple[DtsLiveRegionFailure, ...] = ()
 
@@ -315,6 +328,10 @@ class DtsLiveSession:
                     paths=normalized_paths,
                 )
                 operation.selection = selection
+                operation.coordinate_count = sum(
+                    r.vertex_count if isinstance(r, DtsLiveRegionRef) else len(r.coordinates) + sum(map(len, r.holes))
+                    for r in selection.regions
+                ) + sum(len(p.coordinates) for p in selection.paths)
                 operation.stage = DtsLiveOperationStage.SELECTION_READY
                 self._condition.notify_all()
                 return selection
@@ -368,6 +385,7 @@ class DtsLiveSession:
                 paths=previous.selection.paths,
             )
             operation.selection = selection
+            operation.coordinate_count = previous.coordinate_count
             self._operation = operation
             self._condition.notify_all()
             return selection
@@ -392,6 +410,7 @@ class DtsLiveSession:
                 regions=normalized,
             )
             operation.selection = selection
+            operation.coordinate_count = len(normalized[0].coordinates)
             operation.pending = None
             operation.stage = DtsLiveOperationStage.SELECTION_READY
             self._condition.notify_all()
@@ -433,8 +452,7 @@ class DtsLiveSession:
         frozen_ids = tuple(_text(value, "point_id") for value in point_ids)
         if not frozen_ids or len(set(frozen_ids)) != len(frozen_ids):
             raise ValueError("point_ids must be non-empty and unique")
-        normalized_lines = tuple(_line(value) for value in lines)
-        if len(normalized_lines) != len(frozen_ids):
+        if len(lines) != len(frozen_ids):
             raise ValueError("Elevation lines must match frozen Point IDs")
         cursor = 0
         if len({batch.selection_id for batch in batches}) != len(batches):
@@ -445,23 +463,41 @@ class DtsLiveSession:
             cursor += batch.count
         if batches and cursor != len(frozen_ids):
             raise ValueError("Elevation batch count differs from frozen Point IDs")
+        pages = RayPages(lines, batches, _line, _RAY_PAGE_SIZE) if batches and len(lines) > _RAY_PAGE_SIZE else None
+        payload = ({"page_count": len(pages), "window_count": pages.window_count} if pages else
+                   {"lines": [_line(value) for value in lines], "batches": [asdict(b) for b in batches]})
         with self._condition:
             operation = self._require_current(operation_id, generation_token)
             if operation.stage is not DtsLiveOperationStage.SELECTION_READY:
                 raise ValueError("DTS Live operation is not ready for elevation")
             operation.point_ids = frozen_ids
             operation.elevation_batches = tuple(batches)
+            operation.ray_pages = pages
             operation.elevation_chunks.clear()
             operation.stage = DtsLiveOperationStage.ELEVATION_PENDING
             command = self._queue(
                 operation,
                 DtsLiveCommandKind.SAMPLE_ELEVATION,
-                {"point_set_id": point_set, "lines": list(normalized_lines),
-                 "batches": [asdict(batch) for batch in batches],
+                {"point_set_id": point_set, **payload,
                  "stream_results": bool(batches)},
             )
             self._condition.notify_all()
             return command
+
+    def elevation_page(self, correlation: DtsLiveCorrelation, index: int):
+        with self._condition:
+            pages = self._require_pending(correlation, DtsLiveCommandKind.SAMPLE_ELEVATION).ray_pages
+            if pages is None:
+                raise ValueError("No paged elevation request")
+        return pages.page(index)
+
+    def claim_delivery(self, correlation: DtsLiveCorrelation) -> bool:
+        with self._condition:
+            operation = self._require_pending(correlation, DtsLiveCommandKind.IMPORT_XML)
+            if operation.delivery_claimed:
+                return False
+            operation.delivery_claimed = True
+            return True
 
     def accept_elevation_chunk(
         self, correlation: DtsLiveCorrelation, indices: object, intersections: object,
@@ -546,6 +582,7 @@ class DtsLiveSession:
                 ))
             )
             operation.elevation = samples
+            operation.ray_pages = None
             operation.sampling_failures = tuple(failures)
             operation.elevation_chunks.clear()
             operation.pending = None
@@ -692,8 +729,10 @@ class DtsLiveSession:
                 return operation.receipt
             raise ValueError("DTS Live delivery was cancelled or superseded")
 
-    def cancel_current(self) -> DtsLiveSessionSnapshot:
+    def cancel_current(self, *, allow_delivery: bool = True) -> DtsLiveSessionSnapshot:
         with self._condition:
+            if not allow_delivery and self._operation and self._operation.stage is DtsLiveOperationStage.DELIVERY_PENDING:
+                return self.snapshot()
             if self._operation is not None and self._operation.stage not in {
                 DtsLiveOperationStage.COMPLETED,
                 DtsLiveOperationStage.CANCELLED,
@@ -703,6 +742,7 @@ class DtsLiveSession:
                 self._operation.stage = DtsLiveOperationStage.CANCELLED
                 self._operation.pending = None
                 self._operation.elevation_chunks.clear()
+                self._operation.ray_pages = None
                 self._condition.notify_all()
             return self.snapshot()
 
@@ -724,6 +764,7 @@ class DtsLiveSession:
                 operation.pending = None
                 operation.elevation_chunks.clear()
                 operation.error = failure
+                operation.ray_pages = None
                 self._condition.notify_all()
             return self.snapshot()
 
@@ -764,15 +805,7 @@ class DtsLiveSession:
                 pending_command_kind=(
                     operation.pending.kind if operation and operation.pending else None
                 ),
-                selection_coordinate_count=(
-                    sum(
-                        len(region.coordinates) + sum(map(len, region.holes))
-                        for region in operation.selection.regions
-                    )
-                    + sum(len(path.coordinates) for path in operation.selection.paths)
-                    if operation and operation.selection
-                    else 0
-                ),
+                selection_coordinate_count=operation.coordinate_count if operation else 0,
                 elevation_point_count=(len(operation.elevation) if operation else 0),
                 export_id=operation.export_id if operation else None,
                 error=operation.error if operation else None,
@@ -937,6 +970,12 @@ def normalize_live_regions(value: object) -> tuple[DtsLiveRegion, ...]:
     ids: set[str] = set()
     vertex_count = 0
     for item in value:
+        if isinstance(item, DtsLiveRegionRef):
+            if item.region_id in ids:
+                raise ValueError("DTS region IDs must be unique")
+            ids.add(item.region_id)
+            regions.append(item)
+            continue
         if not isinstance(item, dict):
             raise ValueError("DTS region must be an object")
         region_id = _text(item.get("region_id"), "region_id")

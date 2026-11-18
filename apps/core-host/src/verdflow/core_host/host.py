@@ -926,7 +926,7 @@ class CoreHost:
         request: "RegionExtractionRequest",
         *,
         idempotency_key: str | None = None,
-        timeout_seconds: float = 1800.0,
+        timeout_seconds: float | None = 1800.0,
     ) -> RegionExtractionOutcome:
         self.start()
         try:
@@ -1192,7 +1192,7 @@ class CoreHost:
         request: ElevationSamplingRequest,
         *,
         idempotency_key: str | None = None,
-        timeout_seconds: float = 1800.0,
+        timeout_seconds: float | None = 1800.0,
     ) -> ElevationSamplingOutcome:
         self.start()
         try:
@@ -1221,7 +1221,7 @@ class CoreHost:
         request: AssetAssignmentRequest,
         *,
         idempotency_key: str | None = None,
-        timeout_seconds: float = 300.0,
+        timeout_seconds: float | None = 300.0,
     ) -> AssetAssignmentOutcome:
         self.start()
         try:
@@ -1252,7 +1252,7 @@ class CoreHost:
         request: OutputExportRequest,
         *,
         idempotency_key: str | None = None,
-        timeout_seconds: float = 300.0,
+        timeout_seconds: float | None = 300.0,
     ) -> OutputExportOutcome:
         self.start()
         try:

@@ -11,21 +11,39 @@ function region(id) {
 
 function fixture({ manualYield = false } = {}) {
   const disposed = [], yields = [];
-  const calls = { shown: [], hidden: [], removed: [], drawing: 0, cancelled: 0 };
+  const calls = { shown: [], hidden: [], removed: [], appearance: [], drawing: 0, cancelled: 0 };
+  let onActorPick;
   const sdk = {
+    setRegionSelectionAppearance: (...args) => calls.appearance.push(args),
     showRegion: item => calls.shown.push(item.path_id ?? item.region_id),
     hideRegion: id => calls.hidden.push(id),
     removeRegion: id => calls.removed.push(id),
     beginDrawing: () => calls.drawing++,
     cancelDrawing: () => calls.cancelled++,
+    startActorPicking: listener => { onActorPick = listener; },
+    stopActorPicking: () => { onActorPick = null; },
+    async previewActorPick() {},
+    releaseActorCapture() {},
+    addImportedPage: async items => calls.shown.push(...items.map(item => item.region_id)),
+    extractActor: async () => ({ dataset_id: 'actor', region_count: 2 }),
   };
-  const api = { importRegionsShapefile: async () => ({ imported: true, source_name: 'areas.zip', regions: [region('imported')] }) };
+  const api = {
+    importRegionsShapefile: async () => ({ imported: true, source_name: 'areas.zip', regions: [region('imported')] }),
+    regionGeometryPage: async (dataset, start) => ({ regions: [{
+      ...region(start ? 'detached' : 'picked'), dataset_id: dataset, ordinal: start, vertex_count: 4,
+    }] }),
+  };
+  class ExplorerAbortController {
+    signal = { aborted: false };
+    abort() { this.signal.aborted = true; }
+  }
   const load = createModuleLoader({
     document: { getElementById: () => null },
-    window: { setTimeout: callback => manualYield ? yields.push(callback) : setTimeout(callback, 0) },
-    TextEncoder,
+    window: { setTimeout: callback => manualYield ? yields.push(callback) : setTimeout(callback, 0),
+      addEventListener() {}, removeEventListener() {} },
+    TextEncoder, AbortController: ExplorerAbortController,
   }, {
-    vue: { ...vue, onBeforeUnmount: callback => disposed.push(callback) },
+    vue: { ...vue, onMounted: callback => callback(), onBeforeUnmount: callback => disposed.push(callback) },
     [path.resolve(__dirname, '../src/api.ts')]: api,
   });
   const state = {
@@ -37,8 +55,81 @@ function fixture({ manualYield = false } = {}) {
   const scope = vue.effectScope();
   const { useRegionDrafts } = load(path.resolve(__dirname, '../src/features/useRegionDrafts.ts'));
   const model = scope.run(() => useRegionDrafts(state));
-  return { model, calls, state, sdk, api, yields, dispose() { disposed.forEach(callback => callback()); scope.stop(); } };
+  return { model, calls, state, sdk, api, yields, pick: input => onActorPick(input),
+    dispose() { disposed.forEach(callback => callback()); scope.stop(); } };
 }
+
+test('Actor drafts over the inline vertex cap are shown by page and committed as enabled references', async () => {
+  const f = fixture();
+  try {
+    f.model.restoreRegions([region('manual')]);
+    f.model.regions.value[0].enabled = false;
+    const originalPage = f.api.regionGeometryPage;
+    const pages = [];
+    f.api.regionGeometryPage = async (dataset, start) => {
+      pages.push([dataset, start]);
+      assert.equal(f.model.regions.value.length, 1);
+      const page = await originalPage(dataset, start);
+      page.regions[0].holes = [Array(100000).fill([1, 1, 0])];
+      page.regions[0].vertex_count = 100004;
+      return page;
+    };
+    const actor = f.model.actorPicking;
+    actor.start();
+    f.pick({ layer: 'terrain', actor: '47', point: [2, 2, 8] });
+    await new Promise(setImmediate);
+    assert.equal(f.model.regions.value.length, 1);
+    assert.equal(f.model.selectionLocked.value, true);
+    assert.equal(actor.canExtract.value, true);
+    await actor.extract();
+    assert.equal(actor.phase.value, 'idle');
+    assert.equal(f.model.selectionLocked.value, false);
+    assert.deepEqual(pages, [['actor', 0], ['actor', 1]]);
+    assert.deepEqual(f.calls.shown, ['picked', 'detached']);
+    assert.deepEqual(f.calls.removed, []);
+    assert.deepEqual(Array.from(f.model.regions.value, r => [r.region_id, r.enabled, r.visible]),
+      [['manual', false, false], ['picked', true, true], ['detached', true, true]]);
+    assert.deepEqual(Array.from(f.model.regions.value.slice(1), r => [r.dataset_id, r.ordinal, r.coordinates.length, r.holes]),
+      [['actor', 0, 0, undefined], ['actor', 1, 0, undefined]]);
+  } finally { f.dispose(); }
+});
+
+test('a missing Actor page rolls back its preview without touching prior drafts', async () => {
+  const f = fixture();
+  try {
+    f.model.restoreRegions([region('existing')]);
+    const originalPage = f.api.regionGeometryPage;
+    f.api.regionGeometryPage = (dataset, start) => start ? Promise.resolve({ regions: [] }) : originalPage(dataset, start);
+    f.model.actorPicking.start();
+    f.pick({ layer: 'terrain', actor: '47', point: [2, 2, 8] });
+    await new Promise(setImmediate);
+    await f.model.actorPicking.extract();
+    assert.deepEqual(f.calls.shown, ['picked']);
+    assert.deepEqual(f.calls.removed, ['picked']);
+    assert.deepEqual(Array.from(f.model.regions.value, r => r.region_id), ['existing']);
+    assert.equal(f.model.actorPicking.phase.value, 'picking');
+    assert.match(f.state.errorMessage.value, /未追加选区/);
+  } finally { f.dispose(); }
+});
+
+test('cancelling a paged Actor preview after an SDK batch rolls back all staged objects', async () => {
+  const f = fixture();
+  try {
+    let shown;
+    f.sdk.addImportedPage = () => new Promise(resolve => { shown = resolve; });
+    f.model.actorPicking.start();
+    f.pick({ layer: 'terrain', actor: '47', point: [2, 2, 8] });
+    await new Promise(setImmediate);
+    const task = f.model.actorPicking.extract();
+    await new Promise(setImmediate);
+    f.model.actorPicking.cancel();
+    shown();
+    await task;
+    assert.deepEqual(f.calls.removed, ['picked']);
+    assert.equal(f.model.regions.value.length, 0);
+    assert.equal(f.model.actorPicking.phase.value, 'idle');
+  } finally { f.dispose(); }
+});
 
 test('Completed drawing appends a selected region without changing previous selection or previews', async () => {
   const f = fixture();
@@ -83,6 +174,26 @@ test('input kind changes preserve incompatible drafts without selecting, clearin
     f.state.inputGeometry.value = 'polyline';
     await vue.nextTick();
     assert.equal(f.model.enabledRegionCount.value, 1);
+  } finally { f.dispose(); }
+});
+
+test('unchecking a region only dims its preview; hiding it is a separate action', async () => {
+  const f = fixture();
+  try {
+    f.model.addDrawnRegion(region('area'));
+    const [area] = f.model.regions.value;
+    f.model.setRegionEnabled(area, false);
+    assert.equal(area.enabled, false);
+    assert.equal(area.visible, true);
+    assert.deepEqual(f.calls.appearance, [['area', false]]);
+    assert.deepEqual(f.calls.hidden, []);
+    await f.model.toggleRegionPreview(area);
+    assert.equal(area.visible, false);
+    assert.deepEqual(f.calls.hidden, ['area']);
+    await f.model.toggleRegionPreview(area);
+    assert.equal(area.enabled, false);
+    assert.equal(area.visible, true);
+    assert.deepEqual(f.calls.appearance, [['area', false], ['area', false]]);
   } finally { f.dispose(); }
 });
 

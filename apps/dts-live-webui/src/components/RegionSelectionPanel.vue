@@ -14,6 +14,10 @@ import {
   EyeOff,
   ChevronLeft,
   ChevronRight,
+  ScanLine,
+  Lasso,
+  Brush,
+  Eraser,
 } from "@lucide/vue";
 import type { useRegionDrafts } from "../features/useRegionDrafts";
 import { geometryId, selectionId } from "../shared/regionLimits";
@@ -40,6 +44,9 @@ const {
   revealRegion,
   selectFailedRegions,
   selectionLocked,
+  actorPicking,
+  regionBrush,
+  setRegionEnabled,
   enabledRegionCount,
   hasVisibleRegions,
   selectAllRegions,
@@ -54,6 +61,8 @@ const {
   locateRegion,
   removeRegion,
 } = props.controller;
+const { phase: pickPhase, selected: pickedActor, range: actorRange, highlighting, canExtract } = actorPicking;
+const { mode: brushMode, dragging: brushDragging, blocked: brushBlocked } = regionBrush;
 const geometryName = computed(() => pathMode.value ? "路径" : "选区");
 const visibilityLabel = computed(() => `${hasVisibleRegions.value ? '隐藏' : '显示'}全部${geometryName.value}`);
 </script>
@@ -64,16 +73,50 @@ const visibilityLabel = computed(() => `${hasVisibleRegions.value ? '隐藏' : '
           <div><span class="section-index"><Crosshair :size="13" /></span><strong>{{ pathMode ? '种植路径' : '种植选区' }}</strong></div>
           <span class="section-heading-actions">{{ enabledRegionCount }} / {{ regions.length }} {{ pathMode ? '条路径' : '个面' }}</span>
         </div>
-        <div class="region-draw-actions">
+        <div class="region-draw-actions" v-if="pickPhase === 'idle'" :class="{ 'with-actor-pick': !pathMode }">
           <button class="secondary-button" :disabled="!sdkReady || selectionLocked" @click="drawing ? cancelDrawing() : startDrawing()">
             <X v-if="drawing" :size="14" /><Plus v-else :size="14" /> {{ drawing ? "取消绘制" : pathMode ? "绘制路径" : "绘制选区" }}
+          </button>
+          <button v-if="!pathMode" class="secondary-button actor-pick-start" :disabled="!sdkReady || selectionLocked || drawing" @click="actorPicking.start">
+            <Crosshair :size="14" />拾取绿地
           </button>
           <button v-if="!pathMode" class="secondary-button" :disabled="!sdkReady || selectionLocked || drawing" @click="importRegions" title="导入 SHP 或 SHP ZIP">
             <LoaderCircle v-if="importingRegions" :size="14" /><Upload v-else :size="14" />{{ importingRegions ? "正在导入" : "导入 SHP" }}
           </button>
-          <button v-if="!pathMode" class="secondary-button" :disabled="selectionLocked || drawing || !enabledRegionCount" @click="exportRegions" title="导出勾选面为 SHP ZIP">
-            <LoaderCircle v-if="exportingRegions" :size="14" /><Download v-else :size="14" />{{ exportingRegions ? "等待保存" : "导出 SHP" }}
+          <button v-if="!pathMode" class="secondary-button region-shp-export" :disabled="selectionLocked || drawing || !enabledRegionCount" @click="exportRegions" title="导出 SHP" aria-label="导出 SHP">
+            <LoaderCircle v-if="exportingRegions" :size="14" /><Download v-else :size="14" />
           </button>
+        </div>
+        <div v-else class="actor-pick">
+          <div class="actor-pick-bar">
+            <div role="status">
+              <strong>{{ pickPhase === 'extracting' ? '正在提取构件' : pickPhase === 'drawing-range' ? '正在绘制提取范围' : highlighting ? '正在高亮构件' : pickedActor ? '已选中 1 个构件' : '请选择场景构件' }}</strong>
+            </div>
+            <button class="icon-button" @click="actorPicking.cancel" title="取消拾取" aria-label="取消拾取"><X :size="15" /></button>
+            <button v-if="pickPhase !== 'extracting'" class="secondary-button actor-pick-command" :disabled="!canExtract" @click="actorPicking.extract">
+              <ScanLine :size="15" />{{ actorRange ? '提取范围内' : '确认提取' }}
+            </button>
+            <LoaderCircle v-else class="spin" :size="17" aria-hidden="true" />
+          </div>
+          <div v-if="pickedActor && (pickPhase === 'picking' || pickPhase === 'drawing-range')" class="actor-pick-range">
+            <button v-if="pickPhase === 'drawing-range'" class="secondary-button" @click="actorPicking.cancelRangeDrawing">
+              <X :size="14" />取消绘制
+            </button>
+            <template v-else>
+              <button class="secondary-button" :disabled="!canExtract" @click="actorPicking.drawRange">
+                <Lasso :size="14" />{{ actorRange ? '重画范围' : '限定范围' }}
+              </button>
+              <button v-if="actorRange" class="secondary-button" @click="actorPicking.clearRange">
+                <X :size="14" />取消限定
+              </button>
+            </template>
+          </div>
+        </div>
+        <div v-if="regions.length && !pathMode && pickPhase === 'idle'" class="region-brush-tools" role="group" aria-label="选区笔刷">
+          <button type="button" :disabled="brushBlocked || brushDragging" :aria-pressed="brushMode === 'include'"
+            title="刷选参与种植的面" @click="regionBrush.toggle('include')"><Brush :size="14" />刷选</button>
+          <button type="button" :disabled="brushBlocked || brushDragging" :aria-pressed="brushMode === 'exclude'"
+            title="刷除不参与种植的面" @click="regionBrush.toggle('exclude')"><Eraser :size="14" />刷除</button>
         </div>
         <div v-if="regions.length" class="region-bulk-actions">
           <button :disabled="selectionLocked || drawing || enabledRegionCount === regions.length" :title="`全选所有分页的${geometryName}`" @click="selectAllRegions()"><CheckCheck :size="14" />全选</button>
@@ -86,7 +129,8 @@ const visibilityLabel = computed(() => `${hasVisibleRegions.value ? '隐藏' : '
         <input v-if="regions.length > 10" v-model="regionSearch" class="region-search" :aria-label="`搜索${geometryName}`" :placeholder="`搜索${geometryName}名称或编号`" />
         <div v-if="regions.length" class="region-list">
           <div v-for="region in visibleRegions" :id="`region-row-${geometryId(region)}`" :key="geometryId(region)" class="region-row" :class="{ excluded: !region.enabled, focused: focusedRegionId === geometryId(region), 'sampling-failed': failureByRegion.has(geometryId(region)) }">
-            <label><input v-model="region.enabled" type="checkbox" :disabled="selectionLocked" :aria-label="`参与种植：${region.name}`" />
+            <label><input :checked="region.enabled" type="checkbox" :disabled="selectionLocked" :aria-label="`参与种植：${region.name}`"
+              @change="setRegionEnabled(region, ($event.target as HTMLInputElement).checked)" />
               <span><strong :title="region.name">{{ region.name }}</strong><small :title="failureByRegion.get(geometryId(region))">{{ failureByRegion.has(geometryId(region)) ? "采样失败" : `${region.vertex_count ?? region.coordinates.length} 个顶点` }}</small></span>
             </label>
             <button class="icon-button" :disabled="selectionLocked" :title="`定位${region.name}`" @click="locateRegion(region)"><Crosshair :size="15" /></button>

@@ -158,10 +158,11 @@ execution 是已提交状态的读取快照，可能仍为 running。客户端�
 进程身份，关闭时按 `instance_id + endpoint_id` 精确清理。独立 CLI 再次启动时会验证
 健康响应与 endpoint 身份；匹配则输出 `reused: true` 并退出，不创建第二个 SystemHost。
 
-Region Viewer 的 `geometry` 按 `next_after_ordinal` 续读。区域项的 `boundary_mode`
-区分常规视窗细节、预算内简化轮廓和仅包围框三种显示方式（`detail`、`overview`、
-`extent`）。首次详情请求可用 `overview_threshold` 获取 `overview_recommended`，
-从而跳过超密集视窗的详情请求。只读 `overview` 支持同样的类型筛选和视窗边界，
+Region Viewer 的普通 `geometry` 按 `next_after_ordinal` 续读。首次请求若指定非零
+`overview_threshold`，则启用自适应画幅：在可见区域数和原始几何预算内一次返回完整
+矢量，或返回空结果及 `overview_recommended`，无需先读取部分页。自适应画幅不简化
+矢量边界。区域项的 `boundary_mode` 分为 `detail`、`overview`、`extent`（常规细节、简化
+轮廓和仅包围框）。只读 `overview` 支持同样的类型筛选和视窗边界，
 返回行优先、从北向南的格网（`pixels` 是 zlib 压缩并以 Base64 编码的 uint32
 小端序数组）。0 为透明，其他值是 `items` 中从 1 开始的下标；条目为
 `[region_id, classification, footprint_area_xy]`，只用于显示。

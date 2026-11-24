@@ -9,7 +9,7 @@ import type {
   RegionViewerManifest,
 } from "../../api";
 import { platformBridge } from "../../platform";
-import { readRegionViewport } from "./regionViewport";
+import { createRegionViewportReader } from "./regionViewport";
 import type { RegionOverviewGrid } from "./regionViewport";
 
 const ASSET_COLORS = [
@@ -38,6 +38,7 @@ export const usePointReview = (input: {
   sources: PointReviewSource[];
 }) => {
   const client = new LocalApiClient(platformBridge());
+  const viewportReader = createRegionViewportReader();
   const manifests = shallowRef<Record<string, PointReviewManifest>>({});
   const regionManifest = shallowRef<RegionViewerManifest | null>(null);
   const pointsBySource = shallowRef<Record<string, PointReviewItem[]>>({});
@@ -310,8 +311,9 @@ export const usePointReview = (input: {
   const loadRegions = async (bounds: Bounds3D, revision: number) => {
     const manifest = Object.values(manifests.value)[0];
     if (!manifest) return { items: [], overview: null };
-    return readRegionViewport({
+    return viewportReader.read({
       client, sessionId: input.sessionId, regionSetId: manifest.region_set_id, bounds,
+      regionCount: regionManifest.value?.region_count,
       classifications: [], isCurrent: () => revision === viewportRevision,
     });
   };

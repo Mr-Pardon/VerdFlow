@@ -1,4 +1,4 @@
-"""Session-owned exact SHP drafts. One sequential file and a small offset index per import."""
+"""Session-owned exact region drafts with a sequential file and offset index per dataset."""
 
 from __future__ import annotations
 
@@ -44,12 +44,12 @@ class LiveRegionDraftStore:
                     start = output.tell()
                     if start + len(payload) >= next_check:
                         if shutil.disk_usage(self.root).free < len(payload) + 32 * 1024**2:
-                            raise OSError(ENOSPC, "Insufficient space for SHP preview")
+                            raise OSError(ENOSPC, "Insufficient space for region drafts")
                         next_check = start + len(payload) + 16 * 1024**2
                     output.write(payload)
                     rows.append(_Row(ref, start, len(payload)))
             if not rows:
-                raise ValueError("SHP 中没有面要素。")
+                raise ValueError("没有可登记的面要素。")
             self._datasets[dataset] = rows
             return dataset, len(rows)
         except BaseException:
@@ -59,7 +59,7 @@ class LiveRegionDraftStore:
     def _row(self, dataset: object, ordinal: object) -> _Row:
         rows = self._datasets.get(dataset) if isinstance(dataset, str) else None
         if not rows or type(ordinal) is not int or not 0 <= ordinal < len(rows):
-            raise DtsLiveGeometryInputError("SHP 选区不属于当前会话或已失效，请重新导入。")
+            raise DtsLiveGeometryInputError("选区草稿不属于当前会话或已失效，请重新导入或提取。")
         return rows[ordinal]
 
     def resolve(self, value: object) -> object:
@@ -73,12 +73,12 @@ class LiveRegionDraftStore:
                 start, count = item.get("start"), item.get("count")
                 self._row(dataset, start)
                 if type(count) is not int or count < 1:
-                    raise DtsLiveGeometryInputError("SHP 选区范围无效。")
+                    raise DtsLiveGeometryInputError("选区草稿范围无效。")
                 self._row(dataset, start + count - 1)
                 for ordinal in range(start, start + count):
                     ref = self._datasets[dataset][ordinal].ref
                     if ref.region_id in seen:
-                        raise DtsLiveGeometryInputError("SHP 选区不能重复。")
+                        raise DtsLiveGeometryInputError("选区草稿不能重复。")
                     seen.add(ref.region_id)
                     resolved.append(ref)
             else:
@@ -104,7 +104,7 @@ class LiveRegionDraftStore:
                 yield from items
                 continue
             if dataset not in self._datasets:
-                raise DtsLiveGeometryInputError("SHP 选区不属于当前会话。")
+                raise DtsLiveGeometryInputError("选区草稿不属于当前会话。")
             with (self.root / dataset).open("rb") as stream:
                 for region in items:
                     row = self._row(dataset, region.ordinal)

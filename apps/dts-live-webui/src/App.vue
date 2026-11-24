@@ -4,10 +4,14 @@ import {
   AlertCircle,
   ArrowLeft,
   ArrowRight,
+  Brush,
   Check,
   ChevronDown,
   ChevronUp,
+  Eraser,
+  Hand,
   LoaderCircle,
+  Pencil,
   Play,
   RotateCcw,
   Save,
@@ -30,6 +34,7 @@ import MappingWorkspace from "./components/MappingWorkspace.vue";
 import PlantingPlanSelection from "./components/PlantingPlanSelection.vue";
 import { scrollPanelWheel } from "./shared/panelScroll";
 import { geometryPayload } from "./shared/regionLimits";
+import { REGION_BRUSH_RADIUS } from "./shared/brushFootprint";
 
 const logoUrl = `${import.meta.env.BASE_URL}brand/logo-dark.png`;
 const iconUrl = `${import.meta.env.BASE_URL}brand/icon-256.png`;
@@ -92,6 +97,7 @@ const {
 } = configuration;
 const regionController = useRegionDrafts({
   inputGeometry: computed(() => selectedStrategy.value?.summary.input_geometry ?? "polygon"),
+  brushUnavailable: computed(() => entryMode.value === "choose" || mappingOpen.value || panelDragging.value),
   sdk,
   sdkReady,
   operationActive,
@@ -105,7 +111,12 @@ const {
   selectionLocked,
   enabledRegionCount,
   regions,
+  regionBrush,
 } = regionController;
+const { mode: brushMode, capturing: brushCapturing, wheelMode: brushWheelMode } = regionBrush;
+const brushLabel = computed(() => brushMode.value === "exclude" ? "刷除" : "刷选");
+const brushDirectionLabel = computed(() => brushMode.value === "exclude" ? "切换到刷选" : "切换到刷除");
+const brushCaptureLabel = computed(() => brushCapturing.value ? "切换到漫游" : "返回编辑");
 const configurationReady = computed(
   () =>
     entryMode.value !== "choose" &&
@@ -138,6 +149,67 @@ const startSelection = async () => {
 
 <template>
   <div v-if="panelDragging" class="panel-drag-shield" aria-hidden="true"></div>
+  <div
+    v-if="brushCapturing"
+    class="region-brush-shield"
+    aria-hidden="true"
+    @pointerdown.stop="regionBrush.begin"
+    @mousedown="regionBrush.roamOnMouseDown"
+    @pointerenter="regionBrush.hoverScene"
+    @pointermove.passive="regionBrush.hoverScene"
+    @pointerleave="regionBrush.hideCursor"
+    @contextmenu.prevent.stop
+    @wheel="regionBrush.switchOnWheel"
+  ></div>
+  <div
+    v-if="brushCapturing"
+    :ref="element => { regionBrush.cursor.value = element as HTMLElement | null; }"
+    class="region-brush-cursor"
+    :class="{ 'is-excluding': brushMode === 'exclude' }"
+    :style="{ '--brush-diameter': `${REGION_BRUSH_RADIUS * 2}px` }"
+    aria-hidden="true"
+    hidden
+  ></div>
+  <div class="region-brush-notice" role="status" aria-atomic="true">
+    <div v-if="brushWheelMode" class="region-brush-notice-label" :class="{ 'is-excluding': brushWheelMode === 'exclude' }">
+      <Brush v-if="brushWheelMode === 'include'" :size="16" aria-hidden="true" />
+      <Eraser v-else :size="16" aria-hidden="true" />
+      {{ brushWheelMode === 'include' ? '已切换为刷选' : '已切换为刷除' }}
+    </div>
+  </div>
+  <button
+    v-if="brushCapturing"
+    type="button"
+    class="region-brush-hotzone region-brush-hotzone--direction"
+    :aria-label="`当前${brushLabel}，${brushDirectionLabel}`"
+    @pointerenter="regionBrush.enterSwitch($event, 'direction')"
+    @pointerleave="regionBrush.leaveSwitch('direction')"
+    @click.stop="regionBrush.keyboardSwitch($event, 'direction')"
+  >
+    <strong>
+      <Brush v-if="brushMode === 'include'" :size="17" />
+      <Eraser v-else :size="17" />
+      {{ brushLabel }}
+    </strong>
+    <span>鼠标移入，{{ brushDirectionLabel }}</span>
+  </button>
+  <button
+    v-if="brushMode"
+    type="button"
+    class="region-brush-hotzone"
+    :aria-label="brushCaptureLabel"
+    @pointerenter="regionBrush.enterSwitch($event, 'capture')"
+    @pointerleave="regionBrush.leaveSwitch('capture')"
+    @click.stop="regionBrush.keyboardSwitch($event, 'capture')"
+  >
+    <strong>
+      <Hand v-if="!brushCapturing" :size="17" />
+      <Pencil v-else :size="17" />
+      {{ brushCapturing ? "编辑" : "漫游" }}
+    </strong>
+    <span>鼠标移入，{{ brushCaptureLabel }}</span>
+    <span v-if="brushCapturing">滚轮向上刷选 · 向下刷除</span>
+  </button>
   <main
     :ref="
       (element) => {

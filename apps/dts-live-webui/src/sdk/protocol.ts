@@ -8,6 +8,9 @@ export type DtsApi = UnknownRecord & {
   settings?: {
     setMousePickMask: (mask: number) => unknown;
   };
+  coord?: {
+    screen2World?: (x: number, y: number, callback?: (value: unknown) => void) => unknown;
+  };
   editHelper?: {
     setParam: (shape: number, mode: number, color: number[]) => void;
     start: () => void;
@@ -17,12 +20,21 @@ export type DtsApi = UnknownRecord & {
     lookAtBBox: (bbox: number[], pitch: number, yaw: number, flyTime: number) => unknown;
     get?: (callback?: (value: unknown) => void) => unknown;
     set?: (x: number, y: number, z: number, pitch: number, yaw: number, flyTime: number) => unknown;
+    exportOrthoImage?: (path: string, size: number[], width: number, location: number[],
+      rotation: number[], color: number[], callback?: (value: unknown) => void) => unknown;
+  };
+  tileLayer?: {
+    getActorInfo?: (data: UnknownRecord, callback?: (value: unknown) => void) => unknown;
+    highlightActorsWithColor?: (data: UnknownRecord[], callback?: (value: unknown) => void) => unknown;
+    stopHighlightActors?: (data: UnknownRecord, callback?: (value: unknown) => void) => unknown;
   };
   polygon?: {
     add: (data: UnknownRecord | UnknownRecord[]) => unknown;
+    update?: (data: UnknownRecord[]) => unknown;
     show: (ids: string | string[]) => unknown;
     hide: (ids: string | string[]) => unknown;
     delete: (id: string) => unknown;
+    setColor?: (id: string, color: number[]) => unknown;
   };
   polyline?: {
     add: (data: UnknownRecord) => unknown;
@@ -63,6 +75,7 @@ export interface PendingSdkRequest {
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
   timeout: number;
+  kind: "sampling" | "actor" | "brush";
 }
 
 export interface DtsSdkCallbacks {

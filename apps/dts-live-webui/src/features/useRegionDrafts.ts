@@ -6,6 +6,8 @@ import type { DtsSdkBridge } from "../sdk/DtsSdkBridge";
 import { readableError } from "../shared/presentation";
 import type { SessionSnapshot } from "../types";
 import { assertRegionBudget, regionPayload, geometryId, geometryKind, selectionId } from "../shared/regionLimits";
+import { useActorPicking } from "./useActorPicking";
+import { useRegionBrush } from "./useRegionBrush";
 
 export function useRegionDrafts(context: {
   samplingFailures: Ref<NonNullable<SessionSnapshot["sampling_failures"]>>;
@@ -16,6 +18,7 @@ export function useRegionDrafts(context: {
   sdk: DtsSdkBridge;
   sdkReady: Ref<boolean>;
   inputGeometry?: Ref<"polygon" | "polyline">;
+  brushUnavailable?: Ref<boolean>;
 }) {
   const { samplingFailures, panelCollapsed, operationActive, submitting, errorMessage, sdk, sdkReady } = context;
   let stopped = false;
@@ -39,6 +42,12 @@ export function useRegionDrafts(context: {
   const inputGeometry = computed(() => context.inputGeometry?.value ?? "polygon");
   const pathMode = computed(() => inputGeometry.value === "polyline");
   const activeRegions = computed(() => regions.value.filter(region => geometryKind(region) === inputGeometry.value));
+  const regionsById = computed(() => new Map(activeRegions.value.map(region => [geometryId(region), region])));
+  const setRegionEnabled = (region: typeof regions.value[number], enabled: boolean) => {
+    if (region.enabled === enabled) return;
+    region.enabled = enabled;
+    sdk.setRegionSelectionAppearance(geometryId(region), enabled);
+  };
 
   const regionSearch = ref("");
 
@@ -73,20 +82,75 @@ export function useRegionDrafts(context: {
 
   const selectFailedRegions = () => {
     if (selectionLocked.value) return;
-    for (const region of activeRegions.value) region.enabled = failureByRegion.value.has(geometryId(region));
+    for (const region of activeRegions.value) setRegionEnabled(region, failureByRegion.value.has(geometryId(region)));
     const first = samplingFailures.value[0];
     if (first) void revealRegion(selectionId(first));
   };
 
-  const selectionLocked = computed(() => operationActive.value || submitting.value || exportingRegions.value || importingRegions.value || clearingRegions.value || updatingRegionVisibility.value);
+  const appendRegisteredRegions = async (dataset: string, total: number, options: {
+    signal?: AbortSignal;
+    onPage?: (added: number) => void;
+  } = {}) => {
+    const staged: (LiveRegion & { enabled: boolean; visible: boolean })[] = [];
+    let previewFailed = false;
+    const assertActive = () => {
+      if (stopped || options.signal?.aborted) throw new Error("已取消载入选区。");
+    };
+    if (!Number.isSafeInteger(total) || total <= 0) throw new Error("选区数量无效，未追加选区。");
+    try {
+      while (staged.length < total) {
+        assertActive();
+        const start = staged.length;
+        const { regions: page } = await regionGeometryPage(dataset, start);
+        assertActive();
+        if (!page?.length || start + page.length > total ||
+            page.some((region, i) => region.dataset_id !== dataset || region.ordinal !== start + i)) {
+          throw new Error("选区草稿数据不完整，未追加选区。");
+        }
+        let visible = false;
+        try { await sdk.addImportedPage(page); visible = true; }
+        catch { previewFailed = true; }
+        for (const region of page) {
+          staged.push({ ...region, coordinates: [], holes: undefined, enabled: true, visible });
+        }
+        assertActive();
+        options.onPage?.(staged.length);
+      }
+      assertActive();
+      regions.value = regions.value.concat(staged);
+    } catch (failure) {
+      if (!stopped) {
+        for (const region of staged) {
+          if (!region.visible) continue;
+          try { sdk.removeRegion(geometryId(region)); }
+          catch { /* Preserve the import error if Explorer is closing. */ }
+        }
+      }
+      throw failure;
+    }
+    if (staged[0]) void revealRegion(geometryId(staged[0]));
+    return previewFailed;
+  };
 
+  const busy = computed(() => operationActive.value || submitting.value || exportingRegions.value || importingRegions.value || clearingRegions.value || updatingRegionVisibility.value);
+  const actorPicking = useActorPicking(sdk, computed(() => !sdkReady.value || pathMode.value || busy.value || drawing.value),
+    errorMessage, async (dataset, total, signal) => {
+      const previewFailed = await appendRegisteredRegions(dataset, total, { signal });
+      if (previewFailed) errorMessage.value = "选区已加入，部分贴地预览未能显示，可点击选区的显示按钮重试。";
+    });
   const enabledRegionCount = computed(() => activeRegions.value.filter(region => region.enabled).length);
-
   const hasVisibleRegions = computed(() => activeRegions.value.some(region => region.visible));
+  const regionBrush = useRegionBrush(sdk, computed(() => !sdkReady.value || busy.value || drawing.value || pathMode.value ||
+    !hasVisibleRegions.value || panelCollapsed.value || actorPicking.phase.value !== "idle" || Boolean(context.brushUnavailable?.value)),
+    errorMessage, (id, enabled) => {
+      const region = regionsById.value.get(id);
+      if (region?.visible) setRegionEnabled(region, enabled);
+    });
+  const selectionLocked = computed(() => busy.value || actorPicking.phase.value !== "idle" || regionBrush.dragging.value);
 
   const selectAllRegions = (invert = false) => {
     if (selectionLocked.value || drawing.value) return;
-    for (const region of activeRegions.value) region.enabled = invert ? !region.enabled : true;
+    for (const region of activeRegions.value) setRegionEnabled(region, invert ? !region.enabled : true);
   };
 
   const requestClearRegions = () => {
@@ -152,56 +216,35 @@ export function useRegionDrafts(context: {
         return;
       }
       const total = result.region_count ?? result.regions?.length ?? 0;
-      if (!result.dataset_id) assertRegionBudget([...regions.value, ...(result.regions ?? [])]);
+      if (stopped) return;
       let previewFailed = false;
-      let added = 0;
-      let firstId = "";
-      try {
-        while (!stopped && added < total) {
-          const page = result.dataset_id ? (await regionGeometryPage(result.dataset_id, added)).regions : result.regions!;
-          if (!page?.length || added + page.length > total) throw new Error("SHP 预览数据不完整，请重新导入。");
+      if (result.dataset_id) {
+        previewFailed = await appendRegisteredRegions(result.dataset_id, total, {
+          onPage: added => { regionExportNotice.value = `正在显示选区 ${added} / ${total}`; },
+        });
+      } else {
+        const incoming = result.regions ?? [];
+        assertRegionBudget([...regions.value, ...incoming]);
+        let sliceStart = Date.now();
+        for (const [i, region] of incoming.entries()) {
           if (stopped) return;
-          let pageVisible = false;
-          if (result.dataset_id) {
-            try { await sdk.addImportedPage(page); pageVisible = true; }
-            catch { previewFailed = true; }
+          let visible = false;
+          try { sdk.showRegion(region); visible = true; } catch { previewFailed = true; }
+          regions.value.push({ ...region, enabled: true, visible });
+          if (Date.now() - sliceStart > 40) {
+            regionExportNotice.value = `正在显示选区 ${i + 1} / ${total}`;
+            await new Promise(resolve => window.setTimeout(resolve, 0));
+            sliceStart = Date.now();
           }
-          let sliceStart = Date.now();
-          for (const region of page) {
-            if (stopped) break;
-            let visible = pageVisible;
-            if (!result.dataset_id) {
-              try { sdk.showRegion(region); visible = true; } catch { previewFailed = true; }
-            }
-            const draft = region.dataset_id ? { ...region, coordinates: [], holes: undefined } : region;
-            regions.value.push({ ...draft, enabled: true, visible });
-            firstId ||= region.region_id;
-            added++;
-            if (Date.now() - sliceStart > 40) {
-              regionExportNotice.value = `正在显示选区 ${added} / ${total}`;
-              await new Promise(resolve => window.setTimeout(resolve, 0));
-              sliceStart = Date.now();
-            }
-          }
-          if (!stopped) regionExportNotice.value = `正在显示选区 ${added} / ${total}`;
         }
-      } catch (error) {
-        if (!stopped && result.dataset_id) {
-          const remaining = regions.value.filter(r => {
-            if (r.dataset_id !== result.dataset_id) return true;
-            try { sdk.removeRegion(geometryId(r)); return false; }
-            catch { r.enabled = false; return true; }
-          });
-          regions.value = remaining;
-        }
-        throw error;
+        if (incoming[0]) void revealRegion(geometryId(incoming[0]));
       }
       if (stopped) return;
-      regionExportNotice.value = `已导入 ${added} 个面`;
+      regionExportNotice.value = `已导入 ${total} 个面`;
       regionExportPath.value = result.source_name;
-      if (firstId) void revealRegion(firstId);
       if (previewFailed) errorMessage.value = "选区已导入，部分贴地预览未能显示，可点击选区的显示按钮重试";
     } catch (error) {
+      if (stopped) return;
       regionExportNotice.value = "";
       errorMessage.value = readableError(error);
     } finally {
@@ -216,14 +259,19 @@ export function useRegionDrafts(context: {
     catch (error) { errorMessage.value = readableError(error); }
   };
 
-  const showDraft = (region: LiveGeometry) => {
+  const showDraft = (region: typeof regions.value[number]) => {
     if (region.dataset_id && !sdk.hasRegion(geometryId(region))) {
       return regionGeometryPage(region.dataset_id, region.ordinal!, true).then(page => {
         const full = page.regions[0];
-        if (!full || full.region_id !== region.region_id) throw new Error("SHP 选区已失效，请重新导入。");
-        if (!stopped && regions.value.some(r => geometryId(r) === full.region_id)) sdk.showRegion(full);
+        if (!full || full.region_id !== region.region_id) throw new Error("选区草稿已失效，请重新导入或提取。");
+        if (!stopped && regions.value.some(r => geometryId(r) === full.region_id)) {
+          sdk.showRegion(full);
+          if (!region.enabled) sdk.setRegionSelectionAppearance(geometryId(region), false);
+        }
       });
-    } else sdk.showRegion(region);
+    }
+    sdk.showRegion(region);
+    if (!region.enabled) sdk.setRegionSelectionAppearance(geometryId(region), false);
   };
 
   const toggleRegionPreview = async (region: typeof regions.value[number]) => {
@@ -285,7 +333,7 @@ export function useRegionDrafts(context: {
     let failures = 0;
     for (const region of activeRegions.value) {
       if (!region.enabled || failureByRegion.value.has(geometryId(region))) continue;
-      region.enabled = false;
+      setRegionEnabled(region, false);
       try {
         sdk.hideRegion(geometryId(region));
         region.visible = false;
@@ -334,6 +382,9 @@ export function useRegionDrafts(context: {
     revealRegion,
     selectFailedRegions,
     selectionLocked,
+    actorPicking,
+    regionBrush,
+    setRegionEnabled,
     enabledRegionCount,
     hasVisibleRegions,
     selectAllRegions,

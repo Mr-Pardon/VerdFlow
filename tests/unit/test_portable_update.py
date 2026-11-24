@@ -43,6 +43,19 @@ class PortableUpdateTests(unittest.TestCase):
                 self.assertEqual(error.exception.code, 2)
             run.assert_not_called()
 
+    def test_beta_archives_have_a_checksum_but_no_public_update_descriptor(self):
+        args = builder.build_parser().parse_args(["--beta", "1"])
+        self.assertEqual(args.beta, 1)
+        with patch("sys.stderr"), self.assertRaises(SystemExit):
+            builder.build_parser().parse_args(["--beta", "1", "--update-repository", "example/fork"])
+        with patch("sys.stderr"), self.assertRaises(SystemExit):
+            builder.main(["--beta", "0"])
+        self.archive.write_bytes(b"local build")
+        digest = builder._write_archive_metadata(self.archive, "1.2.2-beta.1", include_update_descriptor=False)
+        self.assertEqual(digest, hashlib.sha256(b"local build").hexdigest())
+        self.assertEqual(self.archive.with_suffix(".zip.sha256").read_text().split()[0], digest)
+        self.assertFalse((self.root / "VerdFlow-update-win-x64.json").exists())
+
     def test_portable_onnx_excludes_deep_conversion_tools_but_keeps_runtime_notices(self):
         keep = ["onnxruntime/capi/onnxruntime.dll", "onnxruntime/LICENSE", "onnxruntime/ThirdPartyNotices.txt",
                 "onnxruntime-1.24.4.dist-info/RECORD"]
@@ -88,7 +101,7 @@ class PortableUpdateTests(unittest.TestCase):
         self.assertEqual((self.stage / "update-manifest.json").read_bytes(),
                          (self.bundle / "update-manifest.json").read_bytes())
         self.assertEqual(json.loads((self.stage / ".verdflow-update-ready.json").read_text())["version"], "0.4.0")
-        builder._write_update_descriptor(self.archive, "0.4.0")
+        builder._write_archive_metadata(self.archive, "0.4.0", include_update_descriptor=True)
         descriptor = json.loads((self.root / "VerdFlow-update-win-x64.json").read_text())
         self.assertEqual(descriptor["archive_sha256"], plan["sha256"])
         self.assertEqual(descriptor["archive_bytes"], self.archive.stat().st_size)

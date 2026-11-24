@@ -161,6 +161,34 @@ export const importRegionsShapefile = () =>
 export const regionGeometryPage = (dataset: string, start: number, single = false) =>
   apiRequest<{ regions: LiveRegion[] }>(`/api/v1/selections/geometry?dataset=${encodeURIComponent(dataset)}&start=${start}&single=${single}`);
 
+const actorCapturePath = "/api/v1/selections/actor-capture";
+export type ActorCaptureFrame = "normal" | "magenta" | "cyan";
+export interface ActorCaptureTile {
+  tile: number;
+  location: number[];
+  width: number;
+  size: number;
+  path: string;
+}
+export const reserveActorCapture = (point: readonly number[], bounds: readonly number[][], clip?: readonly number[][]) =>
+  apiRequest<{ capture_id: string }>(
+    actorCapturePath, { method: "POST", body: JSON.stringify({ scope: "actor", points: [point], bounds, clip }) },
+  );
+export const nextActorCaptureTile = (capture_id: string, frame: ActorCaptureFrame) =>
+  apiRequest<{ tile: ActorCaptureTile | null }>(
+    `${actorCapturePath}/next`, { method: "POST", body: JSON.stringify({ capture_id, frame }) },
+  );
+export const resolveActorCapture = (capture_id: string) =>
+  apiRequest<{ dataset_id: string | null; region_count: number }>(
+    `${actorCapturePath}/resolve`, { method: "POST", body: JSON.stringify({ capture_id }) },
+  );
+export const actorCaptureFrameReady = (capture_id: string, frame: ActorCaptureFrame, tile: number) =>
+  apiRequest<{ ready: boolean }>(
+    `${actorCapturePath}/frame`, { method: "POST", body: JSON.stringify({ capture_id, frame, tile }) },
+  );
+export const discardActorCapture = (capture_id: string) =>
+  apiRequest(`${actorCapturePath}/discard`, { method: "POST", body: JSON.stringify({ capture_id }), keepalive: true });
+
 export const regenerateSelection = (configuration: SelectionConfiguration) =>
   apiRequest("/api/v1/operations/regeneration", {
     method: "POST",

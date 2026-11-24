@@ -43,6 +43,7 @@ from verdflow.system_host import (
     RoleBindingProfileSaveRequest,
 )
 from .previews import ConnectorPreviews
+from .actor_capture import ActorCaptureError, ActorCaptures
 
 
 _COOKIE_NAME = "verdflow_dts_live"
@@ -142,6 +143,7 @@ class DtsLiveConnectorServer:
         self._import_regions = import_regions
         self._draft_exchange = draft_exchange
         self._previews = previews
+        self._actor_captures = ActorCaptures()
         self._server: ThreadingHTTPServer | None = None
         self._thread: Thread | None = None
 
@@ -165,6 +167,7 @@ class DtsLiveConnectorServer:
             return self.base_url
         if self._previews is not None:
             self._previews.reopen()
+        self._actor_captures.reopen()
         server = _DtsLiveHttpServer(
             (self.config.host, self.config.port),
             self._handler_type(),
@@ -180,6 +183,7 @@ class DtsLiveConnectorServer:
         return self.base_url
 
     def close(self) -> None:
+        self._actor_captures.close()
         if self._previews is not None:
             self._previews.close()
         server = self._server
@@ -385,6 +389,39 @@ class DtsLiveConnectorServer:
                             owner._previews.close_session(session_id)
                         self._json(HTTPStatus.OK, {"cancelled": True})
                         return
+                    if target.path in {
+                        "/api/v1/selections/actor-capture",
+                        "/api/v1/selections/actor-capture/next",
+                        "/api/v1/selections/actor-capture/frame",
+                        "/api/v1/selections/actor-capture/resolve",
+                        "/api/v1/selections/actor-capture/discard",
+                    }:
+                        manager.snapshot(session_id, token)
+                        try:
+                            if target.path.endswith("/resolve"):
+                                with manager.working(session_id):
+                                    result = owner._actor_captures.resolve(
+                                        session_id, document.get("capture_id"), lambda: manager.drafts(session_id, token),
+                                    )
+                            elif target.path.endswith("/next"):
+                                result = {"tile": owner._actor_captures.next_tile(
+                                    session_id, document.get("capture_id"), document.get("frame"),
+                                )}
+                            elif target.path.endswith("/frame"):
+                                with manager.working(session_id):
+                                    result = {"ready": owner._actor_captures.frame_ready(
+                                        session_id, document.get("capture_id"), document.get("frame"), document.get("tile"),
+                                    )}
+                            elif target.path.endswith("/discard"):
+                                owner._actor_captures.discard(session_id, document.get("capture_id"))
+                                result = {"discarded": True}
+                            else:
+                                result = owner._actor_captures.reserve(session_id, document)
+                        except ActorCaptureError as error:
+                            self._error(HTTPStatus.BAD_REQUEST, "selection_actor_capture_failed", str(error))
+                            return
+                        self._json(HTTPStatus.OK, result)
+                        return
                     if target.path == "/api/v1/selections/export-shp":
                         manager.snapshot(session_id, token)
                         if owner._export_regions is None and owner._draft_exchange is None:
@@ -587,6 +624,7 @@ class DtsLiveConnectorServer:
                         return
                     if target.path == "/api/v1/session/close":
                         manager.close_session(session_id, token)
+                        owner._actor_captures.close_session(session_id)
                         if owner._previews is not None:
                             owner._previews.close_session(session_id)
                         if owner._on_session_closed is not None:

@@ -33,7 +33,7 @@ class DiskRegionReviewIndex:
         cls, path: Path, source: BinaryIO, *, count: int, cancelled: Callable[[], bool],
         on_boundary: Callable[[str, list[Any]], None] | None = None,
     ) -> DiskRegionReviewIndex:
-        def records() -> Iterator[tuple[str, str]]:
+        def records() -> Iterator[tuple[str, int, str]]:
             total = 0
             for region_id, rings in _boundaries(source, cancelled):
                 if total % 1024 == 0 and shutil.disk_usage(path.parent).free < _FREE_DISK_RESERVE:
@@ -43,7 +43,8 @@ class DiskRegionReviewIndex:
                     raise RegionIndexError("Region geometry count differs from its Core record")
                 if on_boundary is not None:
                     on_boundary(region_id, rings)
-                yield region_id, json.dumps(rings, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+                vertices = sum(len(ring) for ring in rings if isinstance(ring, list))
+                yield region_id, vertices, json.dumps(rings, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
             if total != count:
                 raise RegionIndexError("Region geometry count differs from its Core record")
 
@@ -53,11 +54,19 @@ class DiskRegionReviewIndex:
                 PRAGMA journal_mode = OFF;
                 PRAGMA synchronous = OFF;
                 PRAGMA cache_size = -4096;
-                CREATE TABLE boundaries (id TEXT PRIMARY KEY, rings TEXT NOT NULL) WITHOUT ROWID;
+                CREATE TABLE boundaries (id TEXT PRIMARY KEY, vertices INTEGER NOT NULL, rings TEXT NOT NULL) WITHOUT ROWID;
             """)
-            db.executemany("INSERT INTO boundaries VALUES (?, ?)", records())
+            db.executemany("INSERT INTO boundaries VALUES (?, ?, ?)", records())
             db.commit()
         return cls(path, path.stat().st_size)
+
+    def vertex_counts(self, region_ids: Iterator[str]) -> Iterator[int]:
+        with closing(sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True)) as db:
+            for region_id in region_ids:
+                row = db.execute("SELECT vertices FROM boundaries WHERE id = ?", (region_id,)).fetchone()
+                if row is None:
+                    raise RegionIndexError("Region geometry is missing")
+                yield int(row[0])
 
     @contextmanager
     def lookup(self) -> Iterator[Callable[[str], dict[str, object] | None]]:

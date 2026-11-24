@@ -59,6 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     update_source.add_argument("--no-updates", dest="update_repository", action="store_const", const=None,
                               help="build without online application updates")
+    update_source.add_argument("--beta", metavar="NUMBER", type=int,
+                               help="build an offline beta in dist/portable/beta without an update descriptor")
     parser.add_argument("--imagery-model", type=Path, metavar="ONNX_FILE",
                         help="verified ONNX model for the standard package (or VERDFLOW_IMAGERY_MODEL_PATH)")
     parser.add_argument(
@@ -72,27 +74,35 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     arguments = parser.parse_args(argv)
+    beta = arguments.beta
+    if beta is not None and beta < 1:
+        parser.error("--beta must be a positive integer")
     model_env = os.environ.get("VERDFLOW_IMAGERY_MODEL_PATH", "").strip()
     imagery_model = arguments.imagery_model or (Path(model_env) if model_env else None)
     if imagery_model is None or not imagery_model.is_file():
         parser.error("The portable package requires a local ONNX file; set --imagery-model or VERDFLOW_IMAGERY_MODEL_PATH")
     if _sha256(imagery_model) != IMAGERY_MODEL_SHA256:
         parser.error("The ONNX model does not match the pinned VerdFlow imagery profile SHA-256")
-    repository = arguments.update_repository
+    repository = arguments.update_repository if beta is None else None
     if repository is not None and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", repository):
         raise ValueError("Update repository must be owner/repository")
     _require_windows_x64()
     version = _workspace_version()
+    release_root = RELEASE_ROOT
+    if beta is not None:
+        version = f"{version}-beta.{beta}"
+        release_root = (RELEASE_ROOT / "beta").resolve()
+        _require_child(release_root, RELEASE_ROOT)
     bundle_name = f"VerdFlow-Studio-v{version}-win-x64"
-    bundle_root = (RELEASE_ROOT / bundle_name).resolve()
-    archive_path = (RELEASE_ROOT / f"{bundle_name}.zip").resolve()
-    _require_child(bundle_root, RELEASE_ROOT)
-    _require_child(archive_path, RELEASE_ROOT)
+    bundle_root = (release_root / bundle_name).resolve()
+    archive_path = (release_root / f"{bundle_name}.zip").resolve()
+    _require_child(bundle_root, release_root)
+    _require_child(archive_path, release_root)
 
     _run(["corepack", "pnpm", "build:dts-live-webui"])
     _run(["corepack", "pnpm", "build"])
 
-    RELEASE_ROOT.mkdir(parents=True, exist_ok=True)
+    release_root.mkdir(parents=True, exist_ok=True)
     CACHE_ROOT.mkdir(parents=True, exist_ok=True)
     if bundle_root.exists():
         shutil.rmtree(bundle_root)
@@ -112,14 +122,14 @@ def main(argv: list[str] | None = None) -> int:
 
     _write_update_manifest(bundle_root, version)
     _write_zip(bundle_root, archive_path)
-    _write_update_descriptor(archive_path, version)
+    digest = _write_archive_metadata(archive_path, version, include_update_descriptor=beta is None)
     print(
         json.dumps(
             {
                 "status": "ready",
                 "bundle": str(bundle_root),
                 "archive": str(archive_path),
-                "archive_sha256": _sha256(archive_path),
+                "archive_sha256": digest,
                 "archive_bytes": archive_path.stat().st_size,
             },
             ensure_ascii=False,
@@ -168,7 +178,7 @@ def _stage_electron(
     shutil.copytree(branding, bundle_root / "resources" / "branding")
     _run([
         "node", str(ROOT / "tools" / "windows_branding.mjs"),
-        str(bundle_root / "VerdFlow Studio.exe"), str(branding / "app.ico"), version,
+        str(bundle_root / "VerdFlow Studio.exe"), str(branding / "app.ico"), version.split("-beta.", 1)[0],
     ])
     default_app = bundle_root / "resources" / "default_app.asar"
     default_app.unlink(missing_ok=True)
@@ -457,15 +467,17 @@ def _write_update_manifest(bundle_root: Path, version: str) -> None:
     }, indent=2) + "\n", encoding="utf-8")
 
 
-def _write_update_descriptor(archive: Path, version: str) -> None:
+def _write_archive_metadata(archive: Path, version: str, *, include_update_descriptor: bool) -> str:
     digest = _sha256(archive)
-    (archive.parent / "VerdFlow-update-win-x64.json").write_text(json.dumps({
-        "schema": "verdflow.portable-update", "version": "1",
-        "product_version": version, "platform": "windows-x64",
-        "archive_name": archive.name, "archive_bytes": archive.stat().st_size,
-        "archive_sha256": digest,
-    }, indent=2) + "\n", encoding="utf-8")
+    if include_update_descriptor:
+        (archive.parent / "VerdFlow-update-win-x64.json").write_text(json.dumps({
+            "schema": "verdflow.portable-update", "version": "1",
+            "product_version": version, "platform": "windows-x64",
+            "archive_name": archive.name, "archive_bytes": archive.stat().st_size,
+            "archive_sha256": digest,
+        }, indent=2) + "\n", encoding="utf-8")
     archive.with_suffix(".zip.sha256").write_text(f"{digest}  {archive.name}\n", encoding="ascii")
+    return digest
 
 
 def _download_verified(url: str, destination: Path, expected_hash: str) -> None:

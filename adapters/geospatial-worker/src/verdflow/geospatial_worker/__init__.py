@@ -2,6 +2,10 @@
 
 from typing import Any
 
+from .actor_footprints import (
+    ACTOR_CAPTURE_FRAMES, ACTOR_CAPTURE_SIZE, ACTOR_CAPTURE_WIDTH, ActorFootprintTiles, actor_capture_ready,
+)
+
 from .archive import package_shapefile, shapefile_members, write_shapefile_package
 from .errors import GeospatialDataError
 from .polygon_export import ShapefilePolygon, export_polygon_shapefile, write_polygon_shapefile
@@ -22,6 +26,11 @@ from .protocol import (
 )
 
 __all__ = [
+    "ACTOR_CAPTURE_FRAMES",
+    "ACTOR_CAPTURE_SIZE",
+    "actor_capture_ready",
+    "ACTOR_CAPTURE_WIDTH",
+    "ActorFootprintTiles",
     "GeospatialDataError",
     "GEOSPATIAL_ADAPTER_ID",
     "GEOSPATIAL_PREPARE_REGIONS_COMMAND",

@@ -10,6 +10,7 @@ async function fixture({ cef = true, miss = false, timeout = false, containsPoin
   let instance;
   const window = {
     ue: { internal: {} },
+    innerWidth: 800, innerHeight: 600,
     setTimeout: (callback, ms) => setTimeout(callback, ms === 1400 || ms === 800 ? 5 : timeout && ms === 30000 ? 10 : ms),
     clearTimeout,
   };
@@ -108,6 +109,236 @@ test('transport pages share a camera window and return the original ray indices'
   f.bridge.dispose();
 });
 
+test('the screen-sized brush projects a bounded batch and hits every visible intersecting polygon', async () => {
+  const f = await fixture();
+  const projections = [];
+  let scale = 1;
+  f.instance.coord = { screen2World: (x, y) => {
+    projections.push([x, y]);
+    const callbackIndex = ++f.instance.callbackIndex;
+    queueMicrotask(() => f.window.tick_next({ callbackIndex, result:0, worldLocation:[60+(x-60)*scale,50+(y-50)*scale,0] }));
+  } };
+  const rect = (x1,y1,x2,y2) => [[x1,y1,0],[x2,y1,0],[x2,y2,0],[x1,y2,0]];
+  const add = (id, x1, y1, x2, y2, holes) => f.bridge.showRegion({ name:id, region_id:id,
+    bbox:[x1,y1,0,x2,y2,0], coordinates:rect(x1,y1,x2,y2), holes });
+  add('narrow', 72, 44, 73, 56);
+  add('island', 44, 49, 45, 51);
+  add('not-a-box-hit', 76, 64, 77, 65);
+  add('far', 87, 49, 89, 51);
+  add('inside-a-hole', 30, 20, 89, 80, [rect(39,29,81,71)]);
+  add('hidden', 64, 47, 65, 48);
+  f.bridge.hideRegion('hidden');
+  assert.equal(await f.bridge.sampleRegionBrushScreen(60, 50, new Set()), undefined);
+  f.bridge.startRegionBrush(() => {});
+  f.bridge.setRegionBrushPressed(true);
+  assert.deepEqual(Array.from(await f.bridge.sampleRegionBrushScreen(60, 50, new Set())).sort(), ['island', 'narrow']);
+  assert.equal(projections.length, 9);
+  assert.deepEqual(projections[0], [60, 50]);
+  assert.ok(projections.slice(1).every(([x, y]) => Math.abs(Math.hypot(x-60, y-50) - 18) < 1e-8));
+  scale = 2;
+  assert.ok((await f.bridge.sampleRegionBrushScreen(60, 50, new Set(['island', 'narrow']))).includes('far'));
+  f.bridge.stopRegionBrush();
+  f.bridge.dispose();
+});
+
+test('brush capture suppresses region clicks until returning to roam, without changing scene input settings', async () => {
+  const f = await fixture({ containsPoint: true });
+  const interact = [];
+  f.instance.settings.setEnableInteract = enabled => { interact.push(enabled); };
+  f.instance.coord = { screen2World: () => {} };
+  f.bridge.showRegion({ region_id:'region', name:'Test', bbox:[0,0,0,10,10,0],
+    coordinates:[[0,0,0],[10,0,0],[0,10,0],[0,10,0]] });
+  f.bridge.startRegionBrush(() => {});
+  const emit = (eventtype, MouseClickPoint) => f.events.onEvent({ eventtype, Type:'TileLayer', MouseClickPoint });
+  assert.deepEqual(interact, []);
+  emit('LeftMouseButtonClick', [5, 5, 0]);
+  assert.deepEqual(f.calls.clicked, []);
+  f.bridge.setRegionBrushCapture(false);
+  emit('LeftMouseButtonClick', [5, 5, 0]);
+  assert.deepEqual(f.calls.clicked, ['region']);
+  f.bridge.setRegionBrushCapture(true);
+  emit('LeftMouseButtonClick', [5, 5, 0]);
+  assert.deepEqual(f.calls.clicked, ['region']);
+  f.bridge.stopRegionBrush();
+  assert.deepEqual(interact, []);
+  assert.deepEqual(f.calls.pickMasks, [1]);
+  f.bridge.dispose();
+});
+
+test('Actor extraction uses scoped CEF callbacks and always clears its highlight and capture', async () => {
+  const f = await fixture();
+  const activity = [];
+  const reply = result => {
+    const callbackIndex = ++f.instance.callbackIndex;
+    queueMicrotask(() => {
+      f.bridge.cancelSampling();
+      f.window.tick_next({ callbackIndex, result });
+    });
+  };
+  f.instance.camera.exportOrthoImage = filename => { activity.push(filename); reply(filename === 'cyan-0.png' ? 2 : 0); };
+  f.instance.tileLayer = {
+    getActorInfo: mockActorBounds(f),
+    highlightActorsWithColor: data => { activity.push(data[0].objectIds[0]); reply(0); },
+    stopHighlightActors: data => { activity.push('clear-' + data.objectIds[0]); reply(0); },
+  };
+  f.api.reserveActorCapture = async () => ({ capture_id: 'capture' });
+  mockActorTiles(f, 1);
+  f.api.actorCaptureFrameReady = async () => ({ ready: true });
+  f.api.resolveActorCapture = async () => { throw new Error('Must not resolve failed capture'); };
+  f.api.discardActorCapture = async id => { activity.push('discard-' + id); };
+  await assert.rejects(f.bridge.extractActor({ layer: 'terrain', actor: '47', point: [2, 3, 4] }, { aborted: false }), /正交出图失败/);
+  assert.deepEqual(activity, ['47', 'magenta-0.png', '47', 'cyan-0.png', 'clear-47', 'discard-capture']);
+  f.bridge.dispose();
+});
+
+function mockActorBounds(f) {
+  return async () => {
+    f.instance.callbackIndex++;
+    return { result:0, data:[{ boundsMin:[-10,-20,1], boundsMax:[10,20,7] }] };
+  };
+}
+
+test('changing the picked Actor removes the previous blue highlight and skips stale requests', async () => {
+  const f = await fixture();
+  const commands = [];
+  const reply = () => { f.instance.callbackIndex++; return { result:0 }; };
+  f.instance.tileLayer = {
+    highlightActorsWithColor: targets => { commands.push(['show', targets[0].id, targets[0].objectIds[0], ...targets[0].color]); return reply(); },
+    stopHighlightActors: target => { commands.push(['hide', target.id, target.objectIds[0]]); return reply(); },
+  };
+  f.instance.camera.exportOrthoImage = () => {};
+  f.instance.tileLayer.getActorInfo = mockActorBounds(f);
+  const click = (id, actor) => ({ layer:id, actor, point:[2,3,4] });
+  await f.bridge.previewActorPick(click('layer-a', 'a'));
+  const skipped = f.bridge.previewActorPick(click('layer-a', 'b'));
+  await f.bridge.previewActorPick(click('layer-b', 'a'));
+  await skipped;
+  await f.bridge.previewActorPick(null);
+  assert.deepEqual(commands.map(row => row.slice(0,3)), [
+    ['show','layer-a','a'], ['hide','layer-a','a'], ['show','layer-b','a'], ['hide','layer-b','a'],
+  ]);
+  assert.ok(commands[0][5] > commands[0][4] && commands[0][6] > 0 && commands[0][6] < 1);
+  f.bridge.dispose();
+});
+
+test('whole Actor extraction never reserves a partial capture without bounds', async () => {
+  const f = await fixture();
+  f.instance.camera.exportOrthoImage = () => {};
+  f.instance.tileLayer = {
+    getActorInfo: async () => { f.instance.callbackIndex++; return { result:0, data:[] }; },
+    highlightActorsWithColor() {},
+    stopHighlightActors() {},
+  };
+  f.api.reserveActorCapture = () => assert.fail('Missing Actor bounds must not fall back to a local capture');
+  await assert.rejects(f.bridge.extractActor({ layer:'terrain', actor:'47', point:[2,3,4] }, { aborted:false }), /未读到完整构件范围/);
+  f.bridge.dispose();
+});
+
+test('native range drawing does not pick another Actor or create a planting region', async () => {
+  const f = await fixture();
+  f.instance.camera.exportOrthoImage = () => {};
+  f.instance.tileLayer = {
+    getActorInfo: mockActorBounds(f),
+    highlightActorsWithColor() {},
+    stopHighlightActors() {},
+  };
+  let picks = 0, range;
+  f.bridge.startActorPicking(() => { picks++; });
+  f.bridge.beginActorRangeDrawing(result => { range = result; });
+  f.events.onEvent({ eventtype:'LeftMouseButtonClick', Type:'TileLayer', Id:'terrain',
+    ObjectID:'other', MouseClickPoint:[2,2,8] });
+  assert.equal(picks, 0);
+  const finished = { eventtype:'EditHelperFinished', coordinates:[[0,0,8], [8,0,8], [0,8,8]] };
+  f.events.onEvent(finished);
+  assert.equal(f.calls.regions.length, 0);
+  assert.equal(range.coordinates.length, 3);
+  f.bridge.showActorRange(range);
+  assert.equal(f.bridge.hasRegion(range.region_id), false);
+  assert.match(f.calls.polygons[0].id, /_actor_range_/);
+  await f.bridge.clearActorRangePreview();
+  assert.deepEqual(f.calls.deleted, [f.calls.polygons[0].id]);
+  f.bridge.beginActorRangeDrawing(() => assert.fail('a cancelled guide must not be published'));
+  f.bridge.cancelActorRangeDrawing();
+  f.events.onEvent(finished);
+  f.bridge.dispose();
+});
+
+function mockActorTiles(f, count) {
+  const next = new Map();
+  f.api.nextActorCaptureTile = async (_, frame) => {
+    const tile = next.get(frame) ?? 0;
+    next.set(frame, tile + 1);
+    return { tile: tile < count ? { tile, path: frame + '-' + tile + '.png', size: 1024,
+      width: 160, location: [tile * 150, 0, 400] } : null };
+  };
+}
+
+test('all tiles share one change per color and wait for completed PNGs in CEF', async () => {
+  const f = await fixture();
+  const activity = [];
+  f.instance.camera.exportOrthoImage = async filename => {
+    f.instance.callbackIndex++;
+    activity.push(filename);
+  };
+  f.instance.tileLayer = {
+    getActorInfo: mockActorBounds(f),
+    highlightActorsWithColor: async data => {
+      f.instance.callbackIndex++;
+      activity.push(data[0].color[0] ? 'magenta' : 'cyan');
+      return '{"accepted":true}';
+    },
+    stopHighlightActors: async () => { f.instance.callbackIndex++; activity.push('clear'); },
+  };
+  const range = f.createLiveRegion([[0,0,8],[8,0,8],[0,8,8]], 1);
+  f.bridge.showActorRange(range);
+  f.api.reserveActorCapture = async (point, bounds, clip) => {
+    assert.deepEqual(JSON.parse(JSON.stringify([point, bounds, clip])), [[2,3,4], [[-10,-20,1],[10,20,7]],
+      [[0,0,8],[8,0,8],[0,8,8]]]);
+    assert.deepEqual(f.calls.deleted, [f.calls.polygons[0].id]);
+    return { capture_id: 'capture' };
+  };
+  mockActorTiles(f, 2);
+  let first = true;
+  f.api.actorCaptureFrameReady = async (_, frame, tile) => {
+    activity.push('check-' + frame + '-' + tile);
+    if (first) { first = false; return { ready: false }; }
+    return { ready: true };
+  };
+  f.api.resolveActorCapture = async () => ({ dataset_id:'actor-draft', region_count:2 });
+  f.api.discardActorCapture = async () => { activity.push('discard'); };
+  const draft = await f.bridge.extractActor({ layer: 'terrain', actor: '47', point: [2, 3, 4] }, { aborted: false }, range.coordinates);
+  assert.deepEqual(draft, { dataset_id:'actor-draft', region_count:2 });
+  assert.deepEqual(activity, ['magenta', 'magenta-0.png', 'check-magenta-0', 'check-magenta-0',
+    'magenta-1.png', 'check-magenta-1', 'cyan', 'cyan-0.png', 'check-cyan-0', 'cyan-1.png', 'check-cyan-1',
+    'clear', 'normal-0.png', 'check-normal-0', 'normal-1.png', 'check-normal-1', 'discard']);
+  f.bridge.dispose();
+});
+
+test('cancellation between tiles restores the construct and discards the files', async () => {
+  const f = await fixture();
+  const activity = [];
+  const signal = { aborted: false };
+  f.instance.camera.exportOrthoImage = async filename => {
+    f.instance.callbackIndex++;
+    activity.push(filename);
+  };
+  f.instance.tileLayer = {
+    getActorInfo: mockActorBounds(f),
+    highlightActorsWithColor: async () => { f.instance.callbackIndex++; activity.push('highlight'); },
+    stopHighlightActors: async () => { f.instance.callbackIndex++; activity.push('clear'); },
+  };
+  f.api.reserveActorCapture = async () => ({ capture_id: 'capture' });
+  mockActorTiles(f, 2);
+  f.api.actorCaptureFrameReady = async () => {
+    signal.aborted = true;
+    return { ready: true };
+  };
+  f.api.discardActorCapture = async () => { activity.push('discard'); };
+  await assert.rejects(f.bridge.extractActor({ layer: 'terrain', actor: '47', point: [2, 3, 4] }, signal), /拾取已取消/);
+  assert.deepEqual(activity, ['highlight', 'magenta-0.png', 'clear', 'discard']);
+  f.bridge.dispose();
+});
+
 test('imported polygons use one native add per page and then show by ID', async () => {
   const f = await fixture();
   const a = {region_id:'a',name:'A',coordinates:[[0,0,0],[10,0,0],[0,10,0]],bbox:[0,0,0,10,10,0]};
@@ -119,6 +350,38 @@ test('imported polygons use one native add per page and then show by ID', async 
   f.bridge.showRegion({...a, coordinates:[]});
   assert.equal(f.calls.polygons.length, 1);
   assert.equal(f.calls.shown.length, 1);
+  f.bridge.dispose();
+});
+
+test('selection repaints only fill and frame in one batch and restores the original colors', async () => {
+  const f = await fixture();
+  let frame;
+  f.window.requestAnimationFrame = callback => { frame = callback; return 1; };
+  const updates = [];
+  f.instance.polygon.update = batch => updates.push(JSON.parse(JSON.stringify(batch)));
+  const a = {region_id:'a',name:'A',coordinates:[[0,0,0],[10,0,0],[0,10,0]],bbox:[0,0,0,10,10,0]};
+  await f.bridge.addImportedPage([a, {...a, region_id:'b'}]);
+  const [first, second] = f.calls.polygons[0];
+  f.bridge.setRegionSelectionAppearance('a', false);
+  f.bridge.setRegionSelectionAppearance('b', true);
+  f.bridge.setRegionSelectionAppearance('b', false);
+  assert.deepEqual(updates, []);
+  frame();
+  assert.equal(updates.length, 1);
+  assert.deepEqual(updates[0].map(item => item.id), [first.id, second.id]);
+  for (const item of updates[0]) {
+    assert.deepEqual(Object.keys(item), ['id', 'color', 'frameColor']);
+    assert.ok(item.color[3] < first.color[3]);
+    assert.ok(item.frameColor[3] < first.frameColor[3]);
+  }
+  f.bridge.setRegionSelectionAppearance('a', true);
+  f.bridge.setRegionSelectionAppearance('b', true);
+  f.bridge.removeRegion('b');
+  frame();
+  assert.deepEqual(updates[1], JSON.parse(JSON.stringify([
+    { id:first.id, color:first.color, frameColor:first.frameColor },
+  ])));
+  assert.equal(f.calls.polygons.length, 1);
   f.bridge.dispose();
 });
 

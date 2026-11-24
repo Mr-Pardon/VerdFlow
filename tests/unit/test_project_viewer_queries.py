@@ -618,6 +618,60 @@ class ProjectViewerQueriesTests(unittest.TestCase):
                     disk_queries.close()
                 self.assertEqual(list(Path(directory).iterdir()), [])
 
+    def test_adaptive_view_returns_complete_exact_geometry_in_one_response(self) -> None:
+        store = _FixtureStore()
+        queries = ProjectViewerQueries(store)  # type: ignore[arg-type]
+        bounds = dict(min_x=-1, min_y=-1, max_x=25, max_y=25)
+        page = queries.region_chunk(
+            "regions_1", **bounds, overview_threshold=20_000, limit=1, simplification_tolerance=1.0,
+        )
+        self.assertFalse(page.truncated)
+        self.assertIsNone(page.next_after_ordinal)
+        self.assertEqual([item.region_id for item in page.items], ["r1", "r2", "r3"])
+        self.assertTrue(all(item.boundary_mode == "detail" for item in page.items))
+        self.assertEqual(store.open_counts["artifact_regions"], 1)
+
+    def test_adaptive_view_prefers_original_raster_when_exact_vectors_do_not_fit(self) -> None:
+        store = _FixtureStore()
+        document = json.loads(store.artifacts["artifact_regions"])
+        # Model footprints can have disjoint rings and closed outlines that cross themselves.
+        dense = [[i / 30, 0, 0] for i in range(91)] + [[0, 3, 0], [3, 3, 0], [0, 0, 0]]
+        second = [[4, 4, 0], [5, 4, 0], [5, 5, 0], [4, 5, 0], [4, 4, 0]]
+        document["regions"][0]["footprint_boundary_xyz"] = [dense, second]
+        document["region_count"] = 3
+        store.artifacts["artifact_regions"] = store._json_bytes(document)
+        with tempfile.TemporaryDirectory() as directory:
+            queries = ProjectViewerQueries(store, cache_root=Path(directory))  # type: ignore[arg-type]
+            bounds = dict(min_x=-1, min_y=-1, max_x=25, max_y=25)
+            try:
+                with (
+                    patch("verdflow.studio_service.viewer_queries._REGION_INDEX_MEMORY_BYTES", 0),
+                    patch("verdflow.studio_service.viewer_queries._REGION_VIEW_VERTICES", 100),
+                ):
+                    with patch("verdflow.studio_service.viewer_queries._exact_region_boundary",
+                               side_effect=AssertionError("projecting vectors for an over-budget view")):
+                        view = queries.region_chunk(
+                            "regions_1", **bounds, overview_threshold=20_000, simplification_tolerance=0.5,
+                        )
+                    self.assertTrue(view.overview_recommended)
+                    self.assertEqual(view.items, ())
+                    near = queries.region_chunk(
+                        "regions_1", min_x=0, min_y=0, max_x=2, max_y=2,
+                        overview_threshold=20_000, simplification_tolerance=0.5,
+                    )
+                    self.assertFalse(near.overview_recommended)
+                    self.assertEqual(near.items[0].boundary_mode, "detail")
+                    self.assertEqual(near.items[0].footprint_boundary_xyz[0], tuple(map(tuple, dense)))
+                    self.assertEqual(near.items[0].footprint_boundary_xyz[1], tuple(map(tuple, second)))
+                    self.assertEqual(store.open_counts["artifact_regions"], 1)
+
+                    with patch("verdflow.studio_service.viewer_queries._REGION_VIEW_BYTES", 512):
+                        dense_view = queries.region_chunk("regions_1", **bounds, overview_threshold=20_000, simplification_tolerance=0.5)
+                    self.assertTrue(dense_view.overview_recommended)
+                    self.assertEqual(dense_view.items, ())
+            finally:
+                queries.close()
+
     def test_overview_region_selection_uses_original_holes_and_skips_committed(self) -> None:
         store = _FixtureStore()
         document = json.loads(store.artifacts["artifact_regions"])
@@ -663,8 +717,9 @@ class ProjectViewerQueriesTests(unittest.TestCase):
         close = dict(min_x=0.8, min_y=0.8, max_x=1.4, max_y=1.4)
         with patch("verdflow.studio_service.viewer_queries._REGION_ITEM_VERTICES", 10):
             chunk = queries.region_chunk("regions_1", **close, overview_threshold=20_000)
-            self.assertTrue(chunk.overview_recommended)
-            self.assertEqual(chunk.items, ())
+            self.assertFalse(chunk.overview_recommended)
+            self.assertEqual(len(chunk.items[0].footprint_boundary_xyz), 2)
+            self.assertEqual(chunk.items[0].boundary_mode, "detail")
             detail = queries.region_overview("regions_1", **close)
             further = queries.region_overview("regions_1", min_x=-1, min_y=-1, max_x=25, max_y=25)
         self.assertLess(detail.bounds.max_x - detail.bounds.min_x, further.bounds.max_x - further.bounds.min_x)

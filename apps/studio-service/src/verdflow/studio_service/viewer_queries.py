@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 import sqlite3
 from tempfile import TemporaryDirectory
-from typing import TYPE_CHECKING, Callable, Generic, Iterator, TypeVar
+from typing import TYPE_CHECKING, Callable, Generic, Iterator, Literal, TypeVar
 from uuid import uuid4
 
 from verdflow.contracts import (
@@ -54,6 +54,9 @@ _REGION_INDEX_MEMORY_BYTES = 32 * 1024**2
 _REGION_ITEM_VERTICES = 20_000
 _REGION_PAGE_VERTICES = 60_000
 _REGION_PAGE_BYTES = 8 * 1024**2
+_REGION_VIEW_MAX_ITEMS = 20_000
+_REGION_VIEW_VERTICES = 120_000
+_REGION_VIEW_BYTES = 16 * 1024**2
 
 
 class ViewerProjectionError(RuntimeError):
@@ -194,7 +197,7 @@ class ProjectViewerQueries:
         self._region_overviews = _LruCache[RegionOverview](2)
         self._region_geometry = _LruCache[dict[str, object]](2)
         self._region_items = _LruCache[RegionViewerItem](
-            2048, max_weight=_REGION_PAGE_BYTES * 2, weight=_region_item_weight,
+            _REGION_VIEW_MAX_ITEMS, max_weight=_REGION_VIEW_BYTES, weight=_region_item_weight,
         )
         self._region_polygons: _LruCache[tuple[BaseGeometry, int]] = _LruCache(
             128, max_weight=1_000_000, weight=lambda entry: entry[1],
@@ -294,14 +297,19 @@ class ProjectViewerQueries:
                 max_y=max_y,
             )
         )
-        page = []
-        for count, region in enumerate(matches, 1):
-            if count <= limit + 1:
-                page.append(region)
-            if overview_threshold and after_ordinal == -1:
-                if count > overview_threshold:
+        if overview_threshold and after_ordinal == -1:
+            visible = []
+            max_items = min(overview_threshold, _REGION_VIEW_MAX_ITEMS)
+            for region in matches:
+                if len(visible) >= max_items:
                     return RegionViewportChunk((), None, True, overview_recommended=True)
-            elif count > limit:
+                visible.append(region)
+            return self._adaptive_region_view(region_set, visible)
+
+        page = []
+        for region in matches:
+            page.append(region)
+            if len(page) > limit:
                 break
         truncated = len(page) > limit
         if truncated:
@@ -321,17 +329,10 @@ class ProjectViewerQueries:
                 key = f"{artifact_id}:{tolerance:.12g}:{region.region_id}"
                 item = self._region_items.get(key)
                 if item is None:
-                    raw = geometry(region.region_id)
-                    rings = raw.get("footprint_boundary_xyz") if isinstance(raw, dict) else None
-                    if (overview_threshold and isinstance(rings, list) and all(isinstance(ring, list) for ring in rings)
-                            and sum(map(len, rings)) > _REGION_ITEM_VERTICES):
-                        return RegionViewportChunk((), None, True, overview_recommended=True)
                     item = _region_item(
-                        region, raw, simplification_tolerance=tolerance,
+                        region, geometry(region.region_id), simplification_tolerance=tolerance,
                     )
                     self._region_items.put(key, item)
-                if overview_threshold and item.boundary_mode != "detail":
-                    return RegionViewportChunk((), None, True, overview_recommended=True)
                 vertices = _region_vertices(item)
                 weight = _region_item_weight(item)
                 if vertices > remaining_vertices or weight > remaining_bytes:
@@ -348,6 +349,55 @@ class ProjectViewerQueries:
             next_after_ordinal=(items[-1].ordinal if truncated and items else None),
             truncated=truncated,
         )
+
+    def _adaptive_region_view(
+        self, region_set: RegionSetInfo, visible: list[RegionSummary],
+    ) -> RegionViewportChunk:
+        if not visible:
+            return RegionViewportChunk((), None, False)
+        fallback = RegionViewportChunk((), None, True, overview_recommended=True)
+        artifact_id = region_set.geometry_artifact_id
+        if self._store.get_artifact(artifact_id).byte_size > _REGION_INDEX_MEMORY_BYTES:
+            index = self._disk_region_index(artifact_id, region_set.region_count)
+            try:
+                with closing(index.vertex_counts(region.region_id for region in visible)) as counts:
+                    if not self._fits_exact_view(visible, counts):
+                        return fallback
+            except (sqlite3.Error, RegionIndexError) as error:
+                raise ViewerProjectionError("Unable to read region review geometry counts") from error
+            lookup = index.lookup()
+        else:
+            by_id = self._geometry_by_id(artifact_id)
+            counts = (_raw_region_vertices(by_id.get(region.region_id)) for region in visible)
+            if not self._fits_exact_view(visible, counts):
+                return fallback
+            lookup = nullcontext(by_id.get)
+
+        items: list[RegionViewerItem] = []
+        with lookup as geometry:
+            for region in visible:
+                if self._cancelled():
+                    raise ViewerProjectionError("Region review was closed")
+                key = f"{artifact_id}:exact-view:{region.region_id}"
+                item = self._region_items.get(key)
+                if item is None:
+                    rings = tuple(_exact_region_boundary(geometry(region.region_id)))
+                    item = _region_item_with_boundary(region, rings, "detail")
+                    self._region_items.put(key, item)
+                items.append(item)
+        return RegionViewportChunk(tuple(items), None, False)
+
+    def _fits_exact_view(self, visible: list[RegionSummary], counts: Iterator[int]) -> bool:
+        # Choose the overview before creating any vector DTOs. The rasterizer reads original rings.
+        remaining_vertices, remaining_bytes = _REGION_VIEW_VERTICES, _REGION_VIEW_BYTES
+        for region, count in zip(visible, counts, strict=True):
+            if self._cancelled():
+                raise ViewerProjectionError("Region review was closed")
+            remaining_vertices -= count
+            remaining_bytes -= _region_payload_weight(region, count)
+            if remaining_vertices < 0 or remaining_bytes < 0:
+                return False
+        return True
 
     def region_overview(
         self, region_set_id: str, *, min_x: float, min_y: float, max_x: float, max_y: float,
@@ -975,6 +1025,14 @@ def _region_item(
         boundary_mode = "overview" if bounded else "extent"
     else:
         bounded = tuple(_simplify_closed_ring(ring, simplification_tolerance) for ring in boundaries)
+    return _region_item_with_boundary(region, bounded, boundary_mode)
+
+
+def _region_item_with_boundary(
+    region: RegionSummary,
+    bounded: tuple[tuple[tuple[float, float, float], ...], ...],
+    boundary_mode: Literal["detail", "overview", "extent"],
+) -> RegionViewerItem:
     return RegionViewerItem(
         region_id=region.region_id,
         ordinal=region.ordinal,
@@ -986,6 +1044,15 @@ def _region_item(
         footprint_boundary_xyz=bounded,
         boundary_mode=boundary_mode,
     )
+
+
+def _raw_region_vertices(value: object) -> int:
+    if not isinstance(value, dict):
+        raise ViewerProjectionError("Region geometry is missing")
+    rings = value.get("footprint_boundary_xyz", [])
+    if not isinstance(rings, list) or not all(isinstance(ring, list) for ring in rings):
+        raise ViewerProjectionError("Region boundary is invalid")
+    return sum(map(len, rings))
 
 
 def _exact_region_boundary(value: object) -> list[tuple[tuple[float, float, float], ...]]:
@@ -1026,8 +1093,12 @@ def _region_vertices(item: RegionViewerItem) -> int:
 
 
 def _region_item_weight(item: RegionViewerItem) -> int:
-    return 512 + _region_vertices(item) * 128 + 6 * sum(map(len, (
-        item.region_id, item.label, item.classification or "", item.strategy_hint or "",
+    return _region_payload_weight(item, _region_vertices(item))
+
+
+def _region_payload_weight(region: RegionSummary | RegionViewerItem, vertices: int) -> int:
+    return 512 + vertices * 128 + 6 * sum(map(len, (
+        region.region_id, region.label, region.classification or "", region.strategy_hint or "",
     )))
 
 

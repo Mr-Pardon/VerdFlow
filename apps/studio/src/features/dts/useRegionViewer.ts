@@ -7,13 +7,14 @@ import type {
   RegionViewerManifest,
 } from "../../api";
 import { platformBridge } from "../../platform";
-import { readRegionViewport } from "./regionViewport";
+import { createRegionViewportReader } from "./regionViewport";
 import type { RegionOverviewGrid } from "./regionViewport";
 
 export type RegionSelectionMode = "replace" | "add" | "toggle";
 
 export const useRegionViewer = (sessionId: string, regionSetId: string) => {
   const client = new LocalApiClient(platformBridge());
+  const viewportReader = createRegionViewportReader();
   const manifest = shallowRef<RegionViewerManifest | null>(null);
   const regions = shallowRef<RegionViewerItem[]>([]);
   const overview = shallowRef<RegionOverviewGrid | null>(null);
@@ -24,7 +25,7 @@ export const useRegionViewer = (sessionId: string, regionSetId: string) => {
   const loadingGeometry = ref(false);
   const selecting = ref(false);
   const errorMessage = ref<string | null>(null);
-  const currentViewport = shallowRef<Bounds3D | null>(null);
+  let currentViewport: Bounds3D | null = null;
   let viewportSequence = 0;
   let pendingViewport: { bounds: Bounds3D; sequence: number } | null = null;
   let viewportRequest: Promise<void> | undefined;
@@ -63,13 +64,20 @@ export const useRegionViewer = (sessionId: string, regionSetId: string) => {
   };
 
   const readViewport = async (bounds: Bounds3D, sequence: number) => {
+    const request = { client, sessionId, regionSetId, bounds, classifications: classifications.value,
+      regionCount: manifest.value?.region_count,
+      isCurrent: () => sequence === viewportSequence };
+    const cached = viewportReader.cached(request);
+    if (cached) {
+      regions.value = cached.items;
+      overview.value = null;
+      loadingGeometry.value = false;
+      return;
+    }
     loadingGeometry.value = true;
     errorMessage.value = null;
     try {
-      const view = await readRegionViewport({
-        client, sessionId, regionSetId, bounds, classifications: classifications.value,
-        isCurrent: () => sequence === viewportSequence,
-      });
+      const view = await viewportReader.read(request);
       if (!view || sequence !== viewportSequence) return;
       regions.value = view.items;
       overview.value = view.overview;
@@ -97,7 +105,7 @@ export const useRegionViewer = (sessionId: string, regionSetId: string) => {
   };
 
   const loadViewport = (bounds: Bounds3D) => {
-    currentViewport.value = bounds;
+    currentViewport = bounds;
     pendingViewport = { bounds, sequence: ++viewportSequence };
     viewportRequest ??= drainViewports();
     return viewportRequest;
@@ -106,8 +114,8 @@ export const useRegionViewer = (sessionId: string, regionSetId: string) => {
   const setClassificationFilter = async (values: string[]) => {
     invalidateSelection();
     classifications.value = [...values];
-    if (currentViewport.value) {
-      await loadViewport(currentViewport.value);
+    if (currentViewport) {
+      await loadViewport(currentViewport);
     }
   };
 

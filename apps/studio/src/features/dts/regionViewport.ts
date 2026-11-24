@@ -1,7 +1,6 @@
 import type { Bounds3D, LocalApiClient, RegionOverview, RegionOverviewItem, RegionViewerItem } from "../../api";
 
-const PAGE_SIZE = 5000;
-const MAX_PAGES = 4;
+const MAX_VECTOR_REGIONS = 20_000;
 const MAX_OVERVIEW_SIDE = 1024;
 
 export interface RegionOverviewGrid extends Omit<RegionOverview, "pixels" | "items"> {
@@ -14,35 +13,52 @@ export interface RegionViewport {
   overview: RegionOverviewGrid | null;
 }
 
-export async function readRegionViewport(input: {
+interface RegionViewportRequest {
   client: LocalApiClient;
   sessionId: string;
   regionSetId: string;
+  regionCount?: number;
   bounds: Bounds3D;
   classifications: string[];
   isCurrent: () => boolean;
-}): Promise<RegionViewport | undefined> {
-  const { client, sessionId, regionSetId, bounds, classifications, isCurrent } = input;
-  const items: RegionViewerItem[] = [];
-  let afterOrdinal = -1;
-  for (let page = 0; page < MAX_PAGES; page += 1) {
+}
+
+export function createRegionViewportReader() {
+  let full: { sessionId: string; regionSetId: string; items: RegionViewerItem[] } | undefined;
+
+  const cached = (input: Pick<RegionViewportRequest, "sessionId" | "regionSetId" | "bounds" | "classifications">): RegionViewport | undefined => {
+    if (full?.sessionId !== input.sessionId || full.regionSetId !== input.regionSetId) return;
+    const { bounds, classifications } = input;
+    return { overview: null, items: full.items.filter(item =>
+      (!classifications.length || classifications.includes(item.classification ?? "")) &&
+      item.bounds.min_x <= bounds.max_x && item.bounds.max_x >= bounds.min_x &&
+      item.bounds.min_y <= bounds.max_y && item.bounds.max_y >= bounds.min_y) };
+  };
+
+  const read = async (input: RegionViewportRequest): Promise<RegionViewport | undefined> => {
+    const hit = cached(input);
+    if (hit) return hit;
+    const { client, sessionId, regionSetId, bounds, classifications, isCurrent } = input;
     const chunk = await client.regionGeometry({
-      sessionId, regionSetId, classifications, afterOrdinal, limit: PAGE_SIZE,
+      sessionId, regionSetId, classifications,
       minX: bounds.min_x, minY: bounds.min_y, maxX: bounds.max_x, maxY: bounds.max_y,
-      overviewThreshold: PAGE_SIZE * MAX_PAGES,
+      overviewThreshold: MAX_VECTOR_REGIONS,
+      simplificationTolerance: 0,
     });
     if (!isCurrent()) return;
-    if (chunk.overview_recommended || (chunk.truncated && page === MAX_PAGES - 1)) {
+    if (chunk.overview_recommended || chunk.truncated) {
       const packed = await client.regionOverview({ sessionId, regionSetId, bounds, classifications });
       if (!isCurrent()) return;
-      return { items: [], overview: await decodeOverview(packed) };
+      const overview = await decodeOverview(packed);
+      return isCurrent() ? { items: [], overview } : undefined;
     }
-    items.push(...chunk.items);
-    if (!chunk.truncated || chunk.next_after_ordinal === null) return { items, overview: null };
-    if (chunk.next_after_ordinal <= afterOrdinal) throw new Error("区域预览响应顺序无效");
-    afterOrdinal = chunk.next_after_ordinal;
-  }
-  return { items, overview: null };
+    if (!classifications.length && chunk.items.length === input.regionCount &&
+        chunk.items.every(item => !item.boundary_mode || item.boundary_mode === "detail")) {
+      full = { sessionId, regionSetId, items: chunk.items };
+    }
+    return { items: chunk.items, overview: null };
+  };
+  return { read, cached };
 }
 
 async function decodeOverview(input: RegionOverview): Promise<RegionOverviewGrid> {

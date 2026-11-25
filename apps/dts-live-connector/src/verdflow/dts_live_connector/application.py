@@ -17,6 +17,7 @@ from verdflow.system_host import (
 from .server import DtsLiveConnectorConfig, DtsLiveConnectorServer
 from .region_exchange import RegionExchangeService
 from .previews import ConnectorPreviews
+from .brush_input import BrushInput
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +49,7 @@ class DtsLiveConnectorApplication:
         sdk_root = installation.sdk_root if installation is not None else None
         region_exchange = RegionExchangeService()
         self._previews = ConnectorPreviews(system)
+        self.brush_input = BrushInput()
         self._server = DtsLiveConnectorServer(
             system.dts_live_connector,
             DtsLiveConnectorConfig(
@@ -82,6 +84,7 @@ class DtsLiveConnectorApplication:
             export_regions=region_exchange.export_regions,
             draft_exchange=region_exchange,
             previews=self._previews,
+            brush_input=self.brush_input,
         )
         self._sessions: set[str] = set()
         self._lock = RLock()
@@ -118,12 +121,14 @@ class DtsLiveConnectorApplication:
         )
 
     def discard_session(self, session_id: str) -> None:
+        self.brush_input.clear(session_id)
         self._previews.close_session(session_id)
         with self._lock:
             self._sessions.discard(session_id)
         self._system.discard_dts_live_session(session_id)
 
     def close(self) -> None:
+        self.brush_input.clear()
         self._server.close()
         with self._lock:
             sessions = tuple(self._sessions)
@@ -136,6 +141,7 @@ class DtsLiveConnectorApplication:
         session_id: str,
         callback: Callable[[str], None] | None,
     ) -> None:
+        self.brush_input.clear(session_id)
         with self._lock:
             self._sessions.discard(session_id)
         self._system.close_dts_live_session(session_id)

@@ -2,6 +2,14 @@
 
 这里记录面向用户的版本变化、使用条件与升级注意事项。
 
+## 1.3.1 · 2026-11-25
+
+[下载 VerdFlow 1.3.1](https://github.com/Mr-Pardon/VerdFlow/releases/tag/v1.3.1)。
+
+- **笔刷大小可调**：在 DTS 实时种植的编辑模式下，向上滚动放大笔刷，向下滚动缩小。滚轮不再切换刷选和刷除，漫游时仍用于场景缩放。
+- **场景快捷键**：笔刷启用后，单按 Alt 切换编辑与漫游；编辑时单按 Shift 刷选、Ctrl 刷除。由 VerdFlow 启动的 Windows Explorer 在场景获得焦点后也可使用，不必先点回面板。
+- **鼠标操作**：中键切换刷选和刷除，右键进入漫游。原有左上、左下热区仍可使用。
+
 ## 1.3.0 · 2026-11-24
 
 [下载 VerdFlow 1.3.0](https://github.com/Mr-Pardon/VerdFlow/releases/tag/v1.3.0)。

@@ -8,6 +8,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import mimetypes
+import select
 from pathlib import Path
 import sys
 from threading import Thread
@@ -44,6 +45,7 @@ from verdflow.system_host import (
 )
 from .previews import ConnectorPreviews
 from .actor_capture import ActorCaptureError, ActorCaptures
+from .brush_input import BrushInput
 
 
 _COOKIE_NAME = "verdflow_dts_live"
@@ -126,6 +128,7 @@ class DtsLiveConnectorServer:
         import_regions: Callable[[], RegionImportResult] | None = None,
         draft_exchange: RegionExchangeService | None = None,
         previews: ConnectorPreviews | None = None,
+        brush_input: BrushInput | None = None,
     ) -> None:
         self.manager = manager
         self.config = config or DtsLiveConnectorConfig()
@@ -143,6 +146,7 @@ class DtsLiveConnectorServer:
         self._import_regions = import_regions
         self._draft_exchange = draft_exchange
         self._previews = previews
+        self._brush_input = brush_input
         self._actor_captures = ActorCaptures()
         self._server: ThreadingHTTPServer | None = None
         self._thread: Thread | None = None
@@ -362,6 +366,18 @@ class DtsLiveConnectorServer:
                             owner._on_session_connected(grant.connector_session_id)
                         return
                     session_id, token = self._authorization()
+                    if target.path == "/api/v1/brush-input/wait":
+                        manager.snapshot(session_id, token)
+                        try:
+                            result = owner._brush_input.wait(
+                                session_id, _text(document, "mode"),
+                                lambda: bool(select.select([self.connection], [], [], 0)[0]),
+                            ) if owner._brush_input else {"available": False}
+                            self._json(HTTPStatus.OK, result)
+                        except ConnectionError:
+                            # Changing brush context normally aborts the outstanding HTTP wait.
+                            self.close_connection = True
+                        return
                     if target.path in {
                         "/api/v1/strategy-previews", "/api/v1/asset-assignment-previews",
                     }:

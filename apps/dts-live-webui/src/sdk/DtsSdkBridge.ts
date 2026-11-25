@@ -211,10 +211,10 @@ export class DtsSdkBridge {
     this.setRegionBrushCapture(false);
   }
 
-  async sampleRegionBrushScreen(x: number, y: number, seen: ReadonlySet<string>) {
+  async sampleRegionBrushScreen(x: number, y: number, radius: number, needsHitTest: (id: string) => boolean) {
     const coord = this.api?.coord;
     if (!this.brushPressed || !coord?.screen2World) return;
-    const points = await Promise.all(brushScreenSamples(x, y).map(async ([px, py]) => {
+    const points = await Promise.all(brushScreenSamples(x, y, radius).map(async ([px, py]) => {
       if (px < 0 || py < 0 || px >= window.innerWidth || py >= window.innerHeight) return;
       try {
         const reply = await this.requestSdk(callback => coord.screen2World!(px, py, callback), "DTS 场景拾取超时", 500, "brush");
@@ -228,10 +228,11 @@ export class DtsSdkBridge {
     if (!footprint) return;
     this.pickContext ??= document.createElement("canvas").getContext("2d");
     return this.getRegionHitIndex().intersect(footprint.bounds, id => {
-      if (seen.has(id) || !this.visiblePreviewIds.has(id) || this.previewKinds.get(id) !== "polygon") return false;
+      if (!this.visiblePreviewIds.has(id) || this.previewKinds.get(id) !== "polygon" || !needsHitTest(id)) return false;
       const { bbox, path, rings } = this.previewShapes.get(id)!;
       return brushIntersectsRings(footprint, rings, point =>
-        Boolean(path && this.pickContext?.isPointInPath(path, point[0]! - bbox[0]!, point[1]! - bbox[1]!, "evenodd")));
+        Boolean(path && point[0]! >= bbox[0]! && point[0]! <= bbox[3]! && point[1]! >= bbox[1]! && point[1]! <= bbox[4]! &&
+          this.pickContext?.isPointInPath(path, point[0]! - bbox[0]!, point[1]! - bbox[1]!, "evenodd")));
     });
   }
 
@@ -476,12 +477,14 @@ export class DtsSdkBridge {
     this.regionColorFrame = undefined;
     if (this.disposed) return;
     const polygon = this.api?.polygon;
+    // Batch-capable Explorer takes one call per frame; the fallback takes one call per face.
+    const frameLimit = polygon?.update ? 256 : 64;
     const updates: { id: string; color: number[]; frameColor: number[] }[] = [];
     for (const [region, enabled] of this.pendingRegionColors) {
       this.pendingRegionColors.delete(region);
       const id = this.previewIds.get(region);
       if (id) updates.push({ id, color: regionFill(enabled), frameColor: regionFrame(enabled) });
-      if (updates.length >= 64) break;
+      if (updates.length >= frameLimit) break;
     }
     if (updates.length) {
       if (polygon?.update) {

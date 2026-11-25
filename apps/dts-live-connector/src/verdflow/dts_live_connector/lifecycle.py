@@ -160,6 +160,13 @@ class DtsLiveLifecycleService:
 
     close = stop
 
+    def bind_brush_window(self, session_id: str, pid: int) -> None:
+        with self._lock:
+            if (not self._application or not self._launch or not self._explorer_executable
+                    or self._launch.connector_session_id != session_id):
+                raise ValueError("No matching Explorer session")
+            self._application.brush_input.bind(session_id, pid, self._explorer_executable)
+
     def _create_launch_locked(self) -> DtsLiveServiceStatus:
         if self._application is None:
             raise RuntimeError("DTS Live Connector application is not running")

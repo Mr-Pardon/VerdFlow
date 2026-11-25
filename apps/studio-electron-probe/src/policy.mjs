@@ -42,6 +42,9 @@ export const normalizedApiRequest = (request, baseUrl) => {
   if (target.origin !== baseUrl || !target.pathname.startsWith("/api/v1/")) {
     throw new TypeError("Local API path is outside the allowed scope");
   }
+  if (target.pathname.replace(/\/+$/, "") === "/api/v1/dts-live/brush-window") {
+    throw new TypeError("Explorer process binding is restricted to the desktop launcher");
+  }
   if (
     request.body !== undefined &&
     (typeof request.body !== "string" || request.body.length > MAX_API_BODY_LENGTH)

@@ -1,6 +1,6 @@
 import { ref, computed, nextTick, watch, onBeforeUnmount } from "vue";
 import { type LiveRegion, type LiveGeometry } from "../types";
-import { exportRegionsShapefile, importRegionsShapefile, regionGeometryPage } from "../api";
+import { exportRegionsShapefile, importRegionsShapefile, regionGeometryPage, waitForBrushInput } from "../api";
 import type { Ref } from "vue";
 import type { DtsSdkBridge } from "../sdk/DtsSdkBridge";
 import { readableError } from "../shared/presentation";
@@ -145,7 +145,7 @@ export function useRegionDrafts(context: {
     errorMessage, (id, enabled) => {
       const region = regionsById.value.get(id);
       if (region?.visible) setRegionEnabled(region, enabled);
-    });
+    }, (id, enabled) => regionsById.value.get(id)?.enabled === !enabled, waitForBrushInput);
   const selectionLocked = computed(() => busy.value || actorPicking.phase.value !== "idle" || regionBrush.dragging.value);
 
   const selectAllRegions = (invert = false) => {

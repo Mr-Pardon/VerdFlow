@@ -5,7 +5,7 @@ const vue = require('vue');
 const { createModuleLoader } = require('./helpers/load-typescript.cjs');
 const flush = () => new Promise(setImmediate);
 
-function fixture() {
+function fixture(waitForHost) {
   const handlers = new Map(), calls = [], changed = [];
   const timers = new Map();
   let now = 0, nextTimer = 0;
@@ -29,13 +29,13 @@ function fixture() {
     hasPointerCapture: () => true, releasePointerCapture() { calls.push('release'); } };
   const document = { elementFromPoint: () => target };
   let dispose;
-  const load = createModuleLoader({ window, document, Date: { now: () => now } }, {
+  const load = createModuleLoader({ window, document, AbortController, Date: { now: () => now } }, {
     vue: { ...vue, onMounted: cb => cb(), onBeforeUnmount: cb => { dispose = cb; } },
   });
   const { useRegionBrush } = load(path.join(__dirname, '../src/features/useRegionBrush.ts'));
   const scope = vue.effectScope();
   const blocked = vue.ref(false), error = vue.ref(null);
-  const brush = scope.run(() => useRegionBrush(sdk, blocked, error, (...args) => changed.push(args)));
+  const brush = scope.run(() => useRegionBrush(sdk, blocked, error, (...args) => changed.push(args), () => true, waitForHost));
   return { brush, sdk, blocked, error, changed, calls, window, document, advance(milliseconds) {
       now += milliseconds;
       for (const [id, timer] of timers) if (timer.at <= now) { timers.delete(id); timer.callback(); }
@@ -46,13 +46,16 @@ function fixture() {
         preventDefault() {}, stopPropagation() {}, ...props });
     },
     begin(props = {}) {
-      brush.begin({ currentTarget:target, pointerId:42, pointerType:'mouse', button:0, clientX:10, clientY:20,
-        preventDefault() {}, stopPropagation() {}, ...props });
+      let prevented = false;
+      const event = { currentTarget:target, pointerId:42, pointerType:'mouse', button:0, clientX:10, clientY:20,
+        preventDefault() { prevented = true; }, stopPropagation() {}, ...props };
+      brush.begin(event);
+      if (!prevented) brush.auxiliaryDown(event);
     },
     enter(props = {}, kind = 'capture') { brush.enterSwitch({ pointerType:'mouse', buttons:0, ...props }, kind); },
     wheel(deltaY, props = {}) {
       let captured = false;
-      brush.switchOnWheel({ deltaY, deltaX:0, preventDefault() { captured = true; }, stopPropagation() {}, ...props });
+      brush.resizeOnWheel({ deltaY, deltaX:0, preventDefault() { captured = true; }, stopPropagation() {}, ...props });
       return captured;
     },
     dispose() { dispose(); scope.stop(); } };
@@ -93,26 +96,53 @@ test('releasing a browser stroke keeps the shield ready for the next stroke', as
   } finally { f.dispose(); }
 });
 
-for (const button of [1, 2]) {
-  test(`scene button ${button} switches to roaming without disarming the brush`, () => {
-    const f = fixture();
-    try {
-      f.brush.toggle('exclude');
-      f.enter();
-      f.begin({ button });
-      f.advance(120);
-      assert.equal(f.brush.mode.value, 'exclude');
-      assert.equal(f.brush.capturing.value, false);
-      assert.equal(f.brush.dragging.value, false);
-      f.begin({ button });
-      assert.deepEqual(f.calls, ['arm', 'roam']);
-      f.enter();
-      f.advance(120);
-      assert.equal(f.brush.capturing.value, true);
-      assert.deepEqual(f.calls, ['arm', 'roam', 'brush']);
-    } finally { f.dispose(); }
-  });
-}
+test('middle switches direction once per click; right returns to native roam', () => {
+  const f = fixture();
+  try {
+    f.brush.toggle('include');
+    f.begin({ button:1 });
+    assert.equal(f.brush.mode.value, 'exclude');
+    assert.equal(f.brush.directionNotice.value, 'exclude');
+    assert.equal(f.brush.capturing.value, true);
+    f.begin({ button:1 });
+    assert.equal(f.brush.mode.value, 'include');
+    f.enter();
+    f.begin({ button:2 });
+    f.advance(120);
+    f.begin({ button:1 });
+    assert.equal(f.brush.capturing.value, false);
+    assert.equal(f.brush.mode.value, 'include');
+    assert.deepEqual(f.calls, ['arm', 'roam']);
+  } finally { f.dispose(); }
+});
+
+test('returning via the hotzone requests focus only after mount and never in roam or after exit', async () => {
+  const f = fixture();
+  const focus = [];
+  f.window.focus = () => focus.push('window');
+  f.document.hasFocus = () => false;
+  try {
+    f.brush.toggle('include');
+    f.begin({ button:2 });
+    await vue.nextTick();
+    assert.deepEqual(focus, []);
+    f.enter();
+    f.advance(120);
+    assert.deepEqual(focus, []);
+    f.brush.shield.value = { focus: opts => focus.push(opts.preventScroll) };
+    await vue.nextTick();
+    f.enter();
+    f.advance(1000);
+    await vue.nextTick();
+    assert.deepEqual(focus, ['window', true]);
+    f.begin({ button:2 });
+    f.enter();
+    f.advance(120);
+    f.brush.stop();
+    await vue.nextTick();
+    assert.deepEqual(focus, ['window', true]);
+  } finally { f.dispose(); }
+});
 
 test('pressing right during a stroke releases the pointer and ignores its pending sample', async () => {
   const f = fixture();
@@ -122,7 +152,7 @@ test('pressing right during a stroke releases the pointer and ignores its pendin
     f.brush.toggle('include');
     f.begin();
     f.emit('pointermove');
-    f.brush.roamOnMouseDown({ button: 2, preventDefault() {}, stopPropagation() {} });
+    f.brush.auxiliaryDown({ button: 2, preventDefault() {}, stopPropagation() {} });
     resolve(['late']);
     await flush();
     assert.equal(f.brush.mode.value, 'include');
@@ -305,51 +335,179 @@ test('direction hover changes mode once per entry and is inactive during roaming
   } finally { f.dispose(); }
 });
 
-test('editing maps wheel directions to brush modes and only announces actual changes', () => {
+test('wheel resizes continuously in edit only; zoom, direction and shortcuts stay independent', () => {
   const f = fixture();
   try {
     assert.equal(f.wheel(100), false);
     f.brush.toggle('include');
-    assert.equal(f.wheel(100), true);
-    assert.equal(f.brush.mode.value, 'exclude');
-    assert.equal(f.brush.wheelMode.value, 'exclude');
-    f.advance(500);
-    f.wheel(100);
-    f.advance(500);
-    assert.equal(f.brush.wheelMode.value, null);
+    const r = f.brush.radius;
+    assert.equal(r.value, 18);
+    assert.equal(f.wheel(-0.25), true);
+    assert.ok(r.value > 18 && r.value < 19);
+    f.wheel(-1, { deltaMode:1 });
+    f.wheel(16.25);
+    assert.ok(Math.abs(r.value - 18) < 1e-8);
+    const before = r.value;
     f.wheel(-100, { deltaX:150 });
+    f.emit('keydown', { key:'Control' });
     f.wheel(-100, { ctrlKey:true });
-    assert.equal(f.brush.mode.value, 'exclude');
-    f.wheel(-100);
+    f.emit('keyup', { key:'Control' });
+    assert.equal(r.value, before);
+    f.wheel(-100000);
+    assert.equal(r.value, 64);
+    f.wheel(100000);
+    assert.equal(r.value, 4);
     assert.equal(f.brush.mode.value, 'include');
-    assert.equal(f.brush.wheelMode.value, 'include');
+    assert.equal(f.brush.directionNotice.value, null);
     f.begin({ button:2 });
-    assert.equal(f.brush.wheelMode.value, null);
+    assert.equal(f.brush.directionNotice.value, null);
     assert.equal(f.wheel(100), false);
+    assert.equal(r.value, 4);
     assert.equal(f.brush.mode.value, 'include');
     assert.deepEqual(f.calls, ['arm', 'roam']);
   } finally { f.dispose(); }
 });
 
-test('wheel ignores an active stroke and preserves its direction for samples returned after release', async () => {
+test('a released stroke finishes at its original radius even if the next brush was resized', async () => {
   const f = fixture();
   try {
     const pending = [];
-    f.sdk.sampleRegionBrushScreen = () => new Promise(resolve => pending.push(resolve));
+    const radii = [];
+    f.sdk.sampleRegionBrushScreen = (x, y, radius) => {
+      radii.push(radius);
+      return new Promise(resolve => pending.push(resolve));
+    };
     f.brush.toggle('include');
     f.begin();
     f.emit('pointermove');
     f.wheel(100);
+    assert.equal(f.brush.radius.value, 18);
     assert.equal(f.brush.mode.value, 'include');
-    assert.equal(f.brush.wheelMode.value, null);
+    assert.equal(f.brush.directionNotice.value, null);
     f.emit('pointerup');
     f.wheel(100);
-    assert.equal(f.brush.mode.value, 'exclude');
+    assert.ok(f.brush.radius.value < 18);
     pending.shift()(['start']);
     await flush();
     pending.shift()(['end']);
     await flush();
     assert.deepEqual(f.changed, [['start', true], ['end', true]]);
+    assert.deepEqual(radii, [18, 18]);
+    f.begin();
+    assert.equal(radii[2], f.brush.radius.value);
+  } finally { f.dispose(); }
+});
+
+test('only Shift and Ctrl choose brush direction in edit; Tab is not a brush shortcut', () => {
+  const f = fixture();
+  const tap = key => { f.emit('keydown', { key }); f.emit('keyup', { key }); };
+  try {
+    tap('Tab');
+    assert.equal(f.brush.mode.value, null);
+    f.brush.toggle('exclude');
+    tap('Shift');
+    assert.equal(f.brush.mode.value, 'include');
+    assert.equal(f.brush.directionNotice.value, 'include');
+    tap('Tab');
+    assert.equal(f.brush.mode.value, 'include');
+    assert.equal(f.brush.capturing.value, true);
+    tap('Control');
+    assert.equal(f.brush.mode.value, 'exclude');
+    assert.equal(f.brush.directionNotice.value, 'exclude');
+    assert.equal(f.brush.capturing.value, true);
+    f.begin({ button:2 });
+    assert.equal(f.brush.capturing.value, false);
+    assert.equal(f.brush.directionNotice.value, null);
+    tap('Shift');
+    assert.equal(f.brush.mode.value, 'exclude');
+    tap('Tab');
+    assert.equal(f.brush.capturing.value, false);
+    assert.equal(f.brush.mode.value, 'exclude');
+    assert.deepEqual(f.calls, ['arm', 'roam']);
+  } finally { f.dispose(); }
+});
+
+test('native scene tap can return from roam and choose a direction without any pointer event', async () => {
+  const waits = [];
+  const f = fixture((mode, signal) => new Promise(resolve => waits.push({ mode, signal, resolve })));
+  try {
+    f.brush.toggle('include');
+    f.begin({ button:2 });
+    assert.equal(waits[0].signal.aborted, true);
+    assert.equal(waits.at(-1).mode, 'roam');
+    waits.at(-1).resolve({ available:true, action:'edit' });
+    await flush();
+    assert.equal(f.brush.capturing.value, true);
+    assert.equal(waits.at(-1).mode, 'edit');
+    for (const direction of ['exclude', 'include']) {
+      waits.at(-1).resolve({ available:true, action:direction });
+      await flush();
+      assert.equal(f.brush.mode.value, direction);
+    }
+    const pending = waits.at(-1);
+    f.emit('keydown', { key:'Alt', altKey:true });
+    assert.equal(pending.signal.aborted, true);
+    f.emit('keyup', { key:'Alt' });
+    pending.resolve({ available:true, action:'edit' });
+    await flush();
+    assert.equal(f.brush.capturing.value, false);
+    assert.deepEqual(f.calls, ['arm', 'roam', 'brush', 'roam']);
+    f.brush.stop();
+    assert.equal(waits.at(-1).signal.aborted, true);
+  } finally { f.dispose(); }
+});
+
+test('Alt switches on release only in the armed scene; Tab remains native', () => {
+  const f = fixture();
+  let consumed = 0;
+  const tap = (key, target = {}) => {
+    for (const type of ['keydown','keyup']) f.emit(type, { key, altKey:type === 'keydown' && key === 'Alt', target, preventDefault:() => consumed++ });
+  };
+  try {
+    tap('Alt');
+    assert.equal(consumed, 0);
+    f.brush.toggle('include');
+    const panel = { closest:() => true };
+    f.emit('focusin', { target:panel });
+    tap('Alt', panel);
+    tap('Tab', panel);
+    assert.equal(consumed, 0);
+    assert.equal(f.brush.capturing.value, true);
+    f.emit('focusout', { relatedTarget:null });
+    tap('Tab'); tap('Alt'); tap('Alt');
+    assert.equal(consumed, 2);
+    assert.deepEqual(f.calls, ['arm', 'roam', 'brush']);
+  } finally { f.dispose(); }
+});
+
+test('brush shortcuts ignore combined keys, edit fields and interrupted taps', () => {
+  const f = fixture();
+  try {
+    f.brush.toggle('include');
+    let captured = false;
+    const preventDefault = () => { captured = true; };
+    for (const [modifier, key] of [['Control', 'c'], ['Shift', 'Tab'], ['Alt', 'Tab']]) {
+      f.emit('keydown', { key: modifier, preventDefault });
+      f.emit('keydown', { key, preventDefault });
+      f.emit('keyup', { key });
+      f.emit('keyup', { key: modifier, preventDefault });
+    }
+    const target = { closest: () => true };
+    f.emit('keydown', { key:'Control', target });
+    f.emit('keyup', { key:'Control', target, preventDefault });
+    f.emit('keydown', { key:'Control' });
+    f.emit('pointerdown');
+    f.emit('keyup', { key:'Control', preventDefault });
+    f.begin();
+    f.emit('keydown', { key:'Control' });
+    f.emit('keyup', { key:'Control', preventDefault });
+    f.emit('pointerup');
+    f.emit('keydown', { key:'Control' });
+    f.emit('blur', { target:f.window });
+    f.emit('keyup', { key:'Control', preventDefault });
+    assert.equal(captured, false);
+    assert.equal(f.brush.mode.value, 'include');
+    assert.equal(f.brush.capturing.value, true);
   } finally { f.dispose(); }
 });
 
@@ -396,4 +554,21 @@ test('spatial lookup chooses the newest matching face but can skip hidden faces 
   assert.equal(index.pick(100.5, 0.5, () => true), 'overlay');
   assert.equal(index.pick(100.5, 0.5, id => id !== 'overlay'), '50');
   assert.equal(index.pick(100.5, 2, () => assert.fail('outside candidate bounds')), undefined);
+});
+
+test('packed brush index agrees with scanning mixed, coincident and elongated bounds', () => {
+  const load = createModuleLoader({});
+  const { RegionHitIndex } = load(path.join(__dirname, '../src/sdk/regionHitIndex.ts'));
+  const boxes = Array.from({length:2050}, (_, i) => {
+    const x = i % 5 ? (i * 13) % 89 : 0, y = i % 5 ? (i * 7) % 73 : 0;
+    return { id:String(i), order:i, bounds:[x, y, x + i % 41, y + i % 17] };
+  });
+  const index = new RegionHitIndex([...boxes]);
+  for (let x = -2; x < 128; x += 7) {
+    const y = (x * 3) % 82, bounds = [x,y,x+18,y+3];
+    const overlap = (b, w, h) => b[0] <= x+w && b[2] >= x && b[1] <= y+h && b[3] >= y;
+    const visible = id => Number(id) % 3 !== 0;
+    assert.deepEqual(new Set(index.intersect(bounds, visible)), new Set(boxes.filter(b => visible(b.id) && overlap(b.bounds,18,3)).map(b => b.id)));
+    assert.equal(index.pick(x,y,visible), boxes.findLast(b => visible(b.id) && overlap(b.bounds,0,0))?.id);
+  }
 });

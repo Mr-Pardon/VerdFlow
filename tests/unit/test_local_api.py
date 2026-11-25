@@ -178,6 +178,15 @@ class DtsLiveLocalApiTests(unittest.TestCase):
                     )
                     self.assertEqual(ok, 200)
                     lifecycle.start.assert_called_once_with()
+                    window_url = server.base_url + "/api/v1/dts-live/brush-window"
+                    binding = {"session_id": "session-1", "process_id": 123}
+                    self.assertEqual(request_json(window_url, method="POST", document=binding)[0], 403)
+                    self.assertEqual(request_json(window_url, method="POST", headers=headers,
+                                                  document={**binding, "process_id": True})[0], 400)
+                    lifecycle.bind_brush_window.assert_not_called()
+                    self.assertEqual(request_json(window_url, method="POST", headers=headers, document=binding),
+                                     (200, {"bound": True}))
+                    lifecycle.bind_brush_window.assert_called_once_with("session-1", 123)
 
 
 class StrategyExchangeLocalApiTests(unittest.TestCase):

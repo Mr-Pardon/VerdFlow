@@ -838,6 +838,15 @@ class LocalApiServer:
                             asdict(dts_live_lifecycle.start()),
                         )
                         return
+                    if path == "/api/v1/dts-live/brush-window":
+                        self._require_management()
+                        document = self._read_json()
+                        dts_live_lifecycle.bind_brush_window(
+                            request_values.required_text(document, "session_id"),
+                            request_values.required_integer(document, "process_id", minimum=1),
+                        )
+                        self._send_json(HTTPStatus.OK, {"bound": True})
+                        return
                     if path == "/api/v1/dts-live/relaunch":
                         self._require_management()
                         self._send_json(

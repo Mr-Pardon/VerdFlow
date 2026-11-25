@@ -528,6 +528,20 @@ const registerHandlers = () => {
     }
   });
 
+  const bindBrushWindow = async (sessionId, pid) => {
+    if (process.platform !== "win32" || !localApi.token) return false;
+    try {
+      const bound = await fetch(new URL("/api/v1/dts-live/brush-window", localApi.baseUrl), {
+        method: "POST", signal: AbortSignal.timeout(2000),
+        headers: { Authorization: `Bearer ${localApi.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, process_id: pid }),
+      });
+      if (bound.ok) return true;
+      diagnostic(`Explorer brush shortcuts unavailable (${bound.status})`);
+    } catch { diagnostic("Explorer brush shortcuts unavailable"); }
+    return false;
+  };
+
   ipcMain.handle(channels.launchDtsExplorer, async (_event, request) => {
     try {
       const launch = normalizedDtsExplorerLaunch(request);
@@ -535,8 +549,10 @@ const registerHandlers = () => {
         dtsExplorerLaunch?.sessionId === launch.sessionId &&
         dtsExplorerLaunch.process.exitCode === null
       ) {
+        const current = dtsExplorerLaunch;
+        if (!current.brushBound) current.brushBound = await bindBrushWindow(launch.sessionId, current.process.pid);
         return success({
-          processId: dtsExplorerLaunch.process.pid,
+          processId: current.process.pid,
           reused: true,
         });
       }
@@ -554,11 +570,13 @@ const registerHandlers = () => {
         child.once("spawn", resolve);
         child.once("error", reject);
       });
-      dtsExplorerLaunch = { sessionId: launch.sessionId, process: child };
+      const current = dtsExplorerLaunch = { sessionId: launch.sessionId, process: child, brushBound: false };
       child.once("exit", () => {
         if (dtsExplorerLaunch?.process === child) dtsExplorerLaunch = null;
       });
       child.unref();
+      // A missing optional input bridge must not prevent planting or mouse-based editing.
+      current.brushBound = await bindBrushWindow(launch.sessionId, child.pid);
       return success({ processId: child.pid, reused: false });
     } catch (error) {
       return failure("failed", readableError(error));

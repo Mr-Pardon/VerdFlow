@@ -128,17 +128,71 @@ test('the screen-sized brush projects a bounded batch and hits every visible int
   add('inside-a-hole', 30, 20, 89, 80, [rect(39,29,81,71)]);
   add('hidden', 64, 47, 65, 48);
   f.bridge.hideRegion('hidden');
-  assert.equal(await f.bridge.sampleRegionBrushScreen(60, 50, new Set()), undefined);
+  const all = () => true;
+  assert.equal(await f.bridge.sampleRegionBrushScreen(60, 50, 18, all), undefined);
   f.bridge.startRegionBrush(() => {});
   f.bridge.setRegionBrushPressed(true);
-  assert.deepEqual(Array.from(await f.bridge.sampleRegionBrushScreen(60, 50, new Set())).sort(), ['island', 'narrow']);
+  assert.deepEqual(Array.from(await f.bridge.sampleRegionBrushScreen(60, 50, 18, all)).sort(), ['island', 'narrow']);
   assert.equal(projections.length, 9);
   assert.deepEqual(projections[0], [60, 50]);
   assert.ok(projections.slice(1).every(([x, y]) => Math.abs(Math.hypot(x-60, y-50) - 18) < 1e-8));
+  assert.equal((await f.bridge.sampleRegionBrushScreen(60, 50, 4, all)).length, 0);
+  assert.ok((await f.bridge.sampleRegionBrushScreen(60, 50, 36.5, all)).includes('far'));
+  assert.equal(projections.length, 27);
   scale = 2;
-  assert.ok((await f.bridge.sampleRegionBrushScreen(60, 50, new Set(['island', 'narrow']))).includes('far'));
+  const filtered = await f.bridge.sampleRegionBrushScreen(60, 50, 18, id => id === 'far');
+  assert.deepEqual(Array.from(filtered), ['far']);
   f.bridge.stopRegionBrush();
   f.bridge.dispose();
+});
+
+test('dense brush samples stay local and skip exact tests and repaint on unchanged faces', async t => {
+  let probes = 0, projections = 0, repaints = 0;
+  const f = await fixture({ containsPoint: () => { probes++; return false; } });
+  const frameCallbacks = [];
+  const batches = [];
+  f.window.requestAnimationFrame = cb => frameCallbacks.push(cb);
+  f.instance.polygon.update = items => { repaints += items.length; batches.push(items.length); };
+  f.instance.coord = { screen2World(x, y) {
+    projections++;
+    const callbackIndex = ++f.instance.callbackIndex;
+    queueMicrotask(() => f.window.tick_next({ callbackIndex, result:0, worldLocation:[x,y,0] }));
+  } };
+  try {
+    for (let i = 0; i < 10000; i++) {
+      const x = (i % 100) * 4, y = Math.floor(i / 100) * 4;
+      f.bridge.showRegion({ region_id:String(i), bbox:[x,y,0,x+2,y+2,0],
+        coordinates:[[x,y,0],[x+2,y,0],[x+2,y+2,0],[x,y+2,0]] });
+    }
+    f.bridge.startRegionBrush(() => {});
+    f.bridge.setRegionBrushPressed(true);
+    const enabled = new Set();
+    const sample = (x, predicate) => f.bridge.sampleRegionBrushScreen(x, 200, 64, predicate);
+    let candidates = 0;
+    const start = performance.now();
+    const first = await sample(200, () => { candidates++; return true; });
+    const coldMs = performance.now() - start;
+    assert.ok(first.length > 600 && candidates < 1200);
+    for (const id of first) { enabled.add(id); f.bridge.setRegionSelectionAppearance(id, true); }
+    assert.equal(frameCallbacks.length, 1);
+    while (frameCallbacks.length) frameCallbacks.shift()();
+    assert.equal(repaints, first.length);
+    assert.equal(batches.length, Math.ceil(first.length / 256));
+    probes = 0;
+    assert.equal((await sample(200, () => false)).length, 0);
+    assert.equal(probes, 0);
+    const times = [];
+    for (let i = 0; i < 40; i++) {
+      const start = performance.now();
+      const hits = await sample(201 + i, id => !enabled.has(id));
+      for (const id of hits) enabled.add(id);
+      times.push(performance.now() - start);
+    }
+    times.sort((a,b) => a-b);
+    assert.ok(enabled.size > first.length);
+    assert.equal(projections, 42 * 9);
+    t.diagnostic(`10k rectangles; diameter 128px: ${first.length} initial hits / ${candidates} candidates in ${coldMs.toFixed(2)} ms including cold index, ${batches.length} repaint batches; warm incremental samples p95 ${times[37].toFixed(2)} ms (mock projection, excludes native repaint)`);
+  } finally { f.bridge.dispose(); }
 });
 
 test('brush capture suppresses region clicks until returning to roam, without changing scene input settings', async () => {

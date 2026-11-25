@@ -9,13 +9,13 @@ export interface HitBox {
 interface HitNode {
   bounds: HitBox["bounds"];
   items?: HitBox[];
-  children?: [HitNode, HitNode];
+  children?: HitNode[];
 }
 
 const contains = ([minX, minY, maxX, maxY]: HitBox["bounds"], x: number, y: number) =>
   x >= minX && x <= maxX && y >= minY && y <= maxY;
 
-function build(items: HitBox[]): HitNode {
+function extent(items: { bounds: Bounds }[]): Bounds {
   const bounds: HitBox["bounds"] = [Infinity, Infinity, -Infinity, -Infinity];
   for (const item of items) {
     bounds[0] = Math.min(bounds[0], item.bounds[0]);
@@ -23,19 +23,31 @@ function build(items: HitBox[]): HitNode {
     bounds[2] = Math.max(bounds[2], item.bounds[2]);
     bounds[3] = Math.max(bounds[3], item.bounds[3]);
   }
-  if (items.length <= 8) return { bounds, items };
-  const axis = bounds[2] - bounds[0] >= bounds[3] - bounds[1] ? 0 : 1;
-  const center = (item: HitBox) => item.bounds[axis]! + item.bounds[axis + 2]!;
-  items.sort((a, b) => center(a) - center(b));
-  const mid = Math.floor(items.length / 2);
-  return { bounds, children: [build(items.slice(0, mid)), build(items.slice(mid))] };
+  return bounds;
+}
+
+// Pack X strips into Y-neighbouring groups instead of re-sorting at every binary split.
+function pack<T extends { bounds: Bounds }>(items: T[], node: (group: T[]) => HitNode): HitNode[] {
+  const capacity = 8;
+  if (items.length <= capacity) return [node(items)];
+  const stripSize = Math.ceil(Math.sqrt(Math.ceil(items.length / capacity))) * capacity;
+  items.sort((a, b) => (a.bounds[0] - b.bounds[0]) + (a.bounds[2] - b.bounds[2]));
+  const nodes: HitNode[] = [];
+  for (let start = 0; start < items.length; start += stripSize) {
+    const strip = items.slice(start, start + stripSize);
+    strip.sort((a, b) => (a.bounds[1] - b.bounds[1]) + (a.bounds[3] - b.bounds[3]));
+    for (let i = 0; i < strip.length; i += capacity) nodes.push(node(strip.slice(i, i + capacity)));
+  }
+  return nodes;
 }
 
 export class RegionHitIndex {
   private readonly root: HitNode;
 
   constructor(boxes: HitBox[]) {
-    this.root = build(boxes);
+    let nodes = pack(boxes, items => ({ items, bounds: extent(items) }));
+    while (nodes.length > 1) nodes = pack(nodes, children => ({ children, bounds: extent(children) }));
+    this.root = nodes[0]!;
   }
 
   pick(x: number, y: number, hits: (id: string) => boolean): string | undefined {

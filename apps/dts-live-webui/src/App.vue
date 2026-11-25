@@ -34,7 +34,6 @@ import MappingWorkspace from "./components/MappingWorkspace.vue";
 import PlantingPlanSelection from "./components/PlantingPlanSelection.vue";
 import { scrollPanelWheel } from "./shared/panelScroll";
 import { geometryPayload } from "./shared/regionLimits";
-import { REGION_BRUSH_RADIUS } from "./shared/brushFootprint";
 
 const logoUrl = `${import.meta.env.BASE_URL}brand/logo-dark.png`;
 const iconUrl = `${import.meta.env.BASE_URL}brand/icon-256.png`;
@@ -113,7 +112,7 @@ const {
   regions,
   regionBrush,
 } = regionController;
-const { mode: brushMode, capturing: brushCapturing, wheelMode: brushWheelMode } = regionBrush;
+const { mode: brushMode, radius: brushRadius, capturing: brushCapturing, directionNotice: brushDirectionNotice } = regionBrush;
 const brushLabel = computed(() => brushMode.value === "exclude" ? "刷除" : "刷选");
 const brushDirectionLabel = computed(() => brushMode.value === "exclude" ? "切换到刷选" : "切换到刷除");
 const brushCaptureLabel = computed(() => brushCapturing.value ? "切换到漫游" : "返回编辑");
@@ -151,30 +150,33 @@ const startSelection = async () => {
   <div v-if="panelDragging" class="panel-drag-shield" aria-hidden="true"></div>
   <div
     v-if="brushCapturing"
+    :ref="element => { regionBrush.shield.value = element as HTMLElement | null; }"
     class="region-brush-shield"
-    aria-hidden="true"
+    role="region"
+    aria-label="笔刷编辑区域"
+    tabindex="-1"
     @pointerdown.stop="regionBrush.begin"
-    @mousedown="regionBrush.roamOnMouseDown"
+    @mousedown="regionBrush.auxiliaryDown"
     @pointerenter="regionBrush.hoverScene"
     @pointermove.passive="regionBrush.hoverScene"
     @pointerleave="regionBrush.hideCursor"
     @contextmenu.prevent.stop
-    @wheel="regionBrush.switchOnWheel"
+    @wheel="regionBrush.resizeOnWheel"
   ></div>
   <div
     v-if="brushCapturing"
     :ref="element => { regionBrush.cursor.value = element as HTMLElement | null; }"
     class="region-brush-cursor"
     :class="{ 'is-excluding': brushMode === 'exclude' }"
-    :style="{ '--brush-diameter': `${REGION_BRUSH_RADIUS * 2}px` }"
+    :style="{ '--brush-diameter': `${brushRadius * 2}px` }"
     aria-hidden="true"
     hidden
   ></div>
   <div class="region-brush-notice" role="status" aria-atomic="true">
-    <div v-if="brushWheelMode" class="region-brush-notice-label" :class="{ 'is-excluding': brushWheelMode === 'exclude' }">
-      <Brush v-if="brushWheelMode === 'include'" :size="16" aria-hidden="true" />
+    <div v-if="brushDirectionNotice" class="region-brush-notice-label" :class="{ 'is-excluding': brushDirectionNotice === 'exclude' }">
+      <Brush v-if="brushDirectionNotice === 'include'" :size="16" aria-hidden="true" />
       <Eraser v-else :size="16" aria-hidden="true" />
-      {{ brushWheelMode === 'include' ? '已切换为刷选' : '已切换为刷除' }}
+      {{ brushDirectionNotice === 'include' ? '已切换为刷选' : '已切换为刷除' }}
     </div>
   </div>
   <button
@@ -191,12 +193,13 @@ const startSelection = async () => {
       <Eraser v-else :size="17" />
       {{ brushLabel }}
     </strong>
-    <span>鼠标移入，{{ brushDirectionLabel }}</span>
+    <span>移入或按中键，{{ brushDirectionLabel }}</span>
   </button>
   <button
     v-if="brushMode"
     type="button"
     class="region-brush-hotzone"
+    :class="{ 'region-brush-hotzone--editing': brushCapturing }"
     :aria-label="brushCaptureLabel"
     @pointerenter="regionBrush.enterSwitch($event, 'capture')"
     @pointerleave="regionBrush.leaveSwitch('capture')"
@@ -207,8 +210,9 @@ const startSelection = async () => {
       <Pencil v-else :size="17" />
       {{ brushCapturing ? "编辑" : "漫游" }}
     </strong>
-    <span>鼠标移入，{{ brushCaptureLabel }}</span>
-    <span v-if="brushCapturing">滚轮向上刷选 · 向下刷除</span>
+    <span>移入或按 Alt，{{ brushCaptureLabel }}</span>
+    <span v-if="brushCapturing">滚轮调节笔刷 · 直径 {{ Math.round(brushRadius * 2) }} px</span>
+    <span v-if="brushCapturing">Shift 刷选 · Ctrl 刷除</span>
   </button>
   <main
     :ref="

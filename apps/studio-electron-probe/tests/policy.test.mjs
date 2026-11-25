@@ -43,6 +43,10 @@ test("local API request remains inside the versioned endpoint scope", () => {
   );
   assert.equal(request.target, "http://127.0.0.1:8768/api/v1/projects?limit=10");
   assert.throws(
+    () => normalizedApiRequest({ method: "POST", path: "/api/v1/dts-live/brush-window/?x=1" }, "http://127.0.0.1:8768"),
+    /restricted to the desktop launcher/,
+  );
+  assert.throws(
     () => normalizedApiRequest(
       { path: "/api/v1/%2e%2e/health" },
       "http://127.0.0.1:8768",

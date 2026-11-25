@@ -1,12 +1,14 @@
-export const REGION_BRUSH_RADIUS = 18;
+export const DEFAULT_BRUSH_RADIUS = 18;
+export const MIN_BRUSH_RADIUS = 4;
+export const MAX_BRUSH_RADIUS = 64;
 const SIDES = 8;
 const rim = Array.from({ length: SIDES }, (_, index) => {
   const angle = index * Math.PI * 2 / SIDES;
-  return [Math.cos(angle) * REGION_BRUSH_RADIUS, Math.sin(angle) * REGION_BRUSH_RADIUS] as const;
+  return [Math.cos(angle), Math.sin(angle)] as const;
 });
 
-export function brushScreenSamples(x: number, y: number) {
-  return [[x, y] as const, ...rim.map(([dx, dy]) => [x + dx, y + dy] as const)];
+export function brushScreenSamples(x: number, y: number, radius: number) {
+  return [[x, y] as const, ...rim.map(([dx, dy]) => [x + dx * radius, y + dy * radius] as const)];
 }
 
 type Point = readonly number[];

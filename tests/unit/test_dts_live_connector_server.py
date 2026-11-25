@@ -7,6 +7,7 @@ import sys
 import tempfile
 from threading import Event
 import unittest
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -45,6 +46,44 @@ from verdflow.system_host import (  # noqa: E402
 
 
 class DtsLiveConnectorServerTests(unittest.TestCase):
+    def test_brush_input_requires_the_bound_session_and_only_returns_actions(self) -> None:
+        from verdflow.dts_live_connector.brush_input import BrushInput
+
+        manager, brush = DtsLiveConnectorManager(_resolve), BrushInput()
+        bootstrap = manager.create_session()
+        session = bootstrap.connector_session_id
+        window = Mock()
+        with DtsLiveConnectorServer(manager, brush_input=brush) as server:
+            url = server.base_url + "/api/v1/brush-input/wait"
+            _, _, headers = _request(server.base_url + "/api/v1/bootstrap/exchange",
+                document={"connector_session_id": session, "bootstrap_nonce": bootstrap.bootstrap_nonce}, origin=server.base_url)
+            cookie = headers["Set-Cookie"].split(";", 1)[0]
+            def request(mode, auth=cookie, origin=server.base_url):
+                return _request(url, document={"mode": mode}, cookie=auth, origin=origin)[:2]
+            self.assertEqual(request("edit", auth=None)[0], 401)
+            self.assertEqual(request("edit", origin="https://example.org")[0], 403)
+            self.assertEqual(request("invalid")[0], 400)
+            self.assertEqual(request("edit"), (200, {"available": False}))
+            with patch("verdflow.dts_live_connector.brush_input.SceneWindow", return_value=window):
+                brush.bind(session, 10, Path("explorer.exe"))
+            self.assertEqual(brush.wait("another", "edit", lambda: False), {"available": False})
+            for mode, keys, action in (("roam", [9, 16, 17, 18], "edit"), ("edit", [9, 18], "roam"),
+                                       ("edit", [16], "include"), ("edit", [17], "exclude")):
+                window.sample.side_effect = [(0, 0)] + [s for k in keys for s in ((k, 1), (0, 2))]
+                self.assertEqual(request(mode), (200, {"available": True, "action": action}))
+            brush.clear(session)
+            self.assertEqual(request("edit"), (200, {"available": False}))
+            window.close.assert_called_once()
+
+    def test_native_taps_discard_held_on_entry_chords_and_focus_changes(self) -> None:
+        from verdflow.dts_live_connector.brush_input import Tap
+
+        tap = Tap()
+        for samples in ([(18, 1), (0, 2)], [(16, 3), (16, 4), (0, 5)],
+                        [(18, 6), None, (0, 7)], [(17, 8), (18, 9), (0, 10)]):
+            self.assertFalse(any([tap.feed(s) for s in samples]))
+        self.assertEqual([tap.feed(s) for s in [(18, 11), (18, 11), (0, 12), (0, 12)]], [0, 0, 18, 0])
+
     def test_asset_search_is_session_authorized_and_constrained_to_dts(self) -> None:
         from verdflow.system_host import AssetSearchPage
         calls = []

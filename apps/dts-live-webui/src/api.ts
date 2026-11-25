@@ -72,6 +72,11 @@ export const bootstrapSession = async () => {
 export const configurationOptions = () =>
   apiRequest<ConfigurationOptions>("/api/v1/configuration/options");
 
+export const waitForBrushInput = (mode: "edit" | "roam", signal: AbortSignal) =>
+  apiRequest<{ available: boolean; action?: "edit" | "roam" | "include" | "exclude" }>(
+    "/api/v1/brush-input/wait", { method: "POST", body: JSON.stringify({ mode }), signal },
+  );
+
 export const strategyPreviewClient: StrategyPreviewClient = {
   submitStrategyExample: (input) =>
     apiRequest("/api/v1/strategy-previews", {

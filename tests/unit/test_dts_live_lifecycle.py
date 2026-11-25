@@ -3,6 +3,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,6 +56,7 @@ class _Application:
         self.launch_count = 0
         self.closed = False
         self.discarded: list[str] = []
+        self.brush_input = Mock()
 
     def start(self) -> str:
         self.start_count += 1
@@ -137,6 +139,14 @@ class DtsLiveLifecycleTests(unittest.TestCase):
             self.assertEqual(application.discarded, ["session-1"])
             self.assertEqual(relaunched.connector_session_id, "session-2")
             self.assertEqual(application.start_count, 1)
+            with self.assertRaises(ValueError):
+                lifecycle.bind_brush_window("session-1", 123)
+            application.brush_input.bind.assert_not_called()
+            lifecycle.bind_brush_window("session-2", 123)
+            application.brush_input.bind.assert_called_once_with("session-2", 123, Path(relaunched.explorer_executable))
+            lifecycle.stop()
+            with self.assertRaises(ValueError):
+                lifecycle.bind_brush_window("session-2", 123)
 
 
 def _installation(root: Path) -> Path:

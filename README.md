@@ -41,13 +41,13 @@ VerdFlow 面向三维场景中的程序化植被种植。你可以从模型提�
 <a name="see-verdflow"></a>
 ## 看见 VerdFlow
 
-选择一片区域，搭配植被、调整参数，让种植结果落到场景中。
+在 DTS 场景中拾取绿地，编辑种植选区，再查看植被落地后的效果。
 
-**[DTS 实时种植路径演示 · 49 秒](https://mr-pardon.github.io/verdflow-site/demo.html)**
+**[观看 DTS 实时种植演示 · 61 秒](https://mr-pardon.github.io/verdflow-site/demo.html)**
 
-[![DTS 实时种植效果演示封面：滨水公园植被与摩天轮场景](docs/media/readme/demo-dts-live.webp)](https://mr-pardon.github.io/verdflow-site/demo.html)
+[![播放 DTS 实时种植演示：滨水园区的道路、绿地与行道树](docs/media/readme/demo-dts-live.webp)](https://mr-pardon.github.io/verdflow-site/demo.html)
 
-<p align="center"><sub>点击封面观看完整演示。本片展示 DTS 实时种植路径；FBX 与地理数据工作流见下方指南。顶部横幅为品牌概念图。</sub></p>
+<p align="center"><sub>点击封面，前往用户手册观看完整演示。FBX 与地理数据工作流见下方指南。</sub></p>
 
 <br>
 

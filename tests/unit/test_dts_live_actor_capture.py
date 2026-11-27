@@ -14,6 +14,105 @@ from verdflow.dts_live_connector import DtsLiveConnectorServer  # noqa: E402
 from verdflow.system_host import DtsLiveConnectorManager  # noqa: E402
 
 
+class ActorHighlightTests(unittest.TestCase):
+    def test_near_white_pair_requires_two_hues_and_change_from_base(self):
+        import numpy as np
+        from verdflow.geospatial_worker.actor_footprints import _highlight_mask
+
+        dark = (5, 18, 2)
+        pale_m, pale_c = (255, 243, 255), (247, 255, 255)
+        samples = [
+            (pale_m, pale_c, dark, True),                  # Field sample: shift 20.
+            ((255, 215, 255), (215, 255, 255), dark, True),
+            ((255, 255, 255), (255, 255, 255), dark, False),
+            (pale_m, pale_m, dark, False),                 # Same tint in both frames.
+            (pale_c, pale_m, dark, False),                 # Wrong polarity.
+            (pale_m, pale_c, (238, 235, 238), False),      # Base already bright.
+            (pale_m, (247, 255, 247), dark, False),        # Blue is not stable.
+            ((210, 200, 210), (201, 210, 210), dark, False),
+        ]
+        m, c, b, expected = zip(*samples)
+        mask = _highlight_mask(*(np.array(v, dtype="int16").T for v in (m, c, b)))
+        np.testing.assert_array_equal(mask, expected)
+
+    def test_radial_chroma_gradient_does_not_cut_a_hole_or_fill_a_real_one(self):
+        import numpy as np
+        from verdflow.geospatial_worker.actor_footprints import _highlight_mask
+
+        y, x = np.ogrid[-64:65, -64:65]
+        chroma = np.minimum(25, 10 + (x*x + y*y) // 200)
+        fg = (abs(x) < 60) & (abs(y) < 48) & ~((x > 17) & (x < 30) & (y > 5) & (y < 16))
+        base = np.full((3, *fg.shape), 20, dtype="int16")
+        m, c = base.copy(), base.copy()
+        m[:, fg] = c[:, fg] = 255
+        m[1, fg] -= chroma[fg]
+        c[0, fg] -= chroma[fg] - 2
+        actual = _highlight_mask(m, c, base)
+        np.testing.assert_array_equal(actual, fg)
+
+
+class ActorStitchTests(unittest.TestCase):
+    def test_stitch_only_edge_connected_parts_matches_global_union(self):
+        import numpy as np
+        from shapely import union_all
+        from verdflow.geospatial_worker.actor_footprints import _CORE, _polygons, _tile_parts, _whole_components
+
+        n = _CORE
+        mask = np.zeros((2 * n, 2 * n), dtype=bool)
+        # Ring spanning four cores, independent island inside the hole.
+        mask[n-8:n+8, n-8:n+8] = True
+        mask[n-5:n+5, n-5:n+5] = False
+        mask[n-2:n+2, n-2:n+2] = True
+        # One run meets two runs; the last island touches only a corner.
+        mask[20:27, n-3:n] = True
+        mask[20:22, n:n+3] = mask[25:27, n:n+3] = True
+        mask[27:30, n+3:n+6] = True
+        mask[50:90:2, 60:120:3] = True
+        parts = [p for row in range(2) for col in range(2)
+                 for p in _tile_parts(mask[row*n:(row+1)*n, col*n:(col+1)*n],
+                                      (row, col), (), True, keep_all=True)]
+        expected = list(_polygons(union_all([p.geometry for p in parts])))
+        with patch("shapely.union_all", wraps=union_all) as merge:
+            actual = list(_whole_components(parts))
+        self.assertEqual(sorted(len(call.args[0]) for call in merge.call_args_list), [3, 4, 4])
+        self.assertEqual(len(actual), len(expected))
+        self.assertTrue(all(p.is_valid for p in actual))
+        self.assertEqual(sum(len(p.interiors) for p in actual), 1)
+        self.assertTrue(union_all(actual).equals(union_all(expected)))
+
+    def test_endpoint_contact_across_seam_does_not_need_union(self):
+        from shapely.geometry import box
+        from verdflow.geospatial_worker.actor_footprints import _Part, _whole_components
+
+        a, b = box(-3, -2, 0, 1), box(0, 1, 2, 4)
+        parts = [_Part((0, -1), False, ((), ((-2, 1),), (), ()), a),
+                 _Part((0, 0), False, (((1, 4),), (), (), ()), b)]
+        with patch("shapely.union_all", side_effect=AssertionError):
+            self.assertEqual(list(_whole_components([])), [])
+            self.assertEqual(list(_whole_components(parts)), [a, b])
+
+    def test_irregular_raster_stitch_matches_each_reference_polygon(self):
+        import numpy as np
+        from shapely import union_all
+        from verdflow.geospatial_worker import actor_footprints as af
+
+        rng = np.random.default_rng(379)
+        with patch.object(af, "_CORE", 16):
+            for density in (0.15, 0.5, 0.85):
+                mask = rng.random((48, 64)) < density
+                parts = [p for r in range(3) for c in range(4)
+                         for p in af._tile_parts(mask[16*r:16*r+16, 16*c:16*c+16], (r-1, c-2), (),
+                                                 True, keep_all=True)]
+                wanted = list(af._polygons(union_all([p.geometry for p in parts])))
+                actual = list(af._whole_components(parts))
+                self.assertEqual(len(actual), len(wanted))
+                by_bounds = {}
+                for poly in wanted:
+                    by_bounds.setdefault(poly.bounds, []).append(poly)
+                for poly in actual:
+                    self.assertTrue(any(poly.equals(other) for other in by_bounds[poly.bounds]))
+
+
 class ActorCaptureTests(unittest.TestCase):
     def setUp(self):
         root = Path(self.enterContext(TemporaryDirectory()))

@@ -61,6 +61,27 @@ def _pixels(path: Path):
             return source.read((1, 2, 3), window=((_HALO, _HALO + _CORE),) * 2).astype("int16")
 
 
+def _highlight_mask(magenta, cyan, base):
+    import numpy as np
+
+    mr, mg, mb = magenta
+    cr, cg, cb = cyan
+    shift = (mr - mg) - (cr - cg)
+    bright = np.minimum(magenta.min(axis=0), cyan.min(axis=0))
+    change = np.minimum(np.abs(magenta - base).max(axis=0), np.abs(cyan - base).max(axis=0))
+    eligible = (bright > 177) & (change > 75)
+    mask = eligible & (shift > 26)
+    # Near white, the renderer compresses chroma. Require both complementary
+    # channel signatures and a stable blue channel, not just a brighter pixel.
+    pale = eligible & ~mask & (bright >= 232)
+    if pale.any():
+        pale &= (mr >= 248) & (mb >= 248) & (cg >= 248) & (cb >= 248)
+        pale &= (mr - mg >= 5) & (cg - cr >= 4)
+        pale &= (np.abs(mr - mb) <= 3) & (np.abs(cg - cb) <= 3) & (np.abs(mb - cb) <= 3)
+        mask |= pale
+    return mask
+
+
 _Tile = tuple[int, int]
 _Point3 = tuple[float, float, float]
 
@@ -87,6 +108,50 @@ def _spans(geometry, axis: int):
     elif hasattr(geometry, "geoms"):
         for part in geometry.geoms:
             yield from _spans(part, axis)
+
+
+def _whole_components(parts: list[_Part]):
+    from shapely import union_all
+
+    # Core interiors never overlap. Only positive-length runs on opposite
+    # tile faces connect; corner contact is not 4-connected foreground.
+    seams = defaultdict(lambda: ([], []))
+    for i, part in enumerate(parts):
+        row, col = part.tile
+        for side, runs in enumerate(part.edges):
+            if runs:
+                key = (row + (side == 3), col + (side == 1), side // 2)
+                seams[key][side & 1].extend((lo, hi, i) for lo, hi in runs)
+
+    parents = {}
+
+    def root(i):
+        parents.setdefault(i, i)
+        while parents[i] != i:
+            parents[i] = parents[parents[i]]
+            i = parents[i]
+        return i
+
+    for first, second in seams.values():
+        first.sort()
+        second.sort()
+        a = b = 0
+        while a < len(first) and b < len(second):
+            lo, hi, i = first[a]
+            start, end, j = second[b]
+            if max(lo, start) < min(hi, end):
+                parents[root(j)] = root(i)
+            a += hi <= end
+            b += end <= hi
+
+    groups = defaultdict(list)
+    for i, part in enumerate(parts):
+        if i in parents:
+            groups[root(i)].append(part.geometry)
+        else:
+            yield part.geometry
+    for group in groups.values():
+        yield from _polygons(union_all(group))
 
 
 def _tile_parts(mask, tile: _Tile, seeds, keep_geometry: bool, *, keep_all: bool = False):
@@ -261,13 +326,8 @@ class ActorFootprintTiles:
         self._scout = _Reach()
 
     def verify(self, tile: _Tile, folder: Path) -> None:
-        import numpy as np
-
         magenta, cyan, base = (_pixels(folder / f"{frame}.png") for frame in ACTOR_CAPTURE_FRAMES)
-        shift = (magenta[0] - magenta[1]) - (cyan[0] - cyan[1])
-        bright = np.minimum(magenta.min(axis=0), cyan.min(axis=0))
-        change = np.minimum(np.abs(magenta - base).max(axis=0), np.abs(cyan - base).max(axis=0))
-        mask = (shift > 26) & (bright > 177) & (change > 75)
+        mask = _highlight_mask(magenta, cyan, base)
         if self._coverage is None:
             self._exact.add(tile, _tile_parts(mask, tile, self._by_tile.get(tile, ()), True))
         else:
@@ -286,7 +346,7 @@ class ActorFootprintTiles:
                    for part in self._whole_parts for side, (row, col) in _Reach.sides(part.tile)):
                 return [], [0], []
             regions = []
-            for component in _polygons(union_all([part.geometry for part in self._whole_parts])):
+            for component in _whole_components(self._whole_parts):
                 simplified = component.simplify(0.75, preserve_topology=True)
                 if self._clip is not None:
                     simplified = simplified.intersection(self._clip)

@@ -22,7 +22,7 @@
 
 **从区域到植被，把一次种植变成可复用的工作流。**
 
-VerdFlow 面向三维场景中的程序化植被种植。你可以从模型提取绿地、导入地理面域，或直接在场景中绘制选区；再选择种植策略、搭配植被资源，调整疏密、间距与构图参数，让生成的点位贴合地形，最终输出到目标场景。配置好的搭配与参数可以保存为种植方案，供下一次直接复用。
+VerdFlow 面向三维场景中的程序化植被种植。你可以在 DTS 场景中拾取绿地构件或绘制选区，从 FBX 模型按材质提取绿地，从地形影像识别植被，也可以直接导入已有的地理面域。确定种植范围后，选择策略、搭配植被，调整疏密与间距，让生成的点位贴合地形。搭配与参数可以保存为种植方案，下次直接复用。
 
 它的核心设计是将**空间算法、植被资源与平台接入分开**：策略负责植被如何分布，搭配负责使用哪些资源，适配器负责连接数据与场景。这让新增算法、替换资源和接入新平台可以分别推进，而不必为每一种组合重做整套流程。
 
@@ -47,21 +47,21 @@ VerdFlow 面向三维场景中的程序化植被种植。你可以从模型提�
 
 [![播放 DTS 实时种植演示：滨水园区的道路、绿地与行道树](docs/media/readme/demo-dts-live.webp)](https://mr-pardon.github.io/verdflow-site/demo.html)
 
-<p align="center"><sub>点击封面，前往用户手册观看完整演示。FBX 与地理数据工作流见下方指南。</sub></p>
+<p align="center"><sub>点击封面观看完整演示。FBX、影像识别与已有面域的工作台流程见下方指南。</sub></p>
 
 <br>
 
 <a name="work-your-way"></a>
 ## 从已有数据开始
 
-**三个开始入口，两种交互模式，一条共用的种植链路。**
+**四个开始入口，两种交互模式，一条共用的种植链路。**
 
 <div>
   <p align="center">
     <a href="https://mr-pardon.github.io/verdflow-site/workflows/live.html">
       <picture>
         <source media="(max-width: 840px)" srcset="docs/media/readme/route-live-mobile.svg">
-        <img src="docs/media/readme/route-live.svg" alt="在 DTS 中直接种植：绘制选区或导入 SHP，选择策略与植被搭配，采样并回写场景。查看实时种植指南。">
+        <img src="docs/media/readme/route-live.svg" alt="在 DTS 中拾取独立绿地构件的可见轮廓，可限定范围，用笔刷调整后种植或导出 SHP。也可手绘选区或导入 SHP。查看实时种植指南。">
       </picture>
     </a>
   </p>
@@ -70,6 +70,14 @@ VerdFlow 面向三维场景中的程序化植被种植。你可以从模型提�
       <picture>
         <source media="(max-width: 840px)" srcset="docs/media/readme/route-fbx-mobile.svg">
         <img src="docs/media/readme/route-fbx.svg" alt="从 FBX 模型开始：按材质提取绿地，多批次种植与预览，合并输出 DTS XML。查看 FBX 工作流指南。">
+      </picture>
+    </a>
+  </p>
+  <p align="center">
+    <a href="https://mr-pardon.github.io/verdflow-site/workflows/imagery.html">
+      <picture>
+        <source media="(max-width: 840px)" srcset="docs/media/readme/route-imagery-mobile.svg">
+        <img src="docs/media/readme/route-imagery.svg" alt="还没有绿地面？从 RGB GeoTIFF 在本机识别植被，复核范围，按需为裸岩、裸土留白，再配合对齐的高程生成种植结果。查看影像种植指南。">
       </picture>
     </a>
   </p>
@@ -83,11 +91,11 @@ VerdFlow 面向三维场景中的程序化植被种植。你可以从模型提�
   </p>
 </div>
 
-[DTS 实时种植指南](https://mr-pardon.github.io/verdflow-site/workflows/live.html) · [FBX 工作流指南](https://mr-pardon.github.io/verdflow-site/workflows/fbx.html) · [地理数据工作流指南](https://mr-pardon.github.io/verdflow-site/workflows/geospatial.html)
+[DTS 实时种植](https://mr-pardon.github.io/verdflow-site/workflows/live.html) · [FBX 模型](https://mr-pardon.github.io/verdflow-site/workflows/fbx.html) · [从影像识别绿地](https://mr-pardon.github.io/verdflow-site/workflows/imagery.html) · [使用已有地理面域](https://mr-pardon.github.io/verdflow-site/workflows/geospatial.html)
 
-DTS 入口使用实时面板；FBX 与地理数据入口使用 Studio 项目工作台。两种模式都支持预设种植方案与手动配置。
+DTS 场景使用实时面板；FBX、影像和已有地理面域使用 Studio 项目工作台。两种模式都支持预设种植方案与手动配置。
 
-<sub>FBX 工作流需要 Blender。地理数据需预先对齐到一致的米制坐标系，VerdFlow 不负责坐标重投影。</sub>
+<sub>FBX 工作流需要 Blender。影像和已有地理面域都需与配套的单波段高程 GeoTIFF 对齐，使用同一米制投影；VerdFlow 不负责坐标重投影。</sub>
 
 <br>
 
@@ -146,6 +154,7 @@ DTS 入口使用实时面板；FBX 与地理数据入口使用 Studio 项目工�
 | **用户手册** | 安装准备、操作流程与常见问题 | [在线阅读](https://mr-pardon.github.io/verdflow-site/) |
 | **策略包** | 空间算法、植被角色与可调参数 | [资源中心](https://mr-pardon.github.io/verdflow-resources/?type=strategies) |
 | **资产库** | 植被资源索引、参考尺寸与搭配素材 | [资源中心](https://mr-pardon.github.io/verdflow-resources/?type=assets) |
+| **种植方案** | 直接复用配好的策略、植被搭配与参数 | [浏览种植方案](https://mr-pardon.github.io/verdflow-resources/?type=plans) |
 
 <sub>资产库不包含 DTS 模型文件。目标平台、模型资源与第三方工具需自行准备，并遵守各自许可。</sub>
 
